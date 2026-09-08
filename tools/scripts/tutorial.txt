@@ -1,0 +1,29 @@
+# Boot, dismiss the About dialog, skip the intro, then pedal.
+wait 6000
+shot 01_about
+tap 160 275
+wait 6000
+shot 02_loading
+tap 160 160
+wait 3000
+tap 160 160
+wait 4000
+shot 03_tutorial
+key up
+key up
+key up
+key up
+key up
+key up
+wait 1500
+shot 04_pedal
+key up
+key up
+key up
+key up
+key up
+key up
+wait 1500
+shot 05_pedal
+wait 2000
+shot 06_end

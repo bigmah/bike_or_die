@@ -1,0 +1,39 @@
+# Ride to the "turn around" stage, then hold Space (navigator Select = Flip).
+wait 4500
+tap 160 296
+wait 6000
+tap 160 160
+wait 2500
+tap 160 160
+wait 4500
+key up
+key up
+key up
+key up
+key up
+key up
+key up
+key up
+wait 1500
+key up
+key up
+key up
+key up
+key up
+key up
+key up
+key up
+wait 2500
+shot F0_before
+keydown 32
+wait 900
+shot F1_flip
+keyup 32
+wait 1200
+shot F2_after
+key up
+key up
+key up
+key up
+wait 1500
+shot F3_riding

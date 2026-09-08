@@ -1,0 +1,1113 @@
+diff --git a/src/Makefile b/src/Makefile
+index 0c60d58..c6e71a5 100755
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -1,5 +1,7 @@
+ include common.mak
+ 
++JOBS ?= 10
++
+ DIRS=../bin ../lib ../tools ../vfs/app_card/PALM/Programs ../vfs/app_install ../vfs/app_storage ../vfs/app_tos/A ../vfs/app_tos/B ../vfs/app_tos/C/hd
+ BASE_MODULES=pilrc prcbuild libpit lua libpumpkin libos libshell BOOT Launcher Preferences Command vi LuaSyntax MemoPad AddressBook ToDoList DateBook
+ 
+@@ -38,6 +40,11 @@ endif
+ 
+ EXTRA_MODULES=$(UNICORN_MODULE) windows
+ 
++else ifeq ($(OSNAME),Darwin)
++
++WINDOW_MODULE=liblsdl2
++EXTRA_MODULES=$(WINDOW_MODULE) libwtest linux
++
+ else ifeq ($(OSNAME),Haiku)
+ 
+ ifneq ($(UNICORN),)
+@@ -80,7 +87,7 @@ $(DIRS):
+ 
+ $(MODULES):
+ 	@echo "$(COLOR_GREEN)Building $@$(COLOR_END)"
+-	@$(MAKE) -s --no-print-directory -j -C $@
++	@$(MAKE) -s --no-print-directory -j $(JOBS) -C $@
+ 
+ clean: $(CLEAN_MODULES)
+ 
+diff --git a/src/PalmOS/Core/System/KeyMgr.h b/src/PalmOS/Core/System/KeyMgr.h
+index a52d6d9..0e3adb9 100644
+--- a/src/PalmOS/Core/System/KeyMgr.h
++++ b/src/PalmOS/Core/System/KeyMgr.h
+@@ -33,6 +33,20 @@
+ #define	keyBitAntenna		0x0100		// Antenna "key" <chg 3-31-98 RM>
+ #define	keyBitContrast		0x0200		// Contrast key
+ 
++/* palmOne 5-way navigator (palmOneNavigator.h). Games that support the
++   navigator poll these; Bike or Die's device profile uses exactly these. */
++#define	keyBitNavLeft		0x01000000
++#define	keyBitNavRight		0x02000000
++#define	keyBitNavSelect		0x04000000
++
++/* Palm 5-way navigator, as reported by Palm OS 5 devices (HsKeyCommon.h).
++   Games that support the navigator poll these, not the two above. */
++#define	keyBitRockerUp		0x00010000
++#define	keyBitRockerDown	0x00020000
++#define	keyBitRockerLeft	0x00040000
++#define	keyBitRockerRight	0x00080000
++#define	keyBitRockerCenter	0x00100000
++
+ #define	keyBitLeft		0x0400
+ #define	keyBitRight		0x0800
+ 
+diff --git a/src/common.mak b/src/common.mak
+index d9caea2..4774cb2 100644
+--- a/src/common.mak
++++ b/src/common.mak
+@@ -23,7 +23,14 @@ ifeq ($(MACHINE),)
+ MACHINE := $(shell uname -m)
+ endif
+ 
+-ifeq ($(findstring arm,$(MACHINE)),arm)
++ifeq ($(MACHINE),arm64)
++SYS_CPU=1
++SYS_ENDIAN=1
++ifeq ($(BITS),)
++BITS=64
++endif
++MBITS=
++else ifeq ($(findstring arm,$(MACHINE)),arm)
+ SYS_CPU=1
+ SYS_ENDIAN=1
+ ifeq ($(BITS),)
+@@ -180,6 +187,16 @@ OSDEFS=$(MBITS) -DKERNEL $(RPI_DEFS) -DSOEXT=\"$(SOEXT)\"
+ PILRCDEFS=-D KERNEL
+ CC=gcc
+ 
++else ifeq ($(OSNAME),Darwin)
++SYS_OS=1
++EXTLIBS=
++SOEXT=.dylib
++LUAPLAT=macosx
++OS=Darwin
++OSDEFS=$(MBITS) -DLINUX -DDARWIN -DSOEXT=\"$(SOEXT)\"
++CC=clang
++NM=nm -u
++
+ else ifeq ($(OSNAME),Haiku)
+ SYS_OS=7
+ EXTLIBS=-lnetwork
+diff --git a/src/liblsdl2/Makefile b/src/liblsdl2/Makefile
+index a8b7c26..b091717 100644
+--- a/src/liblsdl2/Makefile
++++ b/src/liblsdl2/Makefile
+@@ -16,6 +16,11 @@ STATIC=1
+ else ifeq ($(OSNAME),Emscripten)
+ STATIC=2
+ CUSTOMFLAGS=-s USE_SDL=2
++else ifeq ($(OSNAME),Darwin)
++SDL_PREFIX := $(shell sdl2-config --prefix)
++CUSTOMFLAGS=$(MIXER_FLAGS) $(OPENGL_FLAGS) -I$(SDL_PREFIX)/include
++LIBS=-L$(SDL_PREFIX)/lib -lSDL2 $(MIXER_LIBS) -framework OpenGL -framework Cocoa
++
+ else ifeq ($(OSNAME),Msys)
+ CUSTOMFLAGS=$(MIXER_FLAGS) $(OPENGL_FLAGS)
+ LIBS=-lSDL2 -lversion -limm32 -lgdi32 -lsetupapi -lwinmm -lole32 -loleaut32 $(MIXER_LIBS)
+diff --git a/src/liblsdl2/liblsdl2.c b/src/liblsdl2/liblsdl2.c
+index b8e2f67..69cc7c6 100644
+--- a/src/liblsdl2/liblsdl2.c
++++ b/src/liblsdl2/liblsdl2.c
+@@ -780,6 +780,14 @@ static int libsdl_video_setup(libsdl_window_t *window) {
+     }
+   }
+ 
++  {
++    int ww = 0, wh = 0, ow = 0, oh = 0;
++    SDL_GetWindowSize(window->window, &ww, &wh);
++    SDL_GetRendererOutputSize(window->renderer, &ow, &oh);
++    debug(DEBUG_INFO, "SDL", "window %dx%d, renderer output %dx%d, logical %dx%d, factor %dx%d",
++          ww, wh, ow, oh, w, h, window->xfactor, window->yfactor);
++  }
++
+   SDL_SetRenderDrawBlendMode(window->renderer, SDL_BLENDMODE_BLEND);
+ 
+   SDL_RenderClear(window->renderer);
+diff --git a/src/libpit/mutex.c b/src/libpit/mutex.c
+index fe20037..f7433f3 100644
+--- a/src/libpit/mutex.c
++++ b/src/libpit/mutex.c
+@@ -376,7 +376,20 @@ int semaphore_timedwait(sema_t *sem, int us) {
+     t -= ts.tv_sec * 1000000;
+     ts.tv_nsec = t * 1000;
+ 
++#if defined(DARWIN)
++    /* macOS has no sem_timedwait(); poll sem_trywait() until the deadline. */
++    (void)ts;
++    int64_t deadline = sys_get_clock() + us;
++    for (;;) {
++      r = sem_trywait(sem->s);
++      if (r == 0) break;
++      if (errno != EAGAIN) break;
++      if (sys_get_clock() >= deadline) { errno = ETIMEDOUT; r = -1; break; }
++      sys_usleep(200);
++    }
++#else
+     r = sem_timedwait(sem->s, &ts);
++#endif
+ 
+     if (r != 0 && errno != ETIMEDOUT) {
+       debug_errno("MUTEX", "sem_timedwait");
+diff --git a/src/libpit/sys.c b/src/libpit/sys.c
+index 75c478a..9cde6d1 100644
+--- a/src/libpit/sys.c
++++ b/src/libpit/sys.c
+@@ -45,11 +45,17 @@
+ #include <sys/select.h>
+ #include <sys/statvfs.h>
+ #else
++#if defined(DARWIN)
++#include <sys/param.h>
++#include <sys/mount.h>
++#include <sys/sysctl.h>
++#else
+ #if !defined(HAIKU)
+ #include <sys/syscall.h>
+ #include <sys/vfs.h>
+ #endif
+ #endif
++#endif
+ #include <sys/wait.h>
+ #include <arpa/inet.h>
+ #include <netinet/in.h>
+@@ -66,6 +72,13 @@
+ #include "ptr.h"
+ #include "debug.h"
+ 
++#if defined(DARWIN)
++/* macOS advertises _POSIX_TIMERS as -1, but clock_gettime() and the
++   MONOTONIC_RAW / *_CPUTIME_ID clocks all work, so enable those paths. */
++#undef _POSIX_TIMERS
++#define _POSIX_TIMERS 200809L
++#endif
++
+ #if defined(KERNEL)
+ #include "ff.h"
+ #include "bcm2835.h"
+@@ -533,7 +546,11 @@ uint32_t sys_get_tid(void) {
+ #if defined(WINDOWS)
+   return GetCurrentThreadId();
+ #endif
+-#if defined(LINUX)
++#if defined(DARWIN)
++  uint64_t tid = 0;
++  pthread_threadid_np(NULL, &tid);
++  return (uint32_t)tid;
++#elif defined(LINUX)
+   return syscall(SYS_gettid);
+ #endif
+ #if defined(SERENITY)
+@@ -2202,7 +2219,9 @@ int64_t sys_get_thread_time(void) {
+ }
+ 
+ int sys_set_thread_name(char *name) {
+-#if defined(LINUX)
++#if defined(DARWIN)
++  pthread_setname_np(name);
++#elif defined(LINUX)
+ #if !defined pthread_setname_np
+   extern int pthread_setname_np (pthread_t __target_thread, const char *__name);
+ #endif
+@@ -2300,8 +2319,8 @@ void *sys_lib_load(char *libname, int *first_load) {
+ 
+   sys_strncpy(buf, libname, FILE_PATH-1);
+   len = sys_strlen(buf);
+-  if (sys_strstr(buf, ".so") == NULL && sys_strchr(buf, '.') == NULL && FILE_PATH-len > 4) {
+-    sys_strcat(buf, ".so");
++  if (sys_strstr(buf, SOEXT) == NULL && sys_strchr(buf, '.') == NULL && FILE_PATH-len > (int)sys_strlen(SOEXT)) {
++    sys_strcat(buf, SOEXT);
+   }
+ 
+   // check if library is already loaded
+diff --git a/src/libpumpkin/DLServer.c b/src/libpumpkin/DLServer.c
+index a2b5b1f..07adc57 100644
+--- a/src/libpumpkin/DLServer.c
++++ b/src/libpumpkin/DLServer.c
+@@ -30,7 +30,11 @@ Err DlkGetSyncInfo(UInt32 *succSyncDateP, UInt32 *lastSyncDateP, DlkSyncStateTyp
+   if (succSyncDateP) *succSyncDateP = 0;
+   if (lastSyncDateP) *lastSyncDateP = 0;
+   if (syncStateP) *syncStateP = dlkSyncStateNeverSynced;
+-  if (nameBufP) StrNCopy(nameBufP, SYSTEM_NAME, dlkUserNameBufSize);
++  if (nameBufP) {
++    // HotSync user name. Some apps key their registration to it, so allow an override.
++    char *user = sys_getenv("PUMPKIN_USER");
++    StrNCopy(nameBufP, user && user[0] ? user : SYSTEM_NAME, dlkUserNameBufSize);
++  }
+   if (logBufP) *logBufP = 0;
+   if (logLenP) *logLenP = 0;
+ 
+diff --git a/src/libpumpkin/KeyMgr.c b/src/libpumpkin/KeyMgr.c
+index 7ab63d3..29570b1 100644
+--- a/src/libpumpkin/KeyMgr.c
++++ b/src/libpumpkin/KeyMgr.c
+@@ -51,6 +51,13 @@ UInt32 KeyCurrentState(void) {
+ 
+   pumpkin_status(NULL, NULL, &keyMask, NULL, NULL, NULL);
+ 
++  if (keyMask) {
++    static uint32_t last = 0;
++    if (keyMask != last) {
++      last = keyMask;
++      debug(DEBUG_TRACE, "KeyMgr", "KeyCurrentState 0x%08X", keyMask);
++    }
++  }
+   return keyMask;
+ }
+ 
+diff --git a/src/libpumpkin/Makefile b/src/libpumpkin/Makefile
+index f60f65d..9070427 100644
+--- a/src/libpumpkin/Makefile
++++ b/src/libpumpkin/Makefile
+@@ -18,7 +18,9 @@ endif
+ endif
+ endif
+ 
+-CUSTOMPFLAGS=-DCRDATE=$(CRDATE) -I./emulation -I./emulation/arm -I./emulation/darm -I./tos -Wno-multichar -I../libpit/custom_malloc/ -I../libemulation -DARMEMU -ffreestanding \
++BOD=$(PUMPKINOS)/../..
++
++CUSTOMPFLAGS=-DCRDATE=$(CRDATE) -I./emulation -I$(BOD)/src/recomp -I$(BOD)/src/gen -I./emulation/arm -I./emulation/darm -I./tos -Wno-multichar -I../libpit/custom_malloc/ -I../libemulation -DARMEMU -ffreestanding \
+     $(HEAP_DEBUG) $(LOGTRAP) $(GIT_COMMIT_ID) $(GIT_NOT_CLEAN) $(GIT_TAG_NAME)
+ 
+ GPSLIB_SOURCE=GPSLib68K.c
+@@ -81,9 +83,9 @@ else
+ 
+ PROGRAM=$(BIN)/libpumpkin$(SOEXT)
+ OBJS=$(SOURCE:%.c=%.o)
+-$(PROGRAM): $(OBJS)
++$(PROGRAM): $(OBJS) $(BOD)/build/librecomp.a
+ 	@echo Linking libpumpkin$(SOEXT)
+-	@$(CC) -shared -o $(PROGRAM) $(OBJS) $(EXTLIBS) -L$(BIN) -lpit -lm
++	@$(CC) -shared -o $(PROGRAM) $(OBJS) $(EXTLIBS) -L$(BIN) -lpit -lm $(BOD)/build/librecomp.a
+ 	@$(STRIP) $(PROGRAM)
+ 
+ emulation/systrap.o: emulation/systrap.c emulation/switch.c
+diff --git a/src/libpumpkin/emulation/KeySysTrap.c b/src/libpumpkin/emulation/KeySysTrap.c
+index c84d362..e978d0d 100644
+--- a/src/libpumpkin/emulation/KeySysTrap.c
++++ b/src/libpumpkin/emulation/KeySysTrap.c
+@@ -27,6 +27,27 @@ void palmos_KeySysTrap(uint32_t sp, uint16_t idx, uint32_t trap) {
+       UInt32 res = KeyCurrentState();
+       m68k_set_reg(M68K_REG_D0, res);
+       debug(DEBUG_TRACE, "EmuPalmOS", "KeyCurrentState(): %d", res);
++      /* Bike or Die keeps 11 KeyCurrentState masks at globals+0x3E74, indexed
++       * by its own key number (0=Up 1=Down 2=Left 3=Right 4=Select 5..8=Button
++       * 1..4); bit 23 marks an entry unavailable. BOD_DUMP_KEYS=1 dumps it. */
++      {
++        static int dumped = 0;
++        if (!dumped) {
++          char *e = sys_getenv("BOD_DUMP_KEYS");
++          dumped = 1;
++          if (e && e[0] && e[0] != '0') {
++            uint32_t a5 = m68k_get_reg(NULL, M68K_REG_A5);
++            uint32_t globals = m68k_read_memory_32(a5 - 0x10A4);
++            int k;
++            debug(DEBUG_ERROR, "BOD", "a5=0x%08X globals=0x%08X", a5, globals);
++            for (k = 0; k < 11; k++) {
++              uint32_t m = m68k_read_memory_32(globals + 0x3E74 + k * 4);
++              debug(DEBUG_ERROR, "BOD", "  key[%2d] mask=0x%08X%s", k, m,
++                    (m & 0x00800000) ? "  (disabled)" : "");
++            }
++          }
++        }
++      }
+     }
+     break;
+     case sysTrapKeyRates: {
+diff --git a/src/libpumpkin/emulation/arm/armemu.c b/src/libpumpkin/emulation/arm/armemu.c
+index 2f178be..ec5aeca 100644
+--- a/src/libpumpkin/emulation/arm/armemu.c
++++ b/src/libpumpkin/emulation/arm/armemu.c
+@@ -45,6 +45,8 @@ void uarmFinish(arm_emu_t *arm) {
+ }
+ 
+ uint32_t uarmGetReg(arm_emu_t *arm, uint32_t reg) {
++  /* cpuReg() only indexes regs[0..15]; the CPSR needs the external accessor. */
++  if (reg == ARM_REG_NUM_CPSR || reg == ARM_REG_NUM_SPSR) return cpuGetRegExternal(arm->cpu, reg);
+   return cpuReg(arm->cpu, reg);
+ }
+ 
+@@ -80,6 +82,13 @@ int uarmRun(arm_emu_t *arm, uint32_t n, uint32_t call68KAddr, call68KFunc_f f, u
+       uarmSetReg(arm, 15, a0);
+ 
+     } else {
++      extern int rarm_tracing;
++      extern void rarm_trace_regs(uint32_t *r, uint32_t n, uint32_t z, uint32_t c, uint32_t v);
++      if (rarm_tracing) {
++        uint32_t regs[16]; int k;
++        for (k = 0; k < 16; k++) regs[k] = uarmGetReg(arm, k);
++        rarm_trace_regs(regs, 0, 0, 0, 0);
++      }
+       cpuCycle(arm->cpu);
+     }
+   }
+diff --git a/src/libpumpkin/emulation/armsyscall.c b/src/libpumpkin/emulation/armsyscall.c
+index a39ed7a..04926dc 100644
+--- a/src/libpumpkin/emulation/armsyscall.c
++++ b/src/libpumpkin/emulation/armsyscall.c
+@@ -41,6 +41,10 @@ typedef struct {
+   UInt16 reserved;
+ } SysModuleDescriptorType;
+ 
++/* Differential testing replays each armlet twice; a real clock would make the
++ * two runs diverge, so freeze it while diffing. */
++int rarm_deterministic_time;
++
+ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3, uint32_t sp) {
+   uint8_t *ram = pumpkin_heap_base();
+   char st[8], st2[8];
+@@ -634,13 +638,13 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+           break;
+         case 0x924:
+           // UInt32 TimGetSeconds(void)
+-          r0 = TimGetSeconds();
++          r0 = rarm_deterministic_time ? 0x40000000u : TimGetSeconds();
+           debug(DEBUG_TRACE, "ARM", "arm syscall TimGetSecods(): %u", r0);
+           break;
+         case 0x928:
+           // UInt32 TimGetTicks(void)
+           // in ARM syscall, TimGetTicks() returns milliseconds, not ticks
+-          r0 = TimGetTicksMs();
++          r0 = rarm_deterministic_time ? 12345u : TimGetTicksMs();
+           debug(DEBUG_TRACE, "ARM", "arm syscall TimGetTicks(): %u", r0);
+           break;
+         case 0xAF8: {
+diff --git a/src/libpumpkin/emulation/emupalmos.c b/src/libpumpkin/emulation/emupalmos.c
+index 3a41fc5..ce4f8a0 100644
+--- a/src/libpumpkin/emulation/emupalmos.c
++++ b/src/libpumpkin/emulation/emupalmos.c
+@@ -28,6 +28,11 @@
+ #include "launch_serde.h"
+ #include "emu_launch_serde.h"
+ #include "notif_serde.h"
++#include "r68k.h"        /* statically recompiled 68k core */
++#include "rarm.h"        /* statically recompiled ARM32 core */
++
++int r68k_enabled(void);
++static void r68k_main(uint32_t pc, uint32_t a5, uint32_t a7, uint32_t codeStart, uint32_t codeSize);
+ #include "emu_notif_serde.h"
+ 
+ #define TRAPS_SIZE 0x40000
+@@ -1603,8 +1608,21 @@ Err CallNotifyProc(UInt32 addr, SysNotifyParamType *notify, UInt32 detailsSize)
+ }
+ 
+ #ifdef ARMEMU
++static uint32_t rarm_native_call_pce(uint32_t code, uint32_t userData);
++static int rarm_diff_enabled(void);
++static int rarm_use_interp(void);
++static uint32_t rarm_diff_call(uint32_t code, uint32_t userData);
++static uint32_t arm_native_call_pce_interp(uint32_t code, uint32_t userData);
++
+ uint32_t arm_native_call_pce(uint32_t code, uint32_t userData) {
+   emu_state_t *state = pumpkin_get_local_storage(emu_key);
++
++  if (r68k_enabled()) {
++    if (rarm_diff_enabled()) return rarm_diff_call(code, userData);
++    if (rarm_use_interp()) return arm_native_call_pce_interp(code, userData);
++    return rarm_native_call_pce(code, userData);
++  }
++
+   uint32_t emulStateAddr, stackAddr, callAddr, retAddr, sysAddr;
+   uint8_t *ram = pumpkin_heap_base();
+ 
+@@ -1647,6 +1665,31 @@ uint32_t arm_native_call_pce(uint32_t code, uint32_t userData) {
+   return state->armp->armGetReg(state->arm, 0);
+ }
+ 
++static uint32_t arm_native_call_pce_interp(uint32_t code, uint32_t userData) {
++  emu_state_t *state = pumpkin_get_local_storage(emu_key);
++  uint32_t emulStateAddr, stackAddr, callAddr, retAddr, sysAddr;
++  uint8_t *ram = pumpkin_heap_base();
++
++  sysAddr = (uint8_t *)state->systable - ram;
++  retAddr = state->armReturnAddr - ram;
++  callAddr = state->armCall68KAddr - ram;
++  emulStateAddr = state->armEmulState - ram;
++  stackAddr = state->armStack - ram;
++
++  state->armp->armSetReg(state->arm,  9, sysAddr + 16);
++  state->armp->armSetReg(state->arm, 15, code);
++  state->armp->armSetReg(state->arm, 14, retAddr);
++  state->armp->armSetReg(state->arm, 13, stackAddr + stackSize);
++  state->armp->armSetReg(state->arm, 0, emulStateAddr);
++  state->armp->armSetReg(state->arm, 1, userData);
++  state->armp->armSetReg(state->arm, 2, callAddr);
++
++  for (; !emupalmos_finished();) {
++    if (state->armp->armRun(state->arm, 1000, callAddr, call68K_func, retAddr)) break;
++  }
++  return state->armp->armGetReg(state->arm, 0);
++}
++
+ uint32_t arm_native_call_sub(uint32_t code, uint32_t data, uint32_t p0, uint32_t p1, uint32_t p2, uint32_t p3) {
+   emu_state_t *state = pumpkin_get_local_storage(emu_key);
+   uint32_t callAddr, retAddr, sysAddr;
+@@ -2357,11 +2400,15 @@ uint32_t emupalmos_main(uint16_t launchCode, void *param, uint16_t flags) {
+         creator = pumpkin_get_app_creator();
+         logtrap_install(state, creator);
+         emupalmos_finish(0);
+-        for (; !emupalmos_finished() && !thread_must_end();) {
+-          if (pumpkin_audio_check(-1)) {
+-            EvtPumpEvents(0);
++        if (r68k_enabled()) {
++          r68k_main(pc, a5, a7, codeStart, codeSize);
++        } else {
++          for (; !emupalmos_finished() && !thread_must_end();) {
++            if (pumpkin_audio_check(-1)) {
++              EvtPumpEvents(0);
++            }
++            m68k_execute(&state->m68k_state, 10000);
+           }
+-          m68k_execute(&state->m68k_state, 10000);
+         }
+         logtrap_deinstall(state);
+       }
+@@ -2414,6 +2461,553 @@ uint32_t emupalmos_main(uint16_t launchCode, void *param, uint16_t flags) {
+   return r;
+ }
+ 
++/* ------------------------------------------------------------------ r68k glue
++ * Bridge between the statically recompiled 68k code (tools/recomp68k.py) and
++ * the PalmOS layer. The recompiled code keeps its own register file; it is
++ * published into the Musashi context around traps so the existing trap
++ * handlers -- which read arguments via m68k_get_reg() and the emulated stack --
++ * work unchanged.
++ */
++
++static int r68k_active = 0;
++
++int r68k_enabled(void) {
++  if (!r68k_active) {
++    char *e = sys_getenv("BOD_RECOMP");
++    r68k_active = (e && e[0] && e[0] != '0') ? 1 : -1;
++  }
++  return r68k_active > 0;
++}
++
++static void r68k_to_musashi(r68k_state *S) {
++  int i;
++  for (i = 0; i < 8; i++) m68k_set_reg(M68K_REG_D0 + i, S->d[i]);
++  for (i = 0; i < 8; i++) m68k_set_reg(M68K_REG_A0 + i, S->a[i]);
++  m68k_set_reg(M68K_REG_PC, S->pc);
++  m68k_set_reg(M68K_REG_SP, S->a[7]);
++  {
++    uint32_t sr = m68k_get_reg(NULL, M68K_REG_SR) & ~0x1Fu;
++    sr |= (S->xf << 4) | (S->nf << 3) | (S->zf << 2) | (S->vf << 1) | S->cf;
++    m68k_set_reg(M68K_REG_SR, sr);
++  }
++}
++
++static void r68k_from_musashi(r68k_state *S) {
++  int i;
++  for (i = 0; i < 8; i++) S->d[i] = m68k_get_reg(NULL, M68K_REG_D0 + i);
++  for (i = 0; i < 8; i++) S->a[i] = m68k_get_reg(NULL, M68K_REG_A0 + i);
++  S->pc = m68k_get_reg(NULL, M68K_REG_PC);
++  {
++    uint32_t sr = m68k_get_reg(NULL, M68K_REG_SR);
++    S->cf = sr & 1; S->vf = (sr >> 1) & 1; S->zf = (sr >> 2) & 1;
++    S->nf = (sr >> 3) & 1; S->xf = (sr >> 4) & 1;
++  }
++}
++
++uint32_t r68k_trap(r68k_state *S, uint16_t trap) {
++  static uint32_t n = 0;
++  uint32_t r;
++
++  /* One-shot dump of Bike or Die's physical-key table: the game keeps 11
++   * 32-bit KeyCurrentState masks at globals+0x3E74, indexed by its own key
++   * number (0=Up, 1=Down, 2=Left, 3=Right, 4=Select, 5..8=Button 1..4).
++   * Bit 23 of an entry marks it unavailable. BOD_DUMP_KEYS=1 to enable. */
++  if (trap == 0xA2A2) {
++    static int dumped = 0;
++    if (!dumped) {
++      char *e = sys_getenv("BOD_DUMP_KEYS");
++      dumped = 1;
++      if (e && e[0] && e[0] != '0') {
++        uint32_t globals = rd32(S->a[5] - 0x10A4u);
++        int k;
++        debug(DEBUG_ERROR, "BOD", "key table at globals 0x%08X + 0x3E74", globals);
++        for (k = 0; k < 11; k++) {
++          debug(DEBUG_ERROR, "BOD", "  key[%2d] mask=0x%08X%s", k,
++                rd32(globals + 0x3E74u + k * 4),
++                (rd32(globals + 0x3E74u + k * 4) & 0x00800000u) ? "  (disabled)" : "");
++        }
++      }
++    }
++  }
++
++  r68k_to_musashi(S);
++  r = palmos_systrap(trap);
++  r68k_from_musashi(S);
++
++  if (emupalmos_finished() || thread_must_end()) S->halt = 1;
++
++  /* The interpreter pumps host events between timeslices; do the equivalent
++   * here, since the recompiled code has no timeslice boundary. */
++  if ((++n & 0x3F) == 0) {
++    if (pumpkin_audio_check(-1)) EvtPumpEvents(0);
++  }
++  return r;
++}
++
++void r68k_panic(r68k_state *S, uint32_t pc, const char *why) {
++  char buf[160];
++  sys_snprintf(buf, sizeof(buf) - 1, "recomp: %s at 0x%08X", why, pc);
++  emupalmos_panic(buf, EMUPALMOS_INVALID_INSTRUCTION);
++  S->halt = 1;
++}
++
++int r68k_resolve(uint32_t pc) {
++  uint8_t *ram = pumpkin_heap_base();
++  MemHandle h;
++  uint8_t *p;
++  int n;
++
++  /* Code resources 2..n are loaded and locked by the application itself, so
++   * resolve them lazily -- by the time the PC lands there the app already holds
++   * a lock and DmGet1Resource/MemHandleLock return its address. We keep our own
++   * lock so the address stays valid for the rest of the run. */
++  for (n = 2; n < 4; n++) {
++    if (r68k_segsize[n]) continue;
++    if ((h = DmGet1Resource('code', n)) == NULL) continue;
++    if ((p = MemHandleLock(h)) != NULL) {
++      r68k_segbase[n] = (uint32_t)(p - ram);
++      r68k_segsize[n] = MemHandleSize(h);
++      debug(DEBUG_INFO, "EmuPalmOS", "recomp: code %d at 0x%08X size 0x%X",
++            n, r68k_segbase[n], r68k_segsize[n]);
++    }
++  }
++  for (n = 1; n < 4; n++)
++    if (r68k_segsize[n] && pc >= r68k_segbase[n] && pc < r68k_segbase[n] + r68k_segsize[n])
++      return 0;
++  return -1;
++}
++
++int r68k_interp(r68k_state *S) {
++  emu_state_t *state = pumpkin_get_local_storage(emu_key);
++  uint32_t pc;
++  int guard = 0, n;
++
++  r68k_to_musashi(S);
++  for (;;) {
++    m68k_execute(&state->m68k_state, 32);
++    pc = m68k_get_reg(NULL, M68K_REG_PC);
++    for (n = 1; n < 4; n++)
++      if (r68k_segsize[n] && pc >= r68k_segbase[n] && pc < r68k_segbase[n] + r68k_segsize[n])
++        goto back;
++    if (emupalmos_finished() || thread_must_end()) {
++      S->halt = 1; r68k_from_musashi(S); return 1;
++    }
++    if (++guard > 200000) {
++      r68k_panic(S, pc, "interpreter did not return to recompiled code");
++      return 1;
++    }
++  }
++back:
++  r68k_from_musashi(S);
++  return 0;
++}
++
++static void r68k_main(uint32_t pc, uint32_t a5, uint32_t a7, uint32_t codeStart, uint32_t codeSize) {
++  r68k_state S;
++
++  sys_memset(&S, 0, sizeof(S));
++  r68k_ram = pumpkin_heap_base();
++  sys_memset(r68k_segbase, 0, sizeof(r68k_segbase));
++  sys_memset(r68k_segsize, 0, sizeof(r68k_segsize));
++  /* Segment 1 is already locked by emupalmos_main. */
++  r68k_segbase[1] = codeStart;
++  r68k_segsize[1] = codeSize;
++  S.pc = pc;
++  S.a[5] = a5;
++  S.a[7] = a7;
++  S.ret_sp = 0xFFFFFFFFu;   /* the app is ended by a trap, not by returning */
++  debug(DEBUG_INFO, "EmuPalmOS", "recomp: code 1 at 0x%08X size 0x%X", r68k_segbase[1], r68k_segsize[1]);
++  debug(DEBUG_INFO, "EmuPalmOS", "recomp: starting at 0x%08X a5=0x%08X a7=0x%08X", pc, a5, a7);
++  r68k_run(&S);
++  debug(DEBUG_INFO, "EmuPalmOS", "recomp: finished at 0x%08X", S.pc);
++}
++
++/* ------------------------------------------------------------- rarm glue
++ * Bridge for the statically recompiled ARM32 code (tools/recomparm.py).
++ * Mirrors uarmRun(): the recompiled code runs until the PC leaves the `armc`
++ * blobs, which happens for the return stub, the call-68K trampoline, and the
++ * PACE syscall addresses (0x04G0NNNN).
++ */
++
++static uint32_t rarm_ret_addr, rarm_call_addr;
++
++void rarm_panic(rarm_state *S, uint32_t pc, const char *why) {
++  char buf[160];
++  sys_snprintf(buf, sizeof(buf) - 1, "recomp(arm): %s at 0x%08X", why, pc);
++  emupalmos_panic(buf, EMUPALMOS_INVALID_INSTRUCTION);
++  S->halt = 1;
++}
++
++static int rarm_trace_fd = -1;
++static uint32_t rarm_trace_n, rarm_trace_max;
++
++static void rarm_trace_open(const char *path, uint32_t max) {
++  rarm_trace_fd = sys_create(path, SYS_WRITE | SYS_TRUNC, 0644);
++  rarm_trace_n = 0; rarm_trace_max = max; rarm_tracing = (rarm_trace_fd >= 0);
++}
++static void rarm_trace_close(void) {
++  rarm_tracing = 0;
++  if (rarm_trace_fd >= 0) { sys_close(rarm_trace_fd); rarm_trace_fd = -1; }
++}
++void rarm_trace_regs(uint32_t *r, uint32_t n, uint32_t z, uint32_t c, uint32_t v) {
++  rarm_state S;
++  int i;
++  for (i = 0; i < 16; i++) S.r[i] = r[i];
++  S.nf = n; S.zf = z; S.cf = c; S.vf = v;
++  rarm_trace(&S);
++}
++
++/* Ring buffer of recent ARM state, dumped when a wild access is detected.
++ * Enabled with BOD_ARM_RING=1. */
++#define RARM_RING 8000
++static rarm_state rarm_ring[RARM_RING];
++static uint32_t rarm_ring_n;
++
++static void rarm_ring_dump(void) {
++  uint32_t i, start = rarm_ring_n > RARM_RING ? rarm_ring_n - RARM_RING : 0;
++  int fd = sys_create("/tmp/bod_ring.txt", SYS_WRITE | SYS_TRUNC, 0644);
++  char buf[240];
++  if (fd < 0) return;
++  for (i = start; i < rarm_ring_n; i++) {
++    rarm_state *S = &rarm_ring[i % RARM_RING];
++    int n = sys_snprintf(buf, sizeof(buf) - 1,
++      "%08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %u%u%u%u\n",
++      S->r[15], S->r[0], S->r[1], S->r[2], S->r[3], S->r[4], S->r[5], S->r[6], S->r[7],
++      S->r[8], S->r[9], S->r[10], S->r[11], S->r[12], S->r[13], S->r[14],
++      S->nf, S->zf, S->cf, S->vf);
++    sys_write(fd, (uint8_t *)buf, n);
++  }
++  sys_close(fd);
++  debug(DEBUG_ERROR, "ARM", "ring of %u entries written to /tmp/bod_ring.txt", rarm_ring_n - start);
++}
++
++void rarm_trace(rarm_state *S) {
++  char buf[220];
++  int n;
++  rarm_ring[rarm_ring_n % RARM_RING] = *S;
++  rarm_ring_n++;
++  if (rarm_trace_fd < 0 || rarm_trace_n >= rarm_trace_max) return;
++  rarm_trace_n++;
++  n = sys_snprintf(buf, sizeof(buf) - 1,
++    "%08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %u%u%u%u\n",
++    S->r[15], S->r[0], S->r[1], S->r[2], S->r[3], S->r[4], S->r[5], S->r[6], S->r[7],
++    S->r[8], S->r[9], S->r[10], S->r[11], S->r[12], S->r[13], S->r[14],
++    S->nf, S->zf, S->cf, S->vf);
++  sys_write(rarm_trace_fd, (uint8_t *)buf, n);
++}
++
++void rarm_badaddr(uint32_t addr, uint32_t size, int write) {
++  /* Out-of-range accesses are clamped away (the read yields 0, the write is
++   * dropped) so a translation bug degrades into a glitch instead of a crash.
++   * BOD_ARM_STRICT=1 turns them back into a hard error. */
++  static uint32_t n = 0;
++  static int strict = 0;
++  char buf[200];
++
++  if (!strict) { char *e = sys_getenv("BOD_ARM_STRICT"); strict = (e && e[0] && e[0] != '0') ? 1 : -1; }
++  n++;
++  if (n <= 20 || (n % 10000) == 0) {
++    sys_snprintf(buf, sizeof(buf) - 1,
++                 "recomp(arm): bad %s of %u bytes at 0x%08X from pc 0x%08X (#%u)",
++                 write ? "write" : "read", size, addr, rarm_cur_pc, n);
++    debug(DEBUG_ERROR, "ARM", "%s", buf);
++    if (n == 1 && rarm_ring_n) rarm_ring_dump();
++    if (strict > 0) emupalmos_panic(buf, EMUPALMOS_INVALID_ADDRESS);
++  }
++}
++
++int rarm_blob_recompiled(int n) {
++  /* BOD_ARM_BLOBS is a bitmask over armc 1..4; bit 0 = armc 1. Default: all. */
++  static int mask = -1;
++  if (mask < 0) {
++    char *e = sys_getenv("BOD_ARM_BLOBS");
++    mask = (e && e[0]) ? sys_atoi(e) : 0xF;
++    debug(DEBUG_INFO, "ARM", "recompiled blob mask 0x%X", mask);
++  }
++  return (mask >> (n - 1)) & 1;
++}
++
++/* A sub-range of one blob can be forced to the interpreter, to bisect a
++ * translation bug down to a function:
++ *   BOD_ARM_IBLOB=<n> BOD_ARM_ILO=<hex off> BOD_ARM_IHI=<hex off>  */
++int rarm_pc_recompiled(int n, uint32_t off) {
++  static int iblob = -2;
++  static uint32_t ilo, ihi;
++
++  if (!rarm_blob_recompiled(n)) return 0;
++  if (iblob == -2) {
++    char *b = sys_getenv("BOD_ARM_IBLOB");
++    char *l = sys_getenv("BOD_ARM_ILO");
++    char *h = sys_getenv("BOD_ARM_IHI");
++    iblob = (b && b[0]) ? sys_atoi(b) : -1;
++    ilo = (l && l[0]) ? (uint32_t)sys_strtol(l, NULL, 16) : 0;
++    ihi = (h && h[0]) ? (uint32_t)sys_strtol(h, NULL, 16) : 0;
++    if (iblob > 0) debug(DEBUG_INFO, "ARM", "interpreting armc %d [0x%X,0x%X)", iblob, ilo, ihi);
++  }
++  if (iblob == n && off >= ilo && off < ihi) return 0;
++  return 1;
++}
++
++static void rarm_to_uarm(emu_state_t *state, rarm_state *S) {
++  int i;
++  uint32_t cpsr;
++  for (i = 0; i < 16; i++) state->armp->armSetReg(state->arm, i, S->r[i]);
++  cpsr = state->armp->armGetReg(state->arm, 16) & 0x0FFFFFFFu;   /* keep the mode bits */
++  cpsr |= (S->nf << 31) | (S->zf << 30) | (S->cf << 29) | (S->vf << 28);
++  state->armp->armSetReg(state->arm, 16, cpsr);
++}
++
++static void rarm_from_uarm(emu_state_t *state, rarm_state *S) {
++  int i;
++  uint32_t cpsr;
++  for (i = 0; i < 16; i++) S->r[i] = state->armp->armGetReg(state->arm, i);
++  cpsr = state->armp->armGetReg(state->arm, 16);
++  S->nf = (cpsr >> 31) & 1; S->zf = (cpsr >> 30) & 1;
++  S->cf = (cpsr >> 29) & 1; S->vf = (cpsr >> 28) & 1;
++}
++
++static uint32_t rarm_batch(void) {
++  static uint32_t n = 0;
++  if (!n) { char *e = sys_getenv("BOD_ARM_BATCH"); n = (e && e[0]) ? (uint32_t)sys_atoi(e) : 400; if (!n) n = 1; }
++  return n;
++}
++
++int rarm_lockstep_blob(void) {
++  static int b = -2;
++  if (b == -2) {
++    char *e = sys_getenv("BOD_ARM_LOCKSTEP");
++    b = (e && e[0]) ? sys_atoi(e) : -1;
++    if (b > 0) debug(DEBUG_INFO, "ARM", "lockstep checking armc %d", b);
++  }
++  return b;
++}
++
++/* Execute one instruction under the interpreter (authoritative) and the same
++ * instruction under the recompiled single-stepper, from the same input state,
++ * and report the first register-level disagreement. */
++int rarm_lockstep(rarm_state *S) {
++  emu_state_t *state = pumpkin_get_local_storage(emu_key);
++  static uint32_t reported = 0;
++  rarm_state before = *S, mine;
++  uint32_t pc = S->r[15];
++  int i, bad = -1;
++
++  rarm_to_uarm(state, S);
++  if (state->armp->armRun(state->arm, 1, rarm_call_addr, call68K_func, rarm_ret_addr)) {
++    rarm_from_uarm(state, S);
++    S->halt = 1;
++    S->result = S->r[0];
++    return 1;
++  }
++  rarm_from_uarm(state, S);          /* S is now the reference result */
++
++  mine = before;
++  arm2_step(&mine);
++
++  for (i = 0; i < 16; i++) if (mine.r[i] != S->r[i]) { bad = i; break; }
++  if (bad < 0) {
++    if (mine.nf != S->nf) bad = 16;
++    else if (mine.zf != S->zf) bad = 17;
++    else if (mine.cf != S->cf) bad = 18;
++    else if (mine.vf != S->vf) bad = 19;
++  }
++  if (bad >= 0 && reported < 12) {
++    static const char *nm[] = {"r0","r1","r2","r3","r4","r5","r6","r7","r8","r9",
++                               "r10","r11","r12","sp","lr","pc","N","Z","C","V"};
++    reported++;
++    debug(DEBUG_ERROR, "ARM", "LOCKSTEP #%u pc=0x%08X %s: recomp=0x%08X interp=0x%08X",
++          reported, pc, nm[bad],
++          bad < 16 ? mine.r[bad] : (bad==16?mine.nf:bad==17?mine.zf:bad==18?mine.cf:mine.vf),
++          bad < 16 ? S->r[bad]  : (bad==16?S->nf  :bad==17?S->zf  :bad==18?S->cf  :S->vf));
++    debug(DEBUG_ERROR, "ARM", "  in : r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X",
++          before.r[0], before.r[1], before.r[2], before.r[3], before.r[4], before.r[5], before.r[6], before.r[7]);
++    debug(DEBUG_ERROR, "ARM", "  in : r8=%08X r9=%08X r10=%08X r11=%08X r12=%08X sp=%08X lr=%08X nzcv=%u%u%u%u",
++          before.r[8], before.r[9], before.r[10], before.r[11], before.r[12], before.r[13], before.r[14],
++          before.nf, before.zf, before.cf, before.vf);
++  }
++  return 0;
++}
++
++int rarm_interp(rarm_state *S) {
++  emu_state_t *state = pumpkin_get_local_storage(emu_key);
++  uint32_t pc;
++  int guard = 0, n;
++
++  rarm_to_uarm(state, S);
++  for (;;) {
++    /* Batch size trades handoff cost against how far execution overshoots the
++     * interpreted region. Overshooting is harmless for correctness (uARM runs
++     * recompiled regions fine) but blurs range bisection, so BOD_ARM_BATCH=1
++     * gives exact range semantics. */
++    if (state->armp->armRun(state->arm, rarm_batch(), rarm_call_addr, call68K_func, rarm_ret_addr)) {
++      rarm_from_uarm(state, S);
++      S->halt = 1;
++      S->result = S->r[0];
++      return 1;
++    }
++    pc = state->armp->armGetReg(state->arm, 15);
++    for (n = 1; n < 5; n++) {
++      if (rarm_segsize[n] && pc >= rarm_segbase[n] && pc < rarm_segbase[n] + rarm_segsize[n] &&
++          rarm_blob_recompiled(n)) {
++        rarm_from_uarm(state, S);
++        return 0;
++      }
++    }
++    if (emupalmos_finished()) { rarm_from_uarm(state, S); S->halt = 1; return 1; }
++    if (++guard > 200000) {
++      rarm_panic(S, pc, "interpreter did not return to recompiled code");
++      return 1;
++    }
++  }
++}
++
++int rarm_resolve(uint32_t pc) {
++  uint8_t *ram = pumpkin_heap_base();
++  MemHandle h;
++  uint8_t *p;
++  int n;
++
++  for (n = 1; n < 5; n++) {
++    if (rarm_segsize[n]) continue;
++    if ((h = DmGet1Resource('armc', n)) == NULL) continue;
++    if ((p = MemHandleLock(h)) != NULL) {
++      rarm_segbase[n] = (uint32_t)(p - ram);
++      rarm_segsize[n] = MemHandleSize(h);
++      debug(DEBUG_INFO, "ARM", "recomp: armc %d at 0x%08X size 0x%X",
++            n, rarm_segbase[n], rarm_segsize[n]);
++    }
++  }
++  for (n = 1; n < 5; n++)
++    if (rarm_segsize[n] && pc >= rarm_segbase[n] && pc < rarm_segbase[n] + rarm_segsize[n])
++      return 0;
++  return -1;
++}
++
++int rarm_escape(rarm_state *S, uint32_t target) {
++  if (target >= 0x04000000) {
++    /* PACE syscall: the address encodes the group and function number. */
++    uint32_t group = (target & 0x00F00000) >> 20;
++    uint32_t function = target & 0xFFFF;
++    uint32_t lr = S->r[14];
++    S->r[0] = emupalmos_arm_syscall(group, function, S->r[0], S->r[1], S->r[2], S->r[3], S->r[13]);
++    S->r[14] = lr;
++    S->r[15] = lr;
++    return emupalmos_finished() ? 1 : 0;
++  }
++  if (target == rarm_ret_addr) {
++    S->halt = 1;
++    S->result = S->r[0];
++    return 1;
++  }
++  if (target == rarm_call_addr) {
++    S->r[0] = call68K_func(S->r[0], S->r[1], S->r[2], S->r[3]);
++    S->r[15] = S->r[14];
++    return emupalmos_finished() ? 1 : 0;
++  }
++  rarm_panic(S, target, "branch outside the recompiled armc blobs");
++  return 1;
++}
++
++/* Tracing mode. Restoring the Palm heap between two in-process replays is not
++ * sound (PumpkinOS keeps host-side state alongside it), so instead each engine
++ * is traced in its own process run and the traces are diffed offline:
++ *   BOD_ARM_ENGINE=interp|recomp   which core executes PceNativeCall
++ *   BOD_ARM_TRACE=<n>              trace the first n calls to /tmp/bod_trace_<engine>.txt
++ * BOD_ARM_DETTIME=1 freezes the clock so both runs stay comparable. */
++static int rarm_diff_enabled(void) {
++  static int v = 0;
++  if (!v) { char *e = sys_getenv("BOD_ARM_TRACE"); v = (e && e[0] && e[0] != '0') ? 1 : -1; }
++  return v > 0;
++}
++
++static int rarm_use_interp(void) {
++  static int v = 0;
++  if (!v) {
++    char *e = sys_getenv("BOD_ARM_ENGINE");
++    v = (e && !sys_strcmp(e, "interp")) ? 1 : -1;
++  }
++  return v > 0;
++}
++
++static uint32_t rarm_diff_call(uint32_t code, uint32_t userData) {
++  static uint32_t seq = 0;
++  static int opened = 0;
++  uint32_t max;
++  char *e = sys_getenv("BOD_ARM_TRACE");
++  uint32_t r;
++
++  max = e ? (uint32_t)sys_atoi(e) : 1;
++  seq++;
++  { extern int rarm_deterministic_time;
++    char *d = sys_getenv("BOD_ARM_DETTIME");
++    rarm_deterministic_time = (d && d[0] && d[0] != '0'); }
++
++  if (seq <= max && !opened && sys_getenv("BOD_ARM_TRACEFILE")) {
++    rarm_trace_open(rarm_use_interp() ? "/tmp/bod_trace_interp.txt"
++                                      : "/tmp/bod_trace_recomp.txt", 1500000);
++    opened = 1;
++  }
++  if (seq > max && opened) { rarm_trace_close(); opened = 0; }
++
++  {
++    static int dual = 0;
++    if (!dual) { char *e = sys_getenv("BOD_ARM_DUAL"); dual = (e && e[0] && e[0] != '0') ? 1 : -1; }
++    if (dual > 0) {
++      /* Run the call under both engines from the same entry state and report
++       * disagreement. Both entries set up r0-r2/sp/lr/r9 themselves, so the
++       * inputs are identical; the recompiled pass runs first and the
++       * interpreted result is the one handed back, keeping the game correct. */
++      uint32_t rr = rarm_native_call_pce(code, userData);
++      uint32_t ri = arm_native_call_pce_interp(code, userData);
++      if (rr != ri) {
++        debug(DEBUG_ERROR, "ARM", "DUAL mismatch call #%u code=0x%08X recomp=0x%08X interp=0x%08X",
++              seq, code, rr, ri);
++      }
++      r = ri;
++    } else {
++      r = rarm_use_interp() ? arm_native_call_pce_interp(code, userData)
++                            : rarm_native_call_pce(code, userData);
++    }
++  }
++  debug(DEBUG_INFO, "ARM", "trace call #%u code=0x%08X r0=0x%08X (%s)",
++        seq, code, r, rarm_use_interp() ? "interp" : "recomp");
++  return r;
++}
++
++static uint32_t rarm_native_call_pce(uint32_t code, uint32_t userData) {
++  emu_state_t *state = pumpkin_get_local_storage(emu_key);
++  static int ring_mode = 0;
++  if (!ring_mode) {
++    char *e = sys_getenv("BOD_ARM_RING");
++    ring_mode = (e && e[0] && e[0] != '0') ? 1 : -1;
++    if (ring_mode > 0) rarm_tracing = 1;
++  }
++  uint8_t *ram = pumpkin_heap_base();
++  /* The ARM register file persists between calls, exactly as it does for the
++   * interpreted CPU; only the entry registers are set up each time. */
++  static rarm_state S;
++  uint32_t sysAddr;
++
++  S.halt = 0;
++  rarm_ram = ram;
++  rarm_ramsize = pumpkin_heap_size();
++  rarm_resolve(code);
++  sysAddr = (uint8_t *)state->systable - ram;
++  rarm_ret_addr  = state->armReturnAddr - ram;
++  rarm_call_addr = state->armCall68KAddr - ram;
++
++  S.r[9]  = sysAddr + 16;                       /* PACE syscall master table */
++  S.r[15] = code;
++  S.r[14] = rarm_ret_addr;
++  S.r[13] = (uint32_t)(state->armStack - ram) + stackSize;
++  S.r[0]  = (uint32_t)(state->armEmulState - ram);
++  S.r[1]  = userData;
++  S.r[2]  = rarm_call_addr;
++
++  rarm_run(&S);
++  return S.r[0];
++}
++
+ void emupalmos_disasm(int m68k, int arm) {
+   emu_state_t *state = pumpkin_get_local_storage(emu_key);
+   logtrap_disasm(state->lt, m68k);
+diff --git a/src/libpumpkin/pumpkin.c b/src/libpumpkin/pumpkin.c
+index 93cf260..6006f82 100644
+--- a/src/libpumpkin/pumpkin.c
++++ b/src/libpumpkin/pumpkin.c
+@@ -2468,12 +2468,28 @@ int pumpkin_launch(launch_request_t *request) {
+         data->littleEndian = regEnd->littleEndian;
+         MemPtrFree(regEnd);
+       }
++      {
++        // Environment overrides, so a host launcher can configure an app
++        // without going through the Preferences UI.
++        char *e = sys_getenv("PUMPKIN_DISPLAY_LE");
++        if (e && e[0]) {
++          data->littleEndian = (e[0] != '0');
++          debug(DEBUG_INFO, PUMPKINOS, "display little endian forced to %d for %s", data->littleEndian, request->name);
++        }
++      }
+ 
+       if ((regSnd = pumpkin_reg_get(creator, regSoundID, &regSize)) != NULL) {
+         debug(DEBUG_INFO, PUMPKINOS, "using sound %d from registry for %s", regSnd->enableSound, request->name);
+         data->enableSound = regSnd->enableSound;
+         MemPtrFree(regSnd);
+       }
++      {
++        char *e = sys_getenv("PUMPKIN_SOUND");
++        if (e && e[0]) {
++          data->enableSound = (e[0] != '0');
++          debug(DEBUG_INFO, PUMPKINOS, "sound forced to %d for %s", data->enableSound, request->name);
++        }
++      }
+ 
+       if ((regHeap = pumpkin_reg_get(creator, regHeapID, &regSize)) != NULL) {
+         if (regHeap->heapSize) {
+@@ -3110,11 +3126,29 @@ int pumpkin_must_finish(void) {
+ }
+ 
+ static void pumpkin_set_key(int key) {
++  debug(DEBUG_TRACE, PUMPKINOS, "key down %d (0x%X)", key, key);
+   switch (key) {
+     case WINDOW_KEY_DOWN:  pumpkin_module.keyMask |= keyBitPageDown;   break;
+     case WINDOW_KEY_UP:    pumpkin_module.keyMask |= keyBitPageUp;     break;
+-    case WINDOW_KEY_LEFT:  pumpkin_module.keyMask |= keyBitLeft;       break;
+-    case WINDOW_KEY_RIGHT: pumpkin_module.keyMask |= keyBitRight;      break;
++    /* Also report the 5-way navigator bits. Palm OS 5 devices have no
++     * "left"/"right" in the base KeyMgr, so games poll a vendor navigator
++     * mask; report both common ones so either profile sees the arrow keys. */
++    case WINDOW_KEY_LEFT:
++      pumpkin_module.keyMask |= keyBitLeft | keyBitRockerLeft | keyBitNavLeft;
++      break;
++    case WINDOW_KEY_RIGHT:
++      pumpkin_module.keyMask |= keyBitRight | keyBitRockerRight | keyBitNavRight;
++      break;
++    /* Navigator "select". F9 already produces the select *event* (Event.c), and
++     * space is the comfortable one to hold while playing. Space still reports
++     * itself as an ordinary character as well, so typing is unaffected. */
++    case WINDOW_KEY_F9:
++      pumpkin_module.keyMask |= keyBitNavSelect | keyBitRockerCenter;
++      break;
++    case ' ':
++      pumpkin_module.keyMask |= keyBitNavSelect | keyBitRockerCenter;
++      pumpkin_module.extKeyMask[' ' >> 6] |= ((uint64_t)1) << (' ' & 63);
++      break;
+     case WINDOW_KEY_F1:    pumpkin_module.keyMask |= keyBitHard1;      break;
+     case WINDOW_KEY_F2:    pumpkin_module.keyMask |= keyBitHard2;      break;
+     case WINDOW_KEY_F3:    pumpkin_module.keyMask |= keyBitHard3;      break;
+@@ -3134,11 +3168,23 @@ static void pumpkin_set_key(int key) {
+ }
+ 
+ static int pumpkin_reset_key(int key) {
++  debug(DEBUG_TRACE, PUMPKINOS, "key up %d (0x%X)", key, key);
+   switch (key) {
+     case WINDOW_KEY_DOWN:  pumpkin_module.keyMask &= ~keyBitPageDown; break;
+     case WINDOW_KEY_UP:    pumpkin_module.keyMask &= ~keyBitPageUp;   break;
+-    case WINDOW_KEY_LEFT:  pumpkin_module.keyMask &= ~keyBitLeft;     break;
+-    case WINDOW_KEY_RIGHT: pumpkin_module.keyMask &= ~keyBitRight;    break;
++    case WINDOW_KEY_LEFT:
++      pumpkin_module.keyMask &= ~(keyBitLeft | keyBitRockerLeft | keyBitNavLeft);
++      break;
++    case WINDOW_KEY_RIGHT:
++      pumpkin_module.keyMask &= ~(keyBitRight | keyBitRockerRight | keyBitNavRight);
++      break;
++    case WINDOW_KEY_F9:
++      pumpkin_module.keyMask &= ~(keyBitNavSelect | keyBitRockerCenter);
++      break;
++    case ' ':
++      pumpkin_module.keyMask &= ~(keyBitNavSelect | keyBitRockerCenter);
++      pumpkin_module.extKeyMask[' ' >> 6] &= ~(((uint64_t)1) << (' ' & 63));
++      break;
+     case WINDOW_KEY_F1:    pumpkin_module.keyMask &= ~keyBitHard1;    break;
+     case WINDOW_KEY_F2:    pumpkin_module.keyMask &= ~keyBitHard2;    break;
+     case WINDOW_KEY_F3:    pumpkin_module.keyMask &= ~keyBitHard3;    break;

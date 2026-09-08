@@ -1,0 +1,4 @@
+wait 6000
+shot b0
+wait 2000
+shot b1

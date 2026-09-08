@@ -1,0 +1,43 @@
+# Drive the tutorial through its stages with each arrow key.
+wait 4500
+tap 160 296
+wait 6000
+tap 160 160
+wait 2500
+tap 160 160
+wait 4500
+shot c0_start
+key up
+key up
+key up
+key up
+key up
+key up
+key up
+key up
+wait 1200
+shot c1_up
+key down
+key down
+key down
+key down
+key down
+key down
+wait 1200
+shot c2_down
+key left
+key left
+key left
+key left
+key left
+key left
+wait 1200
+shot c3_left
+key right
+key right
+key right
+key right
+key right
+key right
+wait 1500
+shot c4_right

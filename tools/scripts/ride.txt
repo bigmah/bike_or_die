@@ -1,0 +1,31 @@
+# Boot into the tutorial level and pedal.
+wait 6000
+tap 160 296
+wait 7000
+tap 160 160
+wait 3000
+tap 160 160
+wait 5000
+shot t0
+key up
+key up
+key up
+key up
+key up
+key up
+wait 1200
+shot t1
+key up
+key up
+key up
+key up
+key up
+key up
+wait 1200
+shot t2
+key up
+key up
+key up
+key up
+wait 1500
+shot t3

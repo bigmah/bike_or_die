@@ -1,0 +1,53 @@
+# Ride to the "turn around using Left" stage, then try Left.
+wait 4500
+tap 160 296
+wait 6000
+tap 160 160
+wait 2500
+tap 160 160
+wait 4500
+key up
+key up
+key up
+key up
+key up
+key up
+key up
+key up
+wait 1500
+key up
+key up
+key up
+key up
+key up
+key up
+key up
+key up
+wait 2000
+shot L0_before
+key left
+key left
+key left
+key left
+key left
+key left
+key left
+key left
+wait 1200
+shot L1_left
+key left
+key left
+key left
+key left
+key left
+key left
+wait 1500
+shot L2_left
+key right
+key right
+key right
+key right
+key right
+key right
+wait 1500
+shot L3_right

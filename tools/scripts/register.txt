@@ -1,0 +1,17 @@
+# Enter the owner's registration code (HotSync ID PalmDB, code 44652).
+wait 5000
+tap 77 243
+wait 900
+key 4
+key 4
+key 6
+key 5
+key 2
+wait 1200
+shot r1_typed
+tap 214 235
+wait 1500
+shot r2_result
+tap 214 235
+wait 2000
+shot r3_result

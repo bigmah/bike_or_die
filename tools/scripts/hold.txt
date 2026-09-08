@@ -1,0 +1,39 @@
+# Ride to the "turn around" stage, then HOLD left the way a player would.
+wait 4500
+tap 160 296
+wait 6000
+tap 160 160
+wait 2500
+tap 160 160
+wait 4500
+key up
+key up
+key up
+key up
+key up
+key up
+key up
+key up
+wait 1500
+key up
+key up
+key up
+key up
+key up
+key up
+key up
+key up
+wait 2500
+shot H0_before
+keydown left
+wait 1500
+shot H1_holding
+keyup left
+wait 1200
+shot H2_after
+keydown right
+wait 1500
+shot H3_right
+keyup right
+wait 1200
+shot H4_done

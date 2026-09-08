@@ -1,0 +1,13 @@
+# Game data and ROM dumps live here: not redistributable, and large.
+# (The Palm ROM dumps turned out to be unnecessary -- PumpkinOS needs no ROM.)
+/files/
+
+/build/
+/vendor/
+/.venv/
+/src/gen/
+*.log
+
+# build products
+__pycache__/
+/tools/macinput

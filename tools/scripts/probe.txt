@@ -1,0 +1,9 @@
+# Find the right pen coordinate space: pixel space, then standard space.
+wait 6000
+shot a_about
+tap 160 296
+wait 2500
+shot b_after_pixel
+tap 80 148
+wait 2500
+shot c_after_standard
