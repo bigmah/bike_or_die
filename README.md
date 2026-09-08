@@ -65,6 +65,36 @@ for select, so the arrows did nothing and Flip was unreachable; it now reports t
 palmOne navigator and Handspring rocker bits, with space and F9 as select.
 (`BOD_DUMP_KEYS=1` dumps that table if another game needs the same treatment.)
 
+## Menus, from the keyboard
+
+Every menu and dialog is fully navigable without the mouse, which still works exactly as
+it did:
+
+| key | in a dialog | in the F5 menu |
+|---|---|---|
+| **↑** / **↓** | move the focus ring; inside a list, move the selection and step out at its ends | move down the items |
+| **←** / **→** | move the focus ring | change pull-down |
+| **Enter** / **Space** / F9 | press what the ring is on; with no ring, the dialog's default button | pick the highlighted item |
+| **Esc** | close a popup list | close the menu |
+
+This is Palm OS 5's own five-way navigation, which PumpkinOS had not implemented. The
+order the ring walks is the form's `fnav` resource where there is one -- Bike or Die
+ships ten, one per dialog it expects a Treo's navigator to drive -- and the objects' own
+top-to-bottom, left-to-right geometry for the fifteen dialogs without one. Only modal
+forms take part, which is every menu and dialog and not the playfield, so the arrow keys
+still ride the bike.
+
+The keys are taken in `EvtGetEvent`, before the application sees them, rather than in
+`FrmHandleEvent` where Palm OS handles them. A game that plays with the navigator claims
+page up and page down -- two of its five keys -- at the top of its own event loop, and
+would never pass them on: with the ring fed after the application, three of the five
+arrows work in a dialog and the two that pedal the bike do not.
+
+Selecting is a synthesised tap at the middle of the object, so it goes down exactly the
+path the pen does and needs nothing from the game. Its release is left pending until the
+event queue drains, which is where a lifted pen lands: a release that overtook the enter
+event it generated would leave the button drawn stuck down.
+
 ## Configuration
 
 The launcher reads `~/.bikeordie.env` if it exists. Useful settings:
@@ -147,6 +177,10 @@ plain-text script (`tools/scripts/*.txt`). That makes it possible to drive and c
 builds without synthesising system-wide mouse and keyboard events.
 
     tools/headless.sh tools/scripts/ride.txt 32 build/frames
+
+`tools/scripts/keynav.txt` is the keyboard one: it starts a level having touched nothing
+but the arrow keys and Enter, so its last frame is only reached if every step of the
+menus answered them.
 
 Useful knobs while debugging the ARM core:
 

@@ -1,0 +1,42 @@
+# Drive the menus with nothing but the keyboard: dismiss the trial dialog with
+# its default button, open the Palm menu, walk to Game -> Select Level, move the
+# focus ring into the level list and out to "Play this level", and start it.
+wait 4500
+shot k0_about
+key 13
+wait 6000
+key 13
+wait 2500
+key 13
+wait 4500
+key 149
+wait 1200
+shot k1_menu
+key down
+wait 300
+key down
+wait 300
+key down
+wait 300
+key down
+wait 300
+shot k2_selectlevel
+key 13
+wait 2500
+shot k3_dialog
+key down
+wait 350
+key down
+wait 350
+shot k4_ring_on_list
+key down
+wait 350
+shot k5_second_level
+key right
+wait 350
+key right
+wait 350
+shot k6_ring_on_play
+key 13
+wait 5000
+shot k7_playing

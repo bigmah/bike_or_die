@@ -56,6 +56,42 @@ index a52d6d9..0e3adb9 100644
  #define	keyBitLeft		0x0400
  #define	keyBitRight		0x0800
  
+diff --git a/src/PalmOS/Core/UI/Form.h b/src/PalmOS/Core/UI/Form.h
+index 8201cc8..309e104 100644
+--- a/src/PalmOS/Core/UI/Form.h
++++ b/src/PalmOS/Core/UI/Form.h
+@@ -321,6 +321,14 @@ typedef Boolean FormEventHandlerType (EventType *eventP);
+ 
+ typedef FormEventHandlerType *FormEventHandlerPtr;
+ 
++// One entry of a form's 'fnav' navigation order resource.
++struct FrmNavOrder {
++  UInt16 id;
++  UInt16 flags;
++  UInt16 above;
++  UInt16 below;
++};
++
+ typedef struct FormType
+ #ifdef ALLOW_ACCESS_TO_INTERNALS_OF_FORMS	// These fields will not be available in the next OS release!
+ {
+@@ -342,6 +350,16 @@ typedef struct FormType
+   uint32_t m68k_handler;
+   UInt16 diaPolicy;
+   void *rsrc;
++
++  // Five-way navigation: the focus ring, and the order it walks the objects in.
++  // navOrder is the form's 'fnav' resource decoded, or NULL when it has none.
++  struct FrmNavOrder *navOrder;
++  UInt16 navCount;
++  UInt16 navInitial;
++  Int16 navFocus;
++  UInt8 navDrawn;
++  UInt8 navReserved;
++  RectangleType navRect;
+ }
+ #endif
+ FormType;
 diff --git a/src/common.mak b/src/common.mak
 index d9caea2..4774cb2 100644
 --- a/src/common.mak
@@ -418,6 +454,35 @@ index 75c478a..9cde6d1 100644
    }
  
    // check if library is already loaded
+diff --git a/src/libpumpkin/Control.c b/src/libpumpkin/Control.c
+index 5fafa62..c36d79b 100644
+--- a/src/libpumpkin/Control.c
++++ b/src/libpumpkin/Control.c
+@@ -1,5 +1,6 @@
+ #include <PalmOS.h>
+ 
++#include "navkeys.h"
+ #include "debug.h"
+ 
+ void CtlDrawControl(ControlType *controlP) {
+@@ -19,6 +20,9 @@ void CtlDrawControl(ControlType *controlP) {
+ 
+   if (controlP) {
+     debug(DEBUG_TRACE, "Control", "CtlDrawControl control %d style %d on %d", controlP->id, controlP->style, controlP->attr.on);
++    // A focus ring sits just outside the control, and the control may be about
++    // to change size under it: take it down and put it back around the redraw.
++    FrmNavRingHide();
+     objFill = UIColorGetTableEntryIndex(UIObjectFill);
+     objFore = UIColorGetTableEntryIndex(UIObjectForeground);
+ 
+@@ -210,6 +214,7 @@ void CtlDrawControl(ControlType *controlP) {
+     WinSetBackColor(oldb);
+     WinSetForeColor(oldf);
+     WinSetTextColor(oldt);
++    FrmNavRingShow();
+   }
+ }
+ 
 diff --git a/src/libpumpkin/DLServer.c b/src/libpumpkin/DLServer.c
 index a2b5b1f..07adc57 100644
 --- a/src/libpumpkin/DLServer.c
@@ -435,6 +500,764 @@ index a2b5b1f..07adc57 100644
    if (logBufP) *logBufP = 0;
    if (logLenP) *logLenP = 0;
  
+diff --git a/src/libpumpkin/Event.c b/src/libpumpkin/Event.c
+index fd1eb40..c61693a 100644
+--- a/src/libpumpkin/Event.c
++++ b/src/libpumpkin/Event.c
+@@ -6,6 +6,7 @@
+ #include "vfs.h"
+ #include "pumpkin.h"
+ #include "navigator.h"
++#include "navkeys.h"
+ #include "xalloc.h"
+ #include "debug.h"
+ 
+@@ -239,6 +240,55 @@ static void adjustCoords(Coord *x, Coord *y) {
+    }
+ }
+ 
++/* Which navigator action, if any, a key press stands for. See navkeys.h. */
++
++NavKeyType NavKeyAction(const EventType *eventP) {
++  UInt16 chr, code;
++
++  if (eventP == NULL || eventP->eType != keyDownEvent) return navKeyNone;
++
++  chr = eventP->data.keyDown.chr;
++  code = eventP->data.keyDown.keyCode & (navBitsAll | navChangeBitsAll);
++
++  switch (chr) {
++    // Up and down arrive as page up/down. A device reports the release as the
++    // same character with only the change bit set, so a key that says anything
++    // about the navigator but does not say "held" is a release, not a press.
++    case vchrPageUp:
++      return (code && !(code & navBitUp)) ? navKeyNone : navKeyUp;
++    case vchrPageDown:
++      return (code && !(code & navBitDown)) ? navKeyNone : navKeyDown;
++
++    case vchrNavChange:
++      if (code & navBitLeft)   return navKeyLeft;
++      if (code & navBitRight)  return navKeyRight;
++      if (code & navBitSelect) return navKeySelect;
++      if (code & navBitUp)     return navKeyUp;
++      if (code & navBitDown)   return navKeyDown;
++      return navKeyNone;
++
++    // The keys a Palm has no equivalent for.
++    case 10:
++    case 13:
++    case ' ':
++      return navKeySelect;
++    case 27:
++      return navKeyCancel;
++  }
++
++  if (eventP->data.keyDown.modifiers & commandKeyMask) {
++    switch (chr) {
++      case vchrRockerUp:     return navKeyUp;
++      case vchrRockerDown:   return navKeyDown;
++      case vchrRockerLeft:   return navKeyLeft;
++      case vchrRockerRight:  return navKeyRight;
++      case vchrRockerCenter: return navKeySelect;
++    }
++  }
++
++  return navKeyNone;
++}
++
+ static int sendKeyDown(UInt16 eType, UInt16 chr, UInt16 keyCode, UInt16 modifiers) {
+   EventType event;
+ 
+@@ -441,10 +491,14 @@ int EvtPumpEvents(Int32 timeoutUs) {
+           event.data.keyDown.modifiers |= commandKeyMask;
+           break;
+         case WINDOW_KEY_UP:
++          // A Palm OS 5 navigator reports up/down as page up/down carrying the
++          // nav bits; left/right/select go through vchrNavChange above.
+           event.data.keyDown.chr = vchrPageUp;
++          event.data.keyDown.keyCode |= navBitUp | navChangeUp;
+           break;
+         case WINDOW_KEY_DOWN:
+           event.data.keyDown.chr = vchrPageDown;
++          event.data.keyDown.keyCode |= navBitDown | navChangeDown;
+           break;
+         case WINDOW_KEY_INS:
+           event.data.keyDown.chr = vchrNativeInsert;
+@@ -802,6 +856,12 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
+   MemSet(event, sizeof(EventType), 0);
+   EvtPumpEvents(0);
+ 
++  // A tap the keyboard started releases here, where a real one would: once
++  // everything its press generated has been taken.
++  if (module->numEvents == 0) {
++    FrmNavFinishTap();
++  }
++
+   if (module->numEvents == 0) {
+     if (EvtPumpEvents(timeoutUs) == -1) {
+       debug(DEBUG_INFO, PALMOS_MODULE, "EvtGetEvent appStopEvent (event failed)");
+@@ -830,6 +890,18 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
+     xmemcpy(event, &module->events[module->idxOut++], sizeof(EventType));
+     if (module->idxOut == MAX_EVENTS) module->idxOut = 0;
+     module->numEvents--;
++
++    // A menu or a dialog on screen takes the navigator keys before the
++    // application sees them at all. It has to be here rather than in
++    // FrmHandleEvent: an application that uses the navigator to play with --
++    // page up and page down are two of its five keys -- claims them at the top
++    // of its own event loop, and would never pass them on.
++    if (event->eType == keyDownEvent &&
++        (MenuNavHandleKey(event) || FrmNavHandleKey(FrmGetActiveForm(), event))) {
++      MemSet(event, sizeof(EventType), 0);
++      event->eType = nilEvent;
++    }
++
+     EvtPrintEvent("Get", event);
+     return;
+   }
+diff --git a/src/libpumpkin/Form.c b/src/libpumpkin/Form.c
+index 1e9cef5..e0fdc20 100644
+--- a/src/libpumpkin/Form.c
++++ b/src/libpumpkin/Form.c
+@@ -11,6 +11,7 @@
+ #include "pumpkin.h"
+ #include "storage.h"
+ #include "debug.h"
++#include "navkeys.h"
+ #include "xalloc.h"
+ 
+ #define MAX_STACK  8
+@@ -24,8 +25,18 @@ typedef struct {
+   FormType *currentForm;
+   FormList *list;
+   Boolean centerDialogs;
++
++  // A tap the keyboard started, waiting for its release. See FrmNavTap.
++  Boolean navTapPending;
++  Coord navTapX, navTapY;
+ } frm_module_t;
+ 
++// Five-way navigation, defined further down with the rest of it.
++static void FrmNavInit(FormType *formP);
++static void FrmNavFinish(FormType *formP);
++static void FrmNavHide(FormType *formP);
++static void FrmNavShow(FormType *formP);
++
+ static const char *frmObjType[] = {
+   "frmFieldObj",
+   "frmControlObj",
+@@ -196,6 +207,7 @@ static Err FrmInitFormInternal(FormType *formP) {
+   formP->selectedObject = -1;
+   formP->activeList = -1;
+   formP->activeField = -1;
++  FrmNavInit(formP);
+   formP->mbar = formP->menuRscId ? MenuInit(formP->menuRscId) : NULL;
+   formP->diaPolicy = frmDIAPolicyStayOpen;
+ 
+@@ -349,6 +361,7 @@ void FrmEraseObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+ 
+   if (formP && objIndex < formP->numObjects) {
+     pumpkin_dirty_region_mode(dirtyRegionBegin);
++    if (!formP->attr.drawing) FrmNavHide(formP);
+ 
+     obj = formP->objects[objIndex].object;
+ 
+@@ -456,6 +469,7 @@ void FrmEraseObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+       WinSetBackColor(oldb);
+     }
+ 
++    if (!formP->attr.drawing) FrmNavShow(formP);
+     pumpkin_dirty_region_mode(dirtyRegionEnd);
+   }
+ }
+@@ -474,6 +488,7 @@ void FrmDrawObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+ 
+   if (formP && objIndex < formP->numObjects) {
+     pumpkin_dirty_region_mode(dirtyRegionBegin);
++    if (!formP->attr.drawing) FrmNavHide(formP);
+ 
+     obj = formP->objects[objIndex].object;
+     formTitle = UIColorGetTableEntryIndex(UIObjectSelectedForeground);
+@@ -642,6 +657,7 @@ void FrmDrawObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+         break;
+     }
+ 
++    if (!formP->attr.drawing) FrmNavShow(formP);
+     pumpkin_dirty_region_mode(dirtyRegionEnd);
+   }
+ }
+@@ -822,6 +838,527 @@ Boolean FrmTrackPenUp(UInt32 x, UInt32 y) {
+   return handled;
+ }
+ 
++/* -------------------------------------------------------------- five-way nav
++ *
++ * Keyboard navigation of forms, the way a Palm OS 5 device does it with its
++ * 5-way navigator: a focus ring steps through the form's objects and "select"
++ * acts on the one it is on. The keys arrive through NavKeyAction (navkeys.h).
++ *
++ * The order comes from the form's own 'fnav' resource when it has one -- that
++ * is what applications that support the navigator ship one per form for -- and
++ * from the objects' top-to-bottom, left-to-right geometry when it does not, so
++ * every dialog is navigable either way.
++ *
++ * Only modal forms take part. Those are the dialogs and menus; a full-screen
++ * form belongs to the application, which may well want the arrow keys itself.
++ *
++ * Selecting is a synthesised tap at the middle of the object, so it goes down
++ * exactly the path the pen does and needs nothing from the application. The
++ * ring is an inverted frame, which makes taking it down the same operation as
++ * putting it up and leaves no saved bits to get out of step with the screen.
++ */
++
++#define navFormRscType  'fnav'          // Palm OS 5.2 form navigation order
++#define navSkipFlag     0x0001          // kFrmNavObjectFlagsSkip
++#define navNoFocus      (-1)
++#define navMaxStops     128
++
++// The objects the ring can land on, and where they are. The rectangle is the
++// one the object's own handler hit-tests pen events against, so the ring is
++// drawn from exactly the coordinates a synthesised tap has to aim at.
++
++static Boolean FrmNavObject(const FormType *formP, Int16 index, RectangleType *rP) {
++  FormObjectType obj;
++
++  if (formP == NULL || index < 0 || index >= formP->numObjects) return false;
++  obj = formP->objects[index].object;
++
++  switch (formP->objects[index].objectType) {
++    case frmControlObj:
++      if (!obj.control->attr.usable || !obj.control->attr.enabled) return false;
++      if (rP) MemMove(rP, &obj.control->bounds, sizeof(RectangleType));
++      return true;
++    case frmListObj:
++      // A popup list is not a stop of its own: it belongs to the trigger that
++      // shows it, and only exists on screen while it is popped up.
++      if (obj.list->bitsBehind) return false;
++      if (!obj.list->attr.usable || !obj.list->attr.visible) return false;
++      if (rP) MemMove(rP, &obj.list->bounds, sizeof(RectangleType));
++      return true;
++    case frmFieldObj:
++      if (!obj.field->attr.usable || !obj.field->attr.editable) return false;
++      if (rP) MemMove(rP, &obj.field->rect, sizeof(RectangleType));
++      return true;
++    case frmTableObj:
++      if (rP) MemMove(rP, &obj.table->bounds, sizeof(RectangleType));
++      return true;
++    case frmGadgetObj:
++      if (!obj.gadget->attr.usable) return false;
++      if (!obj.gadget->handler && !obj.gadget->m68k_handler) return false;
++      if (rP) MemMove(rP, &obj.gadget->rect, sizeof(RectangleType));
++      return true;
++    default:
++      // Labels, bitmaps, titles, scroll bars: nothing happens when they are
++      // tapped, or the arrow keys already do their job.
++      return false;
++  }
++}
++
++static Boolean FrmNavEnabled(const FormType *formP) {
++  return formP != NULL && formP->window.windowFlags.modal;
++}
++
++// Decode the form's 'fnav' resource, whose id is the form's own. Called once,
++// when the form is created; freed with the form.
++
++static void FrmNavInit(FormType *formP) {
++  MemHandle h;
++  UInt8 *p;
++  UInt16 version, count, hdrSize, elemSize, initial;
++  UInt32 size, flags;
++  int i, j;
++
++  formP->navOrder = NULL;
++  formP->navCount = 0;
++  formP->navInitial = 0;
++  formP->navFocus = navNoFocus;
++  formP->navDrawn = 0;
++
++  if (formP->formId == 0) return;
++  if ((h = DmGetResource(navFormRscType, formP->formId)) == NULL) return;
++
++  if ((p = MemHandleLock(h)) != NULL) {
++    size = MemHandleSize(h);
++    i = 0;
++    i += get2b(&version, p, i);
++    i += get2b(&count, p, i);
++    i += get2b(&hdrSize, p, i);
++    i += get2b(&elemSize, p, i);
++    i += get4b(&flags, p, i);       // start state; the ring waits for a key here
++    i += get2b(&initial, p, i);
++
++    if (version == 1 && count > 0 && count <= navMaxStops && elemSize >= 8 &&
++        hdrSize + (UInt32)count * elemSize <= size) {
++      formP->navOrder = xcalloc(count, sizeof(struct FrmNavOrder));
++      formP->navCount = count;
++      formP->navInitial = initial;
++      for (j = 0; j < count; j++) {
++        i = hdrSize + j * elemSize;
++        i += get2b(&formP->navOrder[j].id, p, i);
++        i += get2b(&formP->navOrder[j].flags, p, i);
++        i += get2b(&formP->navOrder[j].above, p, i);
++        i += get2b(&formP->navOrder[j].below, p, i);
++      }
++      debug(DEBUG_TRACE, "Form", "FrmNav form %d: navigation order of %d objects", formP->formId, count);
++    } else {
++      debug(DEBUG_ERROR, "Form", "FrmNav form %d: unusable 'fnav' (version %d, %d objects, %u bytes)",
++        formP->formId, version, count, size);
++    }
++    MemHandleUnlock(h);
++  }
++
++  DmReleaseResource(h);
++}
++
++static void FrmNavFinish(FormType *formP) {
++  if (formP && formP->navOrder) {
++    xfree(formP->navOrder);
++    formP->navOrder = NULL;
++    formP->navCount = 0;
++  }
++}
++
++// The form's stops, in the order the ring walks them: the navigation order's
++// own, or reading order when the form has none. Objects that are not stops
++// right now -- a hidden list, a disabled button -- are left out.
++
++static Int16 FrmNavStops(const FormType *formP, Int16 *stop, Int16 max) {
++  RectangleType r, s;
++  Int16 n = 0, i, j, k;
++  UInt16 index;
++
++  MemSet(&s, sizeof(RectangleType), 0);
++
++  if (formP->navOrder) {
++    for (i = 0; i < formP->navCount && n < max; i++) {
++      if (formP->navOrder[i].flags & navSkipFlag) continue;
++      index = FrmGetObjectIndex(formP, formP->navOrder[i].id);
++      if (index == frmInvalidObjectId) continue;
++      if (!FrmNavObject(formP, index, NULL)) continue;
++      stop[n++] = index;
++    }
++    if (n > 0) return n;
++    // The order named nothing that is on screen: fall through to geometry.
++  }
++
++  for (i = 0; i < formP->numObjects && n < max; i++) {
++    if (!FrmNavObject(formP, i, &r)) continue;
++    for (j = 0; j < n; j++) {
++      FrmNavObject(formP, stop[j], &s);
++      if (r.topLeft.y < s.topLeft.y ||
++          (r.topLeft.y == s.topLeft.y && r.topLeft.x < s.topLeft.x)) break;
++    }
++    for (k = n; k > j; k--) stop[k] = stop[k-1];
++    stop[j] = i;
++    n++;
++  }
++
++  return n;
++}
++
++// Where the ring goes when it first appears: what the resource asks for, else
++// the first stop.
++
++static Int16 FrmNavFirst(const FormType *formP) {
++  Int16 stop[navMaxStops], n, i;
++  UInt16 index;
++
++  if ((n = FrmNavStops(formP, stop, navMaxStops)) == 0) return navNoFocus;
++
++  if (formP->navInitial) {
++    index = FrmGetObjectIndex(formP, formP->navInitial);
++    for (i = 0; i < n; i++) {
++      if (stop[i] == (Int16)index) return stop[i];
++    }
++  }
++
++  return stop[0];
++}
++
++static Int16 FrmNavStep(const FormType *formP, int dir) {
++  Int16 stop[navMaxStops], n, i, cur = -1;
++
++  if ((n = FrmNavStops(formP, stop, navMaxStops)) == 0) return navNoFocus;
++
++  for (i = 0; i < n; i++) {
++    if (stop[i] == formP->navFocus) cur = i;
++  }
++  if (cur == -1) return (dir > 0) ? stop[0] : stop[n-1];
++
++  return stop[(cur + dir + n) % n];
++}
++
++// Put the ring up or take it down. Inverting a frame is its own inverse, so
++// both are the same drawing; navDrawn says which of the two it is doing.
++
++static void FrmNavInvert(FormType *formP, const RectangleType *rP) {
++  RectangleType rect;
++  WinHandle olda, oldd;
++  int i;
++
++  olda = WinGetActiveWindow();
++  WinSetActiveWindow(FrmGetWindowHandle(formP));
++  oldd = WinSetDrawWindow(FrmGetWindowHandle(formP));
++
++  // Two single-pixel frames just outside the object rather than one two-pixel
++  // one: a ring that thin against a button's own frame is easy to miss.
++  for (i = 1; i <= 2; i++) {
++    rect.topLeft.x = rP->topLeft.x - i;
++    rect.topLeft.y = rP->topLeft.y - i;
++    rect.extent.x  = rP->extent.x + 2 * i;
++    rect.extent.y  = rP->extent.y + 2 * i;
++    WinInvertRectangleFrame(simpleFrame, &rect);
++  }
++
++  WinSetDrawWindow(oldd);
++  WinSetActiveWindow(olda);
++}
++
++static void FrmNavHide(FormType *formP) {
++  if (formP && formP->navDrawn) {
++    // Erase from the rectangle it was drawn at: the object may have resized
++    // since -- a popup trigger relabelled from its list, say.
++    FrmNavInvert(formP, &formP->navRect);
++    formP->navDrawn = 0;
++  }
++}
++
++static void FrmNavShow(FormType *formP) {
++  RectangleType rect;
++
++  if (formP && !formP->navDrawn && formP->navFocus != navNoFocus && formP->attr.visible) {
++    if (!FrmNavObject(formP, formP->navFocus, &rect)) return;
++    MemMove(&formP->navRect, &rect, sizeof(RectangleType));
++    FrmNavInvert(formP, &rect);
++    formP->navDrawn = 1;
++  }
++}
++
++// For the object drawing routines, which repaint over the ring. They are given
++// the active form because that is the only one with a ring on it.
++
++void FrmNavRingHide(void) {
++  FormType *formP = FrmGetActiveForm();
++
++  // Inside FrmDrawForm the whole form is being repainted; it puts the ring back
++  // itself when it is done.
++  if (formP && !formP->attr.drawing) FrmNavHide(formP);
++}
++
++void FrmNavRingShow(void) {
++  FormType *formP = FrmGetActiveForm();
++
++  if (formP && !formP->attr.drawing) FrmNavShow(formP);
++}
++
++static void FrmNavSetFocus(FormType *formP, Int16 index) {
++  if (index == navNoFocus || index == formP->navFocus) return;
++
++  FrmNavHide(formP);
++  formP->navFocus = index;
++  // A field with the ring on it also takes the insertion point, so that typing
++  // goes where the ring is.
++  if (formP->objects[index].objectType == frmFieldObj) {
++    FrmSetFocus(formP, index);
++  } else if (FldGetActiveField() != NULL) {
++    FrmReleaseFocus(formP);
++    FldSetActiveField(NULL);
++  }
++  FrmNavShow(formP);
++}
++
++// Act on the object the ring is on, by tapping it where the pen would.
++//
++// The press is delivered now and the release is left pending: a real release
++// only arrives once the application has worked through everything the press
++// put in the queue, and objects rely on that order -- a button is drawn pressed
++// by the enter event and drawn unpressed again by the release, and a release
++// that overtook the enter event would leave it stuck down.
++
++static void FrmNavTap(FormType *formP, Coord x, Coord y) {
++  frm_module_t *module = (frm_module_t *)pumpkin_get_local_storage(frm_key);
++  EventType event;
++
++  if (module == NULL) return;
++
++  MemSet(&event, sizeof(EventType), 0);
++  event.eType = penDownEvent;
++  event.screenX = x;
++  event.screenY = y;
++  event.penDown = true;
++  if (!FrmDispatchEventInternal(formP, &event)) {
++    FrmHandleEvent(formP, &event);
++  }
++
++  module->navTapPending = true;
++  module->navTapX = x;
++  module->navTapY = y;
++}
++
++// Called from EvtGetEvent once the queue has drained. Returns true if it put
++// anything in it.
++
++Boolean FrmNavFinishTap(void) {
++  frm_module_t *module = (frm_module_t *)pumpkin_get_local_storage(frm_key);
++  EventType event;
++  Coord x, y;
++
++  if (module == NULL || !module->navTapPending) return false;
++  module->navTapPending = false;
++  x = module->navTapX;
++  y = module->navTapY;
++
++  // The object that took the press is told about the release directly, and the
++  // form still sees the event afterwards. Exactly what a lifted pen does.
++  FrmTrackPenUp(x, y);
++
++  MemSet(&event, sizeof(EventType), 0);
++  event.eType = penUpEvent;
++  event.screenX = x;
++  event.screenY = y;
++  event.data.penUp.start.x = x;
++  event.data.penUp.start.y = y;
++  event.data.penUp.end.x = x;
++  event.data.penUp.end.y = y;
++  EvtAddEventToQueue(&event);
++
++  FrmNavShow(FrmGetActiveForm());
++
++  return true;
++}
++
++static Boolean FrmNavSelect(FormType *formP) {
++  RectangleType rect;
++  ListType *list;
++  Int16 index, row;
++  UInt16 objIndex;
++
++  index = formP->navFocus;
++
++  // Before the ring has been shown, and on a field -- which takes text, not
++  // presses -- select means the form's default button, the way Enter does in
++  // any other dialog.
++  if (index != navNoFocus && formP->objects[index].objectType == frmFieldObj) {
++    index = navNoFocus;
++  }
++  if (index == navNoFocus) {
++    if (formP->defaultButton == 0) return false;
++    objIndex = FrmGetObjectIndex(formP, formP->defaultButton);
++    if (objIndex == frmInvalidObjectId) return false;
++    index = objIndex;
++  }
++
++  if (!FrmNavObject(formP, index, &rect)) return false;
++
++  // Aim at the middle of the object, except in a list, where the row the
++  // selection is on is the thing being tapped.
++  row = rect.topLeft.y + rect.extent.y / 2;
++  if (formP->objects[index].objectType == frmListObj) {
++    list = formP->objects[index].object.list;
++    if (list->visibleItems > 0 && list->currentItem != noListSelection) {
++      row = rect.topLeft.y +
++            (list->currentItem - list->topItem) * (rect.extent.y / list->visibleItems) +
++            (rect.extent.y / list->visibleItems) / 2;
++    }
++  }
++
++  FrmNavHide(formP);
++  FrmNavTap(formP, rect.topLeft.x + rect.extent.x / 2, row);
++
++  return true;
++}
++
++// Up and down inside a list move its selection, and step out of the list at
++// its ends. Returns false when the key should move the ring instead.
++
++static Boolean FrmNavList(FormType *formP, int dir) {
++  ListType *list;
++  Int16 sel;
++
++  if (formP->navFocus == navNoFocus) return false;
++  if (formP->objects[formP->navFocus].objectType != frmListObj) return false;
++
++  list = formP->objects[formP->navFocus].object.list;
++  if (list->numItems <= 0) return false;
++
++  sel = list->currentItem;
++  if (sel == noListSelection) {
++    sel = (dir > 0) ? 0 : list->numItems - 1;
++  } else {
++    sel += dir;
++    if (sel < 0 || sel >= list->numItems) return false;   // out of the list
++  }
++
++  FrmNavHide(formP);
++  LstSetSelection(list, sel);
++  LstMakeItemVisible(list, sel);
++  LstDrawList(list);
++  FrmNavShow(formP);
++
++  return true;
++}
++
++// While a list is popped up it has the keyboard to itself: the trigger that
++// opened it is waiting inside LstPopupList for a selection or a dismissal.
++
++static Boolean FrmNavPopup(FormType *formP, NavKeyType nav) {
++  EventType event;
++  ListType *list;
++  Int16 sel;
++
++  if (formP->activeList < 0 || formP->activeList >= formP->numObjects) return false;
++  if (formP->objects[formP->activeList].objectType != frmListObj) return false;
++  list = formP->objects[formP->activeList].object.list;
++
++  switch (nav) {
++    case navKeyUp:
++    case navKeyDown:
++      if (list->numItems <= 0) return true;
++      sel = list->currentItem;
++      if (sel == noListSelection) {
++        sel = 0;
++      } else {
++        sel += (nav == navKeyDown) ? 1 : -1;
++        if (sel < 0) sel = list->numItems - 1;
++        if (sel >= list->numItems) sel = 0;
++      }
++      LstSetSelection(list, sel);
++      LstMakeItemVisible(list, sel);
++      LstDrawList(list);
++      return true;
++
++    case navKeySelect:
++      MemSet(&event, sizeof(EventType), 0);
++      sel = (list->currentItem == noListSelection) ? 0 : list->currentItem;
++      if (list->controlID) {
++        event.eType = popSelectEvent;
++        event.data.popSelect.listID = list->id;
++        event.data.popSelect.listP = list;
++        event.data.popSelect.selection = sel;
++        event.data.popSelect.priorSelection = list->currentItem;
++        event.data.popSelect.controlID = list->controlID;
++        event.data.popSelect.controlP = FrmGetObjectPtr(formP, FrmGetObjectIndex(formP, list->controlID));
++      } else {
++        event.eType = lstSelectEvent;
++        event.data.lstSelect.listID = list->id;
++        event.data.lstSelect.pList = list;
++        event.data.lstSelect.selection = sel;
++      }
++      list->currentItem = sel;
++      EvtAddEventToQueue(&event);
++      return true;
++
++    case navKeyCancel:
++    case navKeyLeft:
++      MemSet(&event, sizeof(EventType), 0);
++      event.eType = lstExitEvent;
++      event.data.lstExit.listID = list->id;
++      event.data.lstExit.pList = list;
++      EvtAddEventToQueue(&event);
++      return true;
++
++    default:
++      return false;
++  }
++}
++
++// The whole of it, called from EvtGetEvent before the application sees the
++// key. Returns true when the key was a navigator action this form dealt with.
++
++Boolean FrmNavHandleKey(FormType *formP, const EventType *eventP) {
++  NavKeyType nav;
++  int dir;
++
++  if (!FrmNavEnabled(formP)) return false;
++  if ((nav = NavKeyAction(eventP)) == navKeyNone) return false;
++
++  if (formP->activeList != -1) {
++    return FrmNavPopup(formP, nav);
++  }
++
++  // Space is a character wherever text is being entered.
++  if (nav == navKeySelect && eventP->data.keyDown.chr == ' ' && FldGetActiveField() != NULL) {
++    return false;
++  }
++
++  switch (nav) {
++    case navKeyUp:
++    case navKeyDown:
++      dir = (nav == navKeyDown) ? 1 : -1;
++      if (formP->navFocus == navNoFocus) {
++        FrmNavSetFocus(formP, FrmNavFirst(formP));
++      } else if (!FrmNavList(formP, dir)) {
++        FrmNavSetFocus(formP, FrmNavStep(formP, dir));
++      }
++      return true;
++
++    case navKeyLeft:
++    case navKeyRight:
++      if (formP->navFocus == navNoFocus) {
++        FrmNavSetFocus(formP, FrmNavFirst(formP));
++      } else {
++        FrmNavSetFocus(formP, FrmNavStep(formP, (nav == navKeyRight) ? 1 : -1));
++      }
++      return true;
++
++    case navKeySelect:
++      return FrmNavSelect(formP);
++
++    default:
++      return false;
++  }
++}
++
+ // Handle the event that has occurred in the form.
+ // Never call this function directly. Call FrmDispatchEvent instead.
+ // FrmDispatchEvent passes events to a form’s custom event
+@@ -1127,6 +1664,7 @@ static void FrmDeleteFormInternal(FormType *formP) {
+   frm_module_t *module = (frm_module_t *)pumpkin_get_local_storage(frm_key);
+ 
+   debug(DEBUG_TRACE, "Form", "FrmDeleteFormInternal form %d", formP->formId);
++  FrmNavFinish(formP);
+ 
+   if (formP == module->currentForm) {
+     WinSetActiveWindow(NULL);
+@@ -1232,6 +1770,10 @@ void FrmDrawForm(FormType *formP) {
+ 
+     margin = WinGetBorderRect(&formP->window, &rect);
+ 
++    // Everything below overpaints the focus ring, so it is gone whether or not
++    // it is taken down here; it goes back up once the form is whole again.
++    formP->navDrawn = 0;
++
+     if (!formP->attr.visible) {
+       WinSaveRectangle(formP->bitsBehindForm, &rect);
+     }
+@@ -1258,6 +1800,8 @@ void FrmDrawForm(FormType *formP) {
+     WinSetDrawWindow(oldd);
+     WinSetActiveWindow(olda);
+ 
++    FrmNavShow(formP);
++
+     pumpkin_dirty_region_mode(dirtyRegionEnd);
+   }
+ }
+@@ -1280,6 +1824,7 @@ void FrmEraseForm(FormType *formP) {
+     WinRestoreRectangle(formP->bitsBehindForm, &rect);
+ 
+     formP->attr.visible = 0;
++    formP->navDrawn = 0;
+   }
+ }
+ 
+@@ -3699,6 +4244,7 @@ void pumpkin_destroy_form(FormType *formP) {
+     if (formP->rsrc) {
+       pumpkin_heap_free(formP->rsrc, "form_rsrc");
+     }
++    FrmNavFinish(formP);
+     pumpkin_heap_free(formP, "Form");
+   }
+ }
 diff --git a/src/libpumpkin/KeyMgr.c b/src/libpumpkin/KeyMgr.c
 index 7ab63d3..29570b1 100644
 --- a/src/libpumpkin/KeyMgr.c
@@ -480,6 +1303,186 @@ index f60f65d..9070427 100644
  	@$(STRIP) $(PROGRAM)
  
  emulation/systrap.o: emulation/systrap.c emulation/switch.c
+diff --git a/src/libpumpkin/Menu.c b/src/libpumpkin/Menu.c
+index c40407c..cfa0eaa 100644
+--- a/src/libpumpkin/Menu.c
++++ b/src/libpumpkin/Menu.c
+@@ -9,6 +9,7 @@
+ #include "pumpkin.h"
+ #include "storage.h"
+ #include "debug.h"
++#include "navkeys.h"
+ #include "xalloc.h"
+ 
+ typedef struct {
+@@ -272,6 +273,134 @@ static void menu_hide_pd(MenuBarType *menu, MenuPullDownType *pd) {
+   WinRestoreRectangle(pd->bitsBehind, &pd->bounds);
+ }
+ 
++// Take the whole menu off the screen and give the form back its window.
++
++static void menu_close(MenuBarType *menuP) {
++  MenuPullDownType *pd = &menuP->menus[menuP->curMenu];
++
++  if (!pd->hidden) {
++    menu_hide_pd(menuP, pd);
++  }
++  pd->selectedItem = -1;
++  WinSetActiveWindow(menuP->savedActiveWin);
++  WinSetDrawWindow(menuP->savedActiveWin);
++  WinRestoreRectangle(menuP->bitsBehind, &menuP->barWin->windowBounds);
++  menuP->attr.visible = 0;
++}
++
++/* ------------------------------------------------------------ five-way nav
++ *
++ * The menu driven from the keyboard: left and right change pull-down, up and
++ * down walk the items of the one that is open, select picks the item under the
++ * highlight and Escape puts the menu away. The pen paths above do the same
++ * things; these share their drawing.
++ */
++
++static Boolean menu_item_usable(MenuItemType *item) {
++  return item->itemStr != NULL && item->itemStr[0] != MenuSeparatorChar && !item->hidden;
++}
++
++static void menu_nav_show(MenuBarType *menuP, MenuPullDownType *pd) {
++  if (pd->hidden) {
++    menu_show_pd_title(menuP, pd, menuP->curMenu);
++    menu_show_pd(menuP, pd);
++    pd->hidden = 0;
++  }
++}
++
++static void menu_nav_pane(MenuBarType *menuP, int dir) {
++  MenuPullDownType *prev, *pd;
++
++  if (menuP->numMenus < 1) return;
++
++  pumpkin_dirty_region_mode(dirtyRegionBegin);
++  prev = &menuP->menus[menuP->curMenu];
++  menu_show_pd_title(menuP, prev, -1);
++  if (!prev->hidden) {
++    menu_hide_pd(menuP, prev);
++    prev->hidden = 1;
++  }
++  prev->selectedItem = -1;
++
++  menuP->curMenu = (menuP->curMenu + dir + menuP->numMenus) % menuP->numMenus;
++  pd = &menuP->menus[menuP->curMenu];
++  menu_nav_show(menuP, pd);
++  pumpkin_dirty_region_mode(dirtyRegionEnd);
++}
++
++static void menu_nav_item(MenuBarType *menuP, int dir) {
++  MenuPullDownType *pd = &menuP->menus[menuP->curMenu];
++  Int16 cur, i;
++
++  pumpkin_dirty_region_mode(dirtyRegionBegin);
++  menu_nav_show(menuP, pd);
++
++  cur = pd->selectedItem;
++  for (i = 0; i < pd->numItems; i++) {
++    cur = (cur < 0) ? ((dir > 0) ? 0 : pd->numItems - 1)
++                    : (cur + dir + pd->numItems) % pd->numItems;
++    if (menu_item_usable(&pd->items[cur])) break;
++  }
++  if (i == pd->numItems) {
++    pumpkin_dirty_region_mode(dirtyRegionEnd);
++    return;                                   // nothing in here can be picked
++  }
++
++  if (pd->selectedItem != -1 && pd->selectedItem != cur) {
++    menu_draw_item(pd, &pd->items[pd->selectedItem], false);
++  }
++  pd->selectedItem = cur;
++  menu_draw_item(pd, &pd->items[cur], true);
++  pumpkin_dirty_region_mode(dirtyRegionEnd);
++}
++
++static void menu_nav_select(MenuBarType *menuP) {
++  MenuPullDownType *pd = &menuP->menus[menuP->curMenu];
++  EventType ev;
++  UInt16 id;
++
++  if (pd->hidden || pd->selectedItem == -1) {
++    menu_nav_item(menuP, 1);                  // open on the first item instead
++    return;
++  }
++
++  pumpkin_dirty_region_mode(dirtyRegionBegin);
++  id = pd->items[pd->selectedItem].id;
++  menu_draw_item(pd, &pd->items[pd->selectedItem], false);
++  menu_close(menuP);
++  pumpkin_dirty_region_mode(dirtyRegionEnd);
++
++  debug(DEBUG_TRACE, "Menu", "MenuNavHandleKey menuEvent item %d", id);
++  MemSet(&ev, sizeof(EventType), 0);
++  ev.eType = menuEvent;
++  ev.data.menu.itemID = id;
++  EvtAddEventToQueue(&ev);
++}
++
++// Returns true when a visible menu took the key. The menu is on top of
++// whatever form is behind it, so it is asked first.
++
++Boolean MenuNavHandleKey(EventType *event) {
++  MenuBarType *menuP = MenuGetActiveMenu();
++
++  if (menuP == NULL || !menuP->attr.visible || menuP->numMenus < 1) return false;
++
++  switch (NavKeyAction(event)) {
++    case navKeyLeft:   menu_nav_pane(menuP, -1); return true;
++    case navKeyRight:  menu_nav_pane(menuP,  1); return true;
++    case navKeyUp:     menu_nav_item(menuP, -1); return true;
++    case navKeyDown:   menu_nav_item(menuP,  1); return true;
++    case navKeySelect: menu_nav_select(menuP);   return true;
++    case navKeyCancel:
++      pumpkin_dirty_region_mode(dirtyRegionBegin);
++      menu_close(menuP);
++      pumpkin_dirty_region_mode(dirtyRegionEnd);
++      return true;
++    default:
++      return false;
++  }
++}
++
+ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
+   EventType ev;
+   MenuPullDownType *pd, *prev;
+@@ -313,13 +442,7 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
+             }
+             if (!handled) {
+               debug(DEBUG_TRACE, "Menu", "MenuHandleEvent penDown hide pullDown %d", menuP->curMenu);
+-              if (!pd->hidden) {
+-                menu_hide_pd(menuP, pd);
+-              }
+-              WinSetActiveWindow(menuP->savedActiveWin);
+-              WinSetDrawWindow(menuP->savedActiveWin);
+-              WinRestoreRectangle(menuP->bitsBehind, &menuP->barWin->windowBounds);
+-              menuP->attr.visible = 0;
++              menu_close(menuP);
+               handled = true;
+             }
+           }
+@@ -395,16 +518,8 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
+         if (event->data.keyDown.chr == vchrMenu) {
+           debug(DEBUG_TRACE, "Menu", "MenuHandleEvent keyDown vchrMenu");
+           if (menuP->attr.visible) {
+-            pd = &menuP->menus[menuP->curMenu];
+-            if (!pd->hidden) {
+-              debug(DEBUG_TRACE, "Menu", "MenuHandleEvent keyDown hide pullDown %d", menuP->curMenu);
+-              menu_hide_pd(menuP, pd);
+-            }
+             debug(DEBUG_TRACE, "Menu", "MenuHandleEvent keyDown hide menu");
+-            WinSetActiveWindow(menuP->savedActiveWin);
+-            WinSetDrawWindow(menuP->savedActiveWin);
+-            WinRestoreRectangle(menuP->bitsBehind, &menuP->barWin->windowBounds);
+-            menuP->attr.visible = 0;
++            menu_close(menuP);
+           } else {
+             debug(DEBUG_TRACE, "Menu", "MenuHandleEvent keyDown show menu");
+             MenuDrawMenu(menuP);
 diff --git a/src/libpumpkin/Preferences.c b/src/libpumpkin/Preferences.c
 index dfebfea..31c0697 100644
 --- a/src/libpumpkin/Preferences.c
@@ -1371,6 +2374,55 @@ index 3a41fc5..1218aba 100644
  void emupalmos_disasm(int m68k, int arm) {
    emu_state_t *state = pumpkin_get_local_storage(emu_key);
    logtrap_disasm(state->lt, m68k);
+diff --git a/src/libpumpkin/navkeys.h b/src/libpumpkin/navkeys.h
+new file mode 100644
+index 0000000..74e142e
+--- /dev/null
++++ b/src/libpumpkin/navkeys.h
+@@ -0,0 +1,43 @@
++#ifndef NAVKEYS_H
++#define NAVKEYS_H
++
++/* The host keyboard standing in for a Palm 5-way navigator.
++ *
++ * Event.c reports the arrow keys the way a Palm OS 5 device does -- vchrPageUp
++ * and vchrPageDown for up/down, vchrNavChange for left/right/select, all with
++ * the navigator bits in keyCode -- and adds the keys a Palm has no equivalent
++ * for: Enter and space select, Escape backs out. Everything that wants to be
++ * driven from the keyboard (forms, the menu bar, popup lists) asks here rather
++ * than picking those apart itself.
++ *
++ * A release is reported as the same character with the "still held" bit clear,
++ * so only presses are turned into actions: acting on both would move twice.
++ */
++
++typedef enum {
++  navKeyNone = 0,
++  navKeyUp,
++  navKeyDown,
++  navKeyLeft,
++  navKeyRight,
++  navKeySelect,
++  navKeyCancel
++} NavKeyType;
++
++NavKeyType NavKeyAction(const EventType *eventP);
++
++/* Whoever is on top gets first refusal on a navigator key: a visible menu,
++ * else the active form when it is a dialog. Both return true when they took
++ * it, and then it is not the application's to see. */
++Boolean MenuNavHandleKey(EventType *eventP);
++Boolean FrmNavHandleKey(FormType *formP, const EventType *eventP);
++
++/* Releases the pen of a tap the keyboard started, once the application has
++ * worked through everything the press generated. */
++Boolean FrmNavFinishTap(void);
++
++/* For object drawing routines, which repaint over the focus ring. */
++void FrmNavRingHide(void);
++void FrmNavRingShow(void);
++
++#endif
 diff --git a/src/libpumpkin/pumpkin.c b/src/libpumpkin/pumpkin.c
 index 93cf260..d41b3ba 100644
 --- a/src/libpumpkin/pumpkin.c
