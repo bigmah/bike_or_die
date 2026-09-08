@@ -75,6 +75,7 @@ The launcher reads `~/.bikeordie.env` if it exists. Useful settings:
 | `PUMPKIN_DISPLAY_LE` | `1` | the ARM blitter writes little-endian RGB565 |
 | `PUMPKIN_SOUND` | `1` | enable audio (sets both the global and per-app switch) |
 | `PUMPKIN_VOLUME` | `64` | Palm sound volumes, 0-64 |
+| `PUMPKIN_AUDIO_MS` | `240` | audio queued ahead of the device, in ms |
 | `BOD_RECOMP` | `1` | use the statically recompiled cores |
 | `BOD_ARM_ENGINE` | `recomp` | `interp` falls back to the ARM interpreter |
 | `BOD_RESET` | `0` | `1` re-seeds the game data on next launch |
@@ -102,6 +103,29 @@ Three separate things default to silent, and all three have to be on:
 `PUMPKIN_SOUND` now sets the first two and `PUMPKIN_VOLUME` the third, both applied after
 the stored preferences load, so an existing preferences database does not need resetting.
 The game drives audio as an ARM-native `SndStreamCreate` callback at 44.1 kHz mono 16-bit.
+
+Once it was audible it was also unlistenable, for three separate reasons:
+
+- **The mixer was logging every instruction it executed.** `uarmInit` turned the
+  interpreter's disassembler on unconditionally, and only `emupalmos_main` ever turned it
+  back off. The sound callback runs on a second emulator state, which nobody had told, so
+  each 44.1 kHz buffer wrote a formatted line per ARM instruction -- 1.3 GB of log in
+  twenty seconds. Tracing is opt-in now (`ADISASM`), as it always meant to be.
+- **The mixer ran on the ARM interpreter.** The recompiled core was wired into
+  `PceNativeCall` only, and `SndStreamCreate`'s ARM callback is a separate entry point, so
+  the one piece of `armc` code on a deadline was the one still being interpreted -- 28% of
+  the application thread. It goes through `rarm_run` now like everything else, at 0.15%.
+- **The refill was paced open-loop.** PumpkinOS asked for a fixed chunk every two thirds
+  of that chunk's duration, betting that the callback costs nothing; the queue drifted
+  until it either ran dry or hit the 256 KB ring and dropped a third of every chunk. It
+  now refills from half of `PUMPKIN_AUDIO_MS` and asks for exactly what it takes to fill
+  the rest.
+
+The last one matters because of where the callback runs: PumpkinOS answers it on the
+application's own thread, once per turn of its event loop. Between two of the game's
+frames that is fine, but a level load takes a few hundred milliseconds during which no
+refill is answered at all, so the queue has to be deep enough to cover one. 240 ms is;
+80 ms audibly is not, and costs about 60 ms of latency less.
 
 ## Display
 
@@ -134,6 +158,14 @@ Useful knobs while debugging the ARM core:
 | `BOD_ARM_BATCH=1` | exact range semantics (no overshoot) -- required for bisection |
 | `BOD_ARM_RING=1` | dump recent ARM state to `/tmp/bod_ring.txt` on a wild access |
 | `BOD_ARM_STRICT=1` | make out-of-range accesses fatal instead of clamped |
+| `BOD_ARM_LOCKSTEP=<n>` | run every instruction of `armc` *n* under both cores and report the first register that disagrees |
+
+Lockstep needs a single-step core for that blob, which is large and generated on demand:
+
+    .venv/bin/python tools/recomparm.py --stepper 3 && make -C src -j6
+
+`make -C src` compiles whichever `src/gen/arm<n>_step.c` happen to exist, so a plain build
+has none and pays nothing for them.
 
 `tools/bikecheck.py` scores a frame for how much of the (red) bike is visible, which is
 what makes the bisection automatic.

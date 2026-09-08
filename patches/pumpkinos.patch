@@ -110,7 +110,7 @@ index a8b7c26..b091717 100644
  CUSTOMFLAGS=$(MIXER_FLAGS) $(OPENGL_FLAGS)
  LIBS=-lSDL2 -lversion -limm32 -lgdi32 -lsetupapi -lwinmm -lole32 -loleaut32 $(MIXER_LIBS)
 diff --git a/src/liblsdl2/liblsdl2.c b/src/liblsdl2/liblsdl2.c
-index b8e2f67..69cc7c6 100644
+index b8e2f67..66e081d 100644
 --- a/src/liblsdl2/liblsdl2.c
 +++ b/src/liblsdl2/liblsdl2.c
 @@ -780,6 +780,14 @@ static int libsdl_video_setup(libsdl_window_t *window) {
@@ -128,6 +128,200 @@ index b8e2f67..69cc7c6 100644
    SDL_SetRenderDrawBlendMode(window->renderer, SDL_BLENDMODE_BLEND);
  
    SDL_RenderClear(window->renderer);
+@@ -1145,6 +1153,34 @@ static int libsdl_window_draw_texture(window_t *_window, texture_t *texture, int
+   return r;
+ }
+ 
++/* How deep the queue held ahead of the device is, in milliseconds of audio.
++ * It is refilled from half that mark, so this is also the longest the
++ * application can go without answering a refill before the stream breaks up,
++ * and about three quarters of it is the latency it costs. */
++static uint32_t audio_depth_ms(void) {
++  static uint32_t ms = 0;
++  char *e;
++
++  if (ms == 0) {
++    e = sys_getenv("PUMPKIN_AUDIO_MS");
++    ms = (e && e[0]) ? (uint32_t)sys_atoi(e) : 240;
++    if (ms < 20) ms = 20;
++    if (ms > 1000) ms = 1000;
++  }
++
++  return ms;
++}
++
++/* `len` bytes of output audio expressed as whole frames of input audio. */
++static uint32_t scale_len(uint32_t len, uint32_t srcRate, uint32_t outRate, uint32_t frame) {
++  uint32_t r;
++
++  if (!outRate || !frame) return 0;
++  r = (uint32_t)(((uint64_t)len * srcRate) / outRate);
++
++  return r - (r % frame);
++}
++
+ static void audio_destructor(void *p) {
+   sdl_audio_t *audio = (sdl_audio_t *)p;
+ 
+@@ -1180,9 +1216,14 @@ static audio_t libsdl_audio_create(int pcm, int channels, int rate, void *data)
+       audio->rate = rate;
+       audio->channels = channels;
+       debug(DEBUG_TRACE, "SDL", "sample size %d", audio->bsize);
+-      audio->bsize *= rate;
+-      if (audio->bsize > 4096) {
+-        audio->bsize = 4096;
++      /* Room for a whole full queue in one request. The callback behind it may
++       * have to reach the application's thread, which answers one request per
++       * turn of its event loop: asking for a fixed small chunk rations the
++       * refill to that chunk per frame, however far behind the queue has
++       * fallen while the application was busy between two frames. */
++      audio->bsize = (audio->bsize * rate * audio_depth_ms()) / 1000;
++      if (audio->bsize > 65536) {
++        audio->bsize = 65536;
+       }
+       audio->buffer = sys_calloc(1, audio->bsize * audio->channels);
+       debug(DEBUG_TRACE, "SDL", "buffer size %d", audio->bsize);
+@@ -1568,22 +1609,27 @@ static int audio_action(void *_arg) {
+   int aptr;
+   unsigned char *msg;
+   unsigned int msglen;
+-  uint32_t ptr, dt, sampleSize, wait;
++  uint32_t ptr, dt, wait;
++  uint32_t outRate, srcRate, frame, depth, level;
+   uint64_t previous;
+-  int len1, len2, r;
++  int len1, len2, r, i, playing;
+ 
+   debug(DEBUG_INFO, "SDL", "audio thread starting");
+   ptr = 0;
+   buf = NULL;
+   buflen = 0;
+   previous = 0;
++  outRate = 0;
++  srcRate = 0;
++  frame = 0;
++  depth = 0;
++  playing = 0;
+ 
+   abuf = sys_calloc(1, sizeof(sdl_audio_buffer_t));
+   abuf->tag = TAG_ABUF;
+   abuf->pcm = arg->pcm;
+   abuf->channels = arg->channels;
+   aptr = ptr_new(abuf, NULL);
+-  sampleSize = 1;
+   wait = 2000;
+ 
+   for (; !thread_must_end();) {
+@@ -1596,9 +1642,9 @@ static int audio_action(void *_arg) {
+     if (r == 1) {
+       if (dev == 0) {
+         switch (arg->pcm) {
+-          case PCM_U8:  desired.format = AUDIO_U8;  sampleSize = 1; break;
+-          case PCM_S16: desired.format = AUDIO_S16; sampleSize = 2; break;
+-          case PCM_S32: desired.format = AUDIO_S32; sampleSize = 4; break;
++          case PCM_U8:  desired.format = AUDIO_U8;  break;
++          case PCM_S16: desired.format = AUDIO_S16; break;
++          case PCM_S32: desired.format = AUDIO_S32; break;
+         }
+         desired.freq = arg->rate;          // DSP frequency -- samples per second
+         desired.channels = arg->channels;  // Number of channels: 1 mono, 2 stereo
+@@ -1612,8 +1658,18 @@ static int audio_action(void *_arg) {
+           debug(DEBUG_ERROR, "SDL", "SDL_OpenAudioDevice failed: %s", SDL_GetError());
+           break;
+         }
+-        SDL_PauseAudioDevice(dev, 0);
+-        debug(DEBUG_INFO, "SDL", "open device %d", dev);
++
++        /* How much converted audio to keep queued ahead of the device. The
++         * callback that fills the queue runs on the application's own thread,
++         * and is answered once per turn of its event loop, so the queue has to
++         * cover the longest the application goes between two of them --
++         * loading a level, say -- or the stream breaks up there. */
++        outRate = obtained.freq * obtained.channels * (SDL_AUDIO_BITSIZE(obtained.format) / 8);
++        depth = (outRate * audio_depth_ms()) / 1000;
++        if (depth > MAX_BUFFER / 2) depth = MAX_BUFFER / 2;
++        debug(DEBUG_INFO, "SDL", "open device %d, queueing %u bytes (%u ms)", dev, depth, audio_depth_ms());
++        /* Left paused until the queue is primed, so it does not start on silence. */
++        playing = 0;
+       }
+ 
+       if (msg) {
+@@ -1633,6 +1689,10 @@ static int audio_action(void *_arg) {
+           }
+           
+           // empty the buffer
++          if (playing) {
++            SDL_PauseAudioDevice(dev, 1);
++            playing = 0;
++          }
+           if ((abuf = ptr_lock(aptr, TAG_ABUF)) != NULL) {
+             if (abuf->len > 0) {
+               debug(DEBUG_TRACE, "SDL", "emptying %u bytes", abuf->len);
+@@ -1654,22 +1714,54 @@ static int audio_action(void *_arg) {
+       wait = 2000;
+       if (ptr) {
+         if ((audio = ptr_lock(ptr, TAG_AUDIO)) != NULL) {
+-          len1 = audio->bsize * audio->channels;
+-          len2 = audio->getaudio(audio->buffer, len1, audio->data);
+-          if (len2 > 0) {
+-            if ((abuf = ptr_lock(aptr, TAG_ABUF)) != NULL) {
+-              debug(DEBUG_TRACE, "SDL", "got audio len=%d bytes, buffer=%d bytes", len2, abuf->len);
+-              buf = convert_audio(abuf, audio, audio->buffer, len2, &obtained, buf, &buflen);
+-              wait = (uint32_t)((double)(len2 * 1000000.0) / (double)(audio->channels * audio->rate * sampleSize));
+-              wait = (2 * wait) / 3;
+-              debug(DEBUG_TRACE, "SDL", "set wait=%u", wait);
+-              ptr_unlock(aptr, TAG_ABUF);
++          /* Pace on the queue level, and sleep for as long as what is queued
++           * above the refill mark takes to play. Pacing on the nominal
++           * duration of the last chunk instead -- how long a refill takes is
++           * up to the application thread -- either starves the device or runs
++           * away from it. */
++          frame = audio->channels * (SDL_AUDIO_BITSIZE(audio->format) / 8);
++          srcRate = audio->rate * frame;
++          level = 0;
++          if ((abuf = ptr_lock(aptr, TAG_ABUF)) != NULL) {
++            level = abuf->len;
++            ptr_unlock(aptr, TAG_ABUF);
++          }
++
++          /* Refill from half depth, asking for exactly what it takes to fill
++           * the queue: one answer from the application then makes up the whole
++           * shortfall, however long it has been since the last one. The device
++           * only starts once the queue is full, so it begins at the top of the
++           * band it then oscillates in rather than at its floor. */
++          len2 = 1;
++          for (i = 0; i < 8 && level < (playing ? depth / 2 : depth); i++) {
++            len1 = scale_len(depth - level, srcRate, outRate, frame);
++            if (len1 == 0 || len1 > audio->bsize * audio->channels) {
++              len1 = audio->bsize * audio->channels;
+             }
++            len2 = audio->getaudio(audio->buffer, len1, audio->data);
++            if (len2 <= 0) break;
++            if ((abuf = ptr_lock(aptr, TAG_ABUF)) == NULL) break;
++            debug(DEBUG_TRACE, "SDL", "got audio len=%d bytes, buffer=%d bytes", len2, abuf->len);
++            buf = convert_audio(abuf, audio, audio->buffer, len2, &obtained, buf, &buflen);
++            level = abuf->len;
++            ptr_unlock(aptr, TAG_ABUF);
+           }
+           ptr_unlock(ptr, TAG_AUDIO);
++
+           if (len2 <= 0) {
+             debug(DEBUG_TRACE, "SDL", "ptr %d ended", ptr);
+             ptr = 0;
++          } else {
++            if (!playing && level >= depth) {
++              debug(DEBUG_INFO, "SDL", "device %d primed with %u bytes", dev, level);
++              SDL_PauseAudioDevice(dev, 0);
++              playing = 1;
++            }
++            wait = (level > depth / 2 && outRate) ?
++                   (uint32_t)(((uint64_t)(level - depth / 2) * 1000000) / outRate) : 0;
++            if (wait > 20000) wait = 20000;
++            if (wait < 1000) wait = 1000;
++            debug(DEBUG_TRACE, "SDL", "queued %u/%u bytes, set wait=%u", level, depth, wait);
+           }
+         } else {
+           debug(DEBUG_TRACE, "SDL", "ptr %d deleted", ptr);
 diff --git a/src/libpit/mutex.c b/src/libpit/mutex.c
 index fe20037..f7433f3 100644
 --- a/src/libpit/mutex.c
@@ -358,10 +552,23 @@ index c84d362..e978d0d 100644
      break;
      case sysTrapKeyRates: {
 diff --git a/src/libpumpkin/emulation/arm/armemu.c b/src/libpumpkin/emulation/arm/armemu.c
-index 2f178be..ec5aeca 100644
+index 2f178be..a220624 100644
 --- a/src/libpumpkin/emulation/arm/armemu.c
 +++ b/src/libpumpkin/emulation/arm/armemu.c
-@@ -45,6 +45,8 @@ void uarmFinish(arm_emu_t *arm) {
+@@ -28,7 +28,11 @@ arm_emu_t *uarmInit(uint8_t *buf, uint32_t size) {
+     arm->cpu = cpuInit(ROM_BASE, arm->mem, 1, 0, CPUID, 0x0B16A16AUL);
+     arm->ram = ramInit(arm->mem, 0, size, (uint32_t *)buf);
+     arm->ic = socIcInit(arm->cpu, arm->mem, 0);
+-    cpuDisasm(arm->cpu, 1);
++    /* Instruction tracing is opt-in (ADISASM): every callers that wants it
++     * calls armDisasm().  Defaulting it on made any CPU created outside
++     * emupalmos_main() -- notably the one the sound callback runs on -- log a
++     * formatted line per instruction, which no audio callback can survive. */
++    cpuDisasm(arm->cpu, 0);
+   }
+ 
+   return arm;
+@@ -45,6 +49,8 @@ void uarmFinish(arm_emu_t *arm) {
  }
  
  uint32_t uarmGetReg(arm_emu_t *arm, uint32_t reg) {
@@ -370,7 +577,7 @@ index 2f178be..ec5aeca 100644
    return cpuReg(arm->cpu, reg);
  }
  
-@@ -80,6 +82,13 @@ int uarmRun(arm_emu_t *arm, uint32_t n, uint32_t call68KAddr, call68KFunc_f f, u
+@@ -80,6 +86,13 @@ int uarmRun(arm_emu_t *arm, uint32_t n, uint32_t call68KAddr, call68KFunc_f f, u
        uarmSetReg(arm, 15, a0);
  
      } else {
@@ -416,7 +623,7 @@ index a39ed7a..04926dc 100644
            break;
          case 0xAF8: {
 diff --git a/src/libpumpkin/emulation/emupalmos.c b/src/libpumpkin/emulation/emupalmos.c
-index 3a41fc5..ce4f8a0 100644
+index 3a41fc5..1218aba 100644
 --- a/src/libpumpkin/emulation/emupalmos.c
 +++ b/src/libpumpkin/emulation/emupalmos.c
 @@ -28,6 +28,11 @@
@@ -431,7 +638,36 @@ index 3a41fc5..ce4f8a0 100644
  #include "emu_notif_serde.h"
  
  #define TRAPS_SIZE 0x40000
-@@ -1603,8 +1608,21 @@ Err CallNotifyProc(UInt32 addr, SysNotifyParamType *notify, UInt32 detailsSize)
+@@ -1321,6 +1326,10 @@ Err CallSndFunc(UInt32 addr, UInt32 data, UInt32 channel, UInt32 buffer, UInt32
+   return r;
+ }
+ 
++/* Defined with the rest of the rarm glue, further down. */
++static int rarm_snd_recompiled(uint32_t code);
++static uint32_t rarm_call_sub(uint32_t code, uint32_t p0, uint32_t p1, uint32_t p2, uint32_t p3);
++
+ Err CallSndFuncArm(UInt32 addr, UInt32 data, UInt32 channel, UInt32 buffer, UInt32 nsamples) {
+   // Err SndStreamBufferCallback(void *userdata, SndStreamRef channel, void *buffer, UInt32 numberofframes)
+   emu_state_t *oldState, *state;
+@@ -1332,6 +1341,7 @@ Err CallSndFuncArm(UInt32 addr, UInt32 data, UInt32 channel, UInt32 buffer, UInt
+   state = pumpkin_get_local_storage(emu2_key);
+   if (state == NULL) {
+     state = emupalmos_new();
++    state->armp->armDisasm(state->arm, debug_getsyslevel("ADISASM") == DEBUG_TRACE);
+     pumpkin_set_local_storage(emu2_key, state);
+   }
+   pumpkin_set_local_storage(emu_key, state);
+@@ -1339,7 +1349,8 @@ Err CallSndFuncArm(UInt32 addr, UInt32 data, UInt32 channel, UInt32 buffer, UInt
+   state = pumpkin_get_local_storage(emu_key);
+   stackAddr = state->armStack - ram;
+   state->armp->armSetReg(state->arm, 13, stackAddr + stackSize); // SP
+-  err = arm_native_call_sub(addr, 0, data, channel, buffer, nsamples);
++  err = rarm_snd_recompiled(addr) ? rarm_call_sub(addr, data, channel, buffer, nsamples)
++                                  : arm_native_call_sub(addr, 0, data, channel, buffer, nsamples);
+   debug(DEBUG_TRACE, "ARM", "CallSndFuncArm(0x%08X 0x%08X %u 0x%08X %u): %d", addr, data, channel, buffer, nsamples, err);
+ 
+   pumpkin_set_local_storage(emu_key, oldState);
+@@ -1603,8 +1614,21 @@ Err CallNotifyProc(UInt32 addr, SysNotifyParamType *notify, UInt32 detailsSize)
  }
  
  #ifdef ARMEMU
@@ -453,7 +689,7 @@ index 3a41fc5..ce4f8a0 100644
    uint32_t emulStateAddr, stackAddr, callAddr, retAddr, sysAddr;
    uint8_t *ram = pumpkin_heap_base();
  
-@@ -1647,6 +1665,31 @@ uint32_t arm_native_call_pce(uint32_t code, uint32_t userData) {
+@@ -1647,6 +1671,31 @@ uint32_t arm_native_call_pce(uint32_t code, uint32_t userData) {
    return state->armp->armGetReg(state->arm, 0);
  }
  
@@ -485,7 +721,7 @@ index 3a41fc5..ce4f8a0 100644
  uint32_t arm_native_call_sub(uint32_t code, uint32_t data, uint32_t p0, uint32_t p1, uint32_t p2, uint32_t p3) {
    emu_state_t *state = pumpkin_get_local_storage(emu_key);
    uint32_t callAddr, retAddr, sysAddr;
-@@ -2357,11 +2400,15 @@ uint32_t emupalmos_main(uint16_t launchCode, void *param, uint16_t flags) {
+@@ -2357,11 +2406,15 @@ uint32_t emupalmos_main(uint16_t launchCode, void *param, uint16_t flags) {
          creator = pumpkin_get_app_creator();
          logtrap_install(state, creator);
          emupalmos_finish(0);
@@ -505,7 +741,7 @@ index 3a41fc5..ce4f8a0 100644
          }
          logtrap_deinstall(state);
        }
-@@ -2414,6 +2461,553 @@ uint32_t emupalmos_main(uint16_t launchCode, void *param, uint16_t flags) {
+@@ -2414,6 +2467,629 @@ uint32_t emupalmos_main(uint16_t launchCode, void *param, uint16_t flags) {
    return r;
  }
  
@@ -850,7 +1086,14 @@ index 3a41fc5..ce4f8a0 100644
 +  rarm_from_uarm(state, S);          /* S is now the reference result */
 +
 +  mine = before;
-+  arm2_step(&mine);
++  {
++    rarm_step_fn step = rarm_stepper(rarm_lockstep_blob());
++    if (step == NULL) {
++      rarm_panic(S, pc, "no single-step core for this blob: recomparm.py --stepper <n>");
++      return 1;
++    }
++    step(&mine);
++  }
 +
 +  for (i = 0; i < 16; i++) if (mine.r[i] != S->r[i]) { bad = i; break; }
 +  if (bad < 0) {
@@ -1054,6 +1297,75 @@ index 3a41fc5..ce4f8a0 100644
 +
 +  rarm_run(&S);
 +  return S.r[0];
++}
++
++/* The sound mixer is `armc` code too, but the sound layer reaches it through
++ * SndStreamCreate's ARM callback instead of PceNativeCall, so it used to be the
++ * one entry point left on the interpreter. It is called from the application
++ * thread for every buffer the stream needs, and interpreting it cost about a
++ * quarter of that thread: the 44.1 kHz stream ran dry whenever a frame took a
++ * little longer, which is what made the audio choppy. Run it recompiled like
++ * everything else. */
++static uint32_t rarm_call_sub(uint32_t code, uint32_t p0, uint32_t p1, uint32_t p2, uint32_t p3) {
++  emu_state_t *state = pumpkin_get_local_storage(emu_key);
++  uint8_t *ram = pumpkin_heap_base();
++  /* Its own register file, mirroring the separate CPU the interpreter keeps
++   * for this state; only the entry registers are set up on each call. */
++  static rarm_state S;
++  uint32_t saveRet, saveCall, sysAddr;
++
++  rarm_ram = ram;
++  rarm_ramsize = pumpkin_heap_size();
++  sysAddr = (uint8_t *)state->systable - ram;
++  put4l(sysAddr, ram, sysAddr + 16);
++  put4l(sysAddr + 16, ram, sysAddr + 2052);
++
++  /* The return and call-68K stubs belong to this state, not to the one the
++   * application thread runs its PceNativeCalls on. */
++  saveRet = rarm_ret_addr;
++  saveCall = rarm_call_addr;
++  rarm_ret_addr  = state->armReturnAddr - ram;
++  rarm_call_addr = state->armCall68KAddr - ram;
++
++  S.halt  = 0;
++  S.r[9]  = sysAddr + 16;                       /* PACE syscall master table */
++  S.r[15] = code;
++  S.r[14] = rarm_ret_addr;
++  S.r[13] = (uint32_t)(state->armStack - ram) + stackSize;
++  S.r[0]  = p0;
++  S.r[1]  = p1;
++  S.r[2]  = p2;
++  S.r[3]  = p3;
++
++  rarm_run(&S);
++
++  rarm_ret_addr = saveRet;
++  rarm_call_addr = saveCall;
++
++  return S.r[0];
++}
++
++/* ... unless the recompiled cores are switched off, or the callback does not
++ * live in an armc resource, in which case the interpreter still handles it. */
++static int rarm_snd_recompiled(uint32_t code) {
++  static uint32_t reported = 0;
++  int n;
++
++  if (!r68k_enabled() || rarm_use_interp()) return 0;
++  if (rarm_resolve(code) != 0) return 0;
++
++  if (reported != code) {
++    reported = code;
++    for (n = 1; n < 5; n++) {
++      if (rarm_segsize[n] && code >= rarm_segbase[n] && code < rarm_segbase[n] + rarm_segsize[n]) {
++        debug(DEBUG_INFO, "ARM", "recomp: sound callback 0x%08X is armc %d + 0x%X",
++              code, n, code - rarm_segbase[n]);
++        break;
++      }
++    }
++  }
++
++  return 1;
 +}
 +
  void emupalmos_disasm(int m68k, int arm) {

@@ -124,7 +124,11 @@ int  rarm_pc_recompiled(int n, uint32_t off);
 /* Lockstep verification against the interpreter (debug builds). */
 int  rarm_lockstep_blob(void);
 int  rarm_lockstep(rarm_state *S);
-void arm2_step(rarm_state *S);
+/* Single-step cores are large and only used by the lockstep checker, so they
+ * are generated on demand (`recomparm.py --stepper <n>`); this resolves the
+ * ones that were, and returns NULL for a blob that has none. */
+typedef void (*rarm_step_fn)(rarm_state *S);
+rarm_step_fn rarm_stepper(int n);
 int  rarm_interp(rarm_state *S);
 
 void rarm_run(rarm_state *S);
