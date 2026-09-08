@@ -57,7 +57,7 @@ index a52d6d9..0e3adb9 100644
  #define	keyBitRight		0x0800
  
 diff --git a/src/PalmOS/Core/UI/Form.h b/src/PalmOS/Core/UI/Form.h
-index 8201cc8..309e104 100644
+index 8201cc8..174a58b 100644
 --- a/src/PalmOS/Core/UI/Form.h
 +++ b/src/PalmOS/Core/UI/Form.h
 @@ -321,6 +321,14 @@ typedef Boolean FormEventHandlerType (EventType *eventP);
@@ -87,7 +87,7 @@ index 8201cc8..309e104 100644
 +  UInt16 navInitial;
 +  Int16 navFocus;
 +  UInt8 navDrawn;
-+  UInt8 navReserved;
++  UInt8 navArmed;
 +  RectangleType navRect;
  }
  #endif
@@ -501,7 +501,7 @@ index a2b5b1f..07adc57 100644
    if (logLenP) *logLenP = 0;
  
 diff --git a/src/libpumpkin/Event.c b/src/libpumpkin/Event.c
-index fd1eb40..c61693a 100644
+index fd1eb40..694b725 100644
 --- a/src/libpumpkin/Event.c
 +++ b/src/libpumpkin/Event.c
 @@ -6,6 +6,7 @@
@@ -512,7 +512,15 @@ index fd1eb40..c61693a 100644
  #include "xalloc.h"
  #include "debug.h"
  
-@@ -239,6 +240,55 @@ static void adjustCoords(Coord *x, Coord *y) {
+@@ -26,6 +27,7 @@ typedef struct {
+   Int32 needNullTickCount;
+   Int32 lastPenMove;
+   Boolean insideRepeatingButtonCtl;
++  UInt32 navLastKey;
+   UInt32 repeatingButtonTime;
+   UInt16 repeatingButtonID;
+   void *repeatingButtonP;
+@@ -239,6 +241,55 @@ static void adjustCoords(Coord *x, Coord *y) {
     }
  }
  
@@ -568,7 +576,7 @@ index fd1eb40..c61693a 100644
  static int sendKeyDown(UInt16 eType, UInt16 chr, UInt16 keyCode, UInt16 modifiers) {
    EventType event;
  
-@@ -441,10 +491,14 @@ int EvtPumpEvents(Int32 timeoutUs) {
+@@ -441,10 +492,14 @@ int EvtPumpEvents(Int32 timeoutUs) {
            event.data.keyDown.modifiers |= commandKeyMask;
            break;
          case WINDOW_KEY_UP:
@@ -583,7 +591,7 @@ index fd1eb40..c61693a 100644
            break;
          case WINDOW_KEY_INS:
            event.data.keyDown.chr = vchrNativeInsert;
-@@ -802,6 +856,12 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
+@@ -802,6 +857,12 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
    MemSet(event, sizeof(EventType), 0);
    EvtPumpEvents(0);
  
@@ -596,7 +604,7 @@ index fd1eb40..c61693a 100644
    if (module->numEvents == 0) {
      if (EvtPumpEvents(timeoutUs) == -1) {
        debug(DEBUG_INFO, PALMOS_MODULE, "EvtGetEvent appStopEvent (event failed)");
-@@ -830,6 +890,18 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
+@@ -830,6 +891,28 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
      xmemcpy(event, &module->events[module->idxOut++], sizeof(EventType));
      if (module->idxOut == MAX_EVENTS) module->idxOut = 0;
      module->numEvents--;
@@ -606,17 +614,27 @@ index fd1eb40..c61693a 100644
 +    // FrmHandleEvent: an application that uses the navigator to play with --
 +    // page up and page down are two of its five keys -- claims them at the top
 +    // of its own event loop, and would never pass them on.
-+    if (event->eType == keyDownEvent &&
-+        (MenuNavHandleKey(event) || FrmNavHandleKey(FrmGetActiveForm(), event))) {
-+      MemSet(event, sizeof(EventType), 0);
-+      event->eType = nilEvent;
++    if (event->eType == keyDownEvent && NavKeyAction(event) != navKeyNone) {
++      UInt32 now = TimGetTicks();
++      // Whether the keyboard had fallen still before this press. Presses that
++      // arrive in a run were meant for whatever was on screen when the run
++      // started, which is not necessarily what is on screen now.
++      Boolean quiet = module->navLastKey == 0 ||
++                      (now - module->navLastKey) >= (UInt32)(SysTicksPerSecond() / 2);
++      module->navLastKey = now;
++
++      if (MenuNavHandleKey(event, quiet) ||
++          FrmNavHandleKey(FrmGetActiveForm(), event, quiet)) {
++        MemSet(event, sizeof(EventType), 0);
++        event->eType = nilEvent;
++      }
 +    }
 +
      EvtPrintEvent("Get", event);
      return;
    }
 diff --git a/src/libpumpkin/Form.c b/src/libpumpkin/Form.c
-index 1e9cef5..e0fdc20 100644
+index 1e9cef5..9c02f1c 100644
 --- a/src/libpumpkin/Form.c
 +++ b/src/libpumpkin/Form.c
 @@ -11,6 +11,7 @@
@@ -627,7 +645,7 @@ index 1e9cef5..e0fdc20 100644
  #include "xalloc.h"
  
  #define MAX_STACK  8
-@@ -24,8 +25,18 @@ typedef struct {
+@@ -24,8 +25,22 @@ typedef struct {
    FormType *currentForm;
    FormList *list;
    Boolean centerDialogs;
@@ -635,6 +653,10 @@ index 1e9cef5..e0fdc20 100644
 +  // A tap the keyboard started, waiting for its release. See FrmNavTap.
 +  Boolean navTapPending;
 +  Coord navTapX, navTapY;
++
++  // Whether the dialog about to open was opened from the keyboard, and so may
++  // take the navigator keys straight away. See FrmNavHandleKey.
++  Boolean navFromKeyboard;
  } frm_module_t;
  
 +// Five-way navigation, defined further down with the rest of it.
@@ -646,7 +668,7 @@ index 1e9cef5..e0fdc20 100644
  static const char *frmObjType[] = {
    "frmFieldObj",
    "frmControlObj",
-@@ -196,6 +207,7 @@ static Err FrmInitFormInternal(FormType *formP) {
+@@ -196,6 +211,7 @@ static Err FrmInitFormInternal(FormType *formP) {
    formP->selectedObject = -1;
    formP->activeList = -1;
    formP->activeField = -1;
@@ -654,7 +676,7 @@ index 1e9cef5..e0fdc20 100644
    formP->mbar = formP->menuRscId ? MenuInit(formP->menuRscId) : NULL;
    formP->diaPolicy = frmDIAPolicyStayOpen;
  
-@@ -349,6 +361,7 @@ void FrmEraseObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+@@ -349,6 +365,7 @@ void FrmEraseObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
  
    if (formP && objIndex < formP->numObjects) {
      pumpkin_dirty_region_mode(dirtyRegionBegin);
@@ -662,7 +684,7 @@ index 1e9cef5..e0fdc20 100644
  
      obj = formP->objects[objIndex].object;
  
-@@ -456,6 +469,7 @@ void FrmEraseObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+@@ -456,6 +473,7 @@ void FrmEraseObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
        WinSetBackColor(oldb);
      }
  
@@ -670,7 +692,7 @@ index 1e9cef5..e0fdc20 100644
      pumpkin_dirty_region_mode(dirtyRegionEnd);
    }
  }
-@@ -474,6 +488,7 @@ void FrmDrawObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+@@ -474,6 +492,7 @@ void FrmDrawObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
  
    if (formP && objIndex < formP->numObjects) {
      pumpkin_dirty_region_mode(dirtyRegionBegin);
@@ -678,7 +700,7 @@ index 1e9cef5..e0fdc20 100644
  
      obj = formP->objects[objIndex].object;
      formTitle = UIColorGetTableEntryIndex(UIObjectSelectedForeground);
-@@ -642,6 +657,7 @@ void FrmDrawObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+@@ -642,6 +661,7 @@ void FrmDrawObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
          break;
      }
  
@@ -686,7 +708,7 @@ index 1e9cef5..e0fdc20 100644
      pumpkin_dirty_region_mode(dirtyRegionEnd);
    }
  }
-@@ -822,6 +838,527 @@ Boolean FrmTrackPenUp(UInt32 x, UInt32 y) {
+@@ -822,6 +842,554 @@ Boolean FrmTrackPenUp(UInt32 x, UInt32 y) {
    return handled;
  }
  
@@ -714,6 +736,8 @@ index 1e9cef5..e0fdc20 100644
 +#define navSkipFlag     0x0001          // kFrmNavObjectFlagsSkip
 +#define navNoFocus      (-1)
 +#define navMaxStops     128
++
++
 +
 +// The objects the ring can land on, and where they are. The rectangle is the
 +// one the object's own handler hit-tests pen events against, so the ring is
@@ -764,6 +788,7 @@ index 1e9cef5..e0fdc20 100644
 +// when the form is created; freed with the form.
 +
 +static void FrmNavInit(FormType *formP) {
++  frm_module_t *module = (frm_module_t *)pumpkin_get_local_storage(frm_key);
 +  MemHandle h;
 +  UInt8 *p;
 +  UInt16 version, count, hdrSize, elemSize, initial;
@@ -775,6 +800,11 @@ index 1e9cef5..e0fdc20 100644
 +  formP->navInitial = 0;
 +  formP->navFocus = navNoFocus;
 +  formP->navDrawn = 0;
++
++  // A dialog opened from the keyboard has the keyboard already; one that
++  // appeared by itself has to earn it.
++  formP->navArmed = module->navFromKeyboard;
++  module->navFromKeyboard = false;
 +
 +  if (formP->formId == 0) return;
 +  if ((h = DmGetResource(navFormRscType, formP->formId)) == NULL) return;
@@ -939,6 +969,15 @@ index 1e9cef5..e0fdc20 100644
 +// For the object drawing routines, which repaint over the ring. They are given
 +// the active form because that is the only one with a ring on it.
 +
++// The menu says so when an item was picked from the keyboard: whatever dialog
++// that item opens was asked for with the keyboard too.
++
++void FrmNavFromKeyboard(void) {
++  frm_module_t *module = (frm_module_t *)pumpkin_get_local_storage(frm_key);
++
++  if (module) module->navFromKeyboard = true;
++}
++
 +void FrmNavRingHide(void) {
 +  FormType *formP = FrmGetActiveForm();
 +
@@ -995,6 +1034,7 @@ index 1e9cef5..e0fdc20 100644
 +  module->navTapPending = true;
 +  module->navTapX = x;
 +  module->navTapY = y;
++  module->navFromKeyboard = true;
 +}
 +
 +// Called from EvtGetEvent once the queue has drained. Returns true if it put
@@ -1167,12 +1207,21 @@ index 1e9cef5..e0fdc20 100644
 +// The whole of it, called from EvtGetEvent before the application sees the
 +// key. Returns true when the key was a navigator action this form dealt with.
 +
-+Boolean FrmNavHandleKey(FormType *formP, const EventType *eventP) {
++Boolean FrmNavHandleKey(FormType *formP, const EventType *eventP, Boolean quiet) {
 +  NavKeyType nav;
 +  int dir;
 +
 +  if (!FrmNavEnabled(formP)) return false;
 +  if ((nav = NavKeyAction(eventP)) == navKeyNone) return false;
++
++  // A dialog that came up under the player's hands -- finishing a level puts
++  // one up -- must not take the taps still in flight and walk a focus ring
++  // around itself with them. It waits for the keyboard to fall still first; one
++  // the player opened themselves was armed when it was created.
++  if (!formP->navArmed) {
++    if (!quiet) return false;
++    formP->navArmed = 1;
++  }
 +
 +  if (formP->activeList != -1) {
 +    return FrmNavPopup(formP, nav);
@@ -1214,7 +1263,7 @@ index 1e9cef5..e0fdc20 100644
  // Handle the event that has occurred in the form.
  // Never call this function directly. Call FrmDispatchEvent instead.
  // FrmDispatchEvent passes events to a form’s custom event
-@@ -1127,6 +1664,7 @@ static void FrmDeleteFormInternal(FormType *formP) {
+@@ -1127,6 +1695,7 @@ static void FrmDeleteFormInternal(FormType *formP) {
    frm_module_t *module = (frm_module_t *)pumpkin_get_local_storage(frm_key);
  
    debug(DEBUG_TRACE, "Form", "FrmDeleteFormInternal form %d", formP->formId);
@@ -1222,7 +1271,7 @@ index 1e9cef5..e0fdc20 100644
  
    if (formP == module->currentForm) {
      WinSetActiveWindow(NULL);
-@@ -1232,6 +1770,10 @@ void FrmDrawForm(FormType *formP) {
+@@ -1232,6 +1801,10 @@ void FrmDrawForm(FormType *formP) {
  
      margin = WinGetBorderRect(&formP->window, &rect);
  
@@ -1233,7 +1282,7 @@ index 1e9cef5..e0fdc20 100644
      if (!formP->attr.visible) {
        WinSaveRectangle(formP->bitsBehindForm, &rect);
      }
-@@ -1258,6 +1800,8 @@ void FrmDrawForm(FormType *formP) {
+@@ -1258,6 +1831,8 @@ void FrmDrawForm(FormType *formP) {
      WinSetDrawWindow(oldd);
      WinSetActiveWindow(olda);
  
@@ -1242,7 +1291,7 @@ index 1e9cef5..e0fdc20 100644
      pumpkin_dirty_region_mode(dirtyRegionEnd);
    }
  }
-@@ -1280,6 +1824,7 @@ void FrmEraseForm(FormType *formP) {
+@@ -1280,6 +1855,7 @@ void FrmEraseForm(FormType *formP) {
      WinRestoreRectangle(formP->bitsBehindForm, &rect);
  
      formP->attr.visible = 0;
@@ -1250,7 +1299,7 @@ index 1e9cef5..e0fdc20 100644
    }
  }
  
-@@ -3699,6 +4244,7 @@ void pumpkin_destroy_form(FormType *formP) {
+@@ -3699,6 +4275,7 @@ void pumpkin_destroy_form(FormType *formP) {
      if (formP->rsrc) {
        pumpkin_heap_free(formP->rsrc, "form_rsrc");
      }
@@ -1304,10 +1353,10 @@ index f60f65d..9070427 100644
  
  emulation/systrap.o: emulation/systrap.c emulation/switch.c
 diff --git a/src/libpumpkin/Menu.c b/src/libpumpkin/Menu.c
-index c40407c..cfa0eaa 100644
+index c40407c..ff26806 100644
 --- a/src/libpumpkin/Menu.c
 +++ b/src/libpumpkin/Menu.c
-@@ -9,6 +9,7 @@
+@@ -9,10 +9,12 @@
  #include "pumpkin.h"
  #include "storage.h"
  #include "debug.h"
@@ -1315,7 +1364,12 @@ index c40407c..cfa0eaa 100644
  #include "xalloc.h"
  
  typedef struct {
-@@ -272,6 +273,134 @@ static void menu_hide_pd(MenuBarType *menu, MenuPullDownType *pd) {
+   MenuBarType *currentMenu;
++  Boolean navArmed;         // see MenuNavHandleKey
+ } menu_module_t;
+ 
+ int MenuInitModule(void) {
+@@ -272,6 +274,144 @@ static void menu_hide_pd(MenuBarType *menu, MenuPullDownType *pd) {
    WinRestoreRectangle(pd->bitsBehind, &pd->bounds);
  }
  
@@ -1417,6 +1471,7 @@ index c40407c..cfa0eaa 100644
 +  pumpkin_dirty_region_mode(dirtyRegionEnd);
 +
 +  debug(DEBUG_TRACE, "Menu", "MenuNavHandleKey menuEvent item %d", id);
++  FrmNavFromKeyboard();
 +  MemSet(&ev, sizeof(EventType), 0);
 +  ev.eType = menuEvent;
 +  ev.data.menu.itemID = id;
@@ -1426,10 +1481,19 @@ index c40407c..cfa0eaa 100644
 +// Returns true when a visible menu took the key. The menu is on top of
 +// whatever form is behind it, so it is asked first.
 +
-+Boolean MenuNavHandleKey(EventType *event) {
++Boolean MenuNavHandleKey(EventType *event, Boolean quiet) {
++  menu_module_t *module = (menu_module_t *)pumpkin_get_local_storage(menu_key);
 +  MenuBarType *menuP = MenuGetActiveMenu();
 +
 +  if (menuP == NULL || !menuP->attr.visible || menuP->numMenus < 1) return false;
++  if (NavKeyAction(event) == navKeyNone) return false;
++
++  // As for a dialog: a menu opened mid-ride does not take the taps still in
++  // flight. It is armed by the first press after the keyboard falls still.
++  if (!module->navArmed) {
++    if (!quiet) return false;
++    module->navArmed = true;
++  }
 +
 +  switch (NavKeyAction(event)) {
 +    case navKeyLeft:   menu_nav_pane(menuP, -1); return true;
@@ -1450,7 +1514,7 @@ index c40407c..cfa0eaa 100644
  Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
    EventType ev;
    MenuPullDownType *pd, *prev;
-@@ -313,13 +442,7 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
+@@ -313,13 +453,7 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
              }
              if (!handled) {
                debug(DEBUG_TRACE, "Menu", "MenuHandleEvent penDown hide pullDown %d", menuP->curMenu);
@@ -1465,7 +1529,7 @@ index c40407c..cfa0eaa 100644
                handled = true;
              }
            }
-@@ -395,16 +518,8 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
+@@ -395,16 +529,8 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
          if (event->data.keyDown.chr == vchrMenu) {
            debug(DEBUG_TRACE, "Menu", "MenuHandleEvent keyDown vchrMenu");
            if (menuP->attr.visible) {
@@ -1483,6 +1547,14 @@ index c40407c..cfa0eaa 100644
            } else {
              debug(DEBUG_TRACE, "Menu", "MenuHandleEvent keyDown show menu");
              MenuDrawMenu(menuP);
+@@ -431,6 +557,7 @@ void MenuDrawMenu(MenuBarType *menuP) {
+   pumpkin_dirty_region_mode(dirtyRegionBegin);
+ 
+   debug(DEBUG_TRACE, "Menu", "MenuDrawMenu");
++  ((menu_module_t *)pumpkin_get_local_storage(menu_key))->navArmed = false;
+   menuP->savedActiveWin = WinGetActiveWindow();
+ 
+   // save menu box
 diff --git a/src/libpumpkin/Preferences.c b/src/libpumpkin/Preferences.c
 index dfebfea..31c0697 100644
 --- a/src/libpumpkin/Preferences.c
@@ -2376,10 +2448,10 @@ index 3a41fc5..1218aba 100644
    logtrap_disasm(state->lt, m68k);
 diff --git a/src/libpumpkin/navkeys.h b/src/libpumpkin/navkeys.h
 new file mode 100644
-index 0000000..74e142e
+index 0000000..32aa3f0
 --- /dev/null
 +++ b/src/libpumpkin/navkeys.h
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,53 @@
 +#ifndef NAVKEYS_H
 +#define NAVKEYS_H
 +
@@ -2410,13 +2482,23 @@ index 0000000..74e142e
 +
 +/* Whoever is on top gets first refusal on a navigator key: a visible menu,
 + * else the active form when it is a dialog. Both return true when they took
-+ * it, and then it is not the application's to see. */
-+Boolean MenuNavHandleKey(EventType *eventP);
-+Boolean FrmNavHandleKey(FormType *formP, const EventType *eventP);
++ * it, and then it is not the application's to see.
++ *
++ * `quiet` says the keyboard had been still for a moment before this press, so
++ * it was meant for whatever is on screen now. A menu or dialog that came up
++ * under a player's hands -- the one that appears when a level ends -- waits
++ * for that before it will take the navigator keys, or the taps still in flight
++ * from riding walk a focus ring around it. */
++Boolean MenuNavHandleKey(EventType *eventP, Boolean quiet);
++Boolean FrmNavHandleKey(FormType *formP, const EventType *eventP, Boolean quiet);
 +
 +/* Releases the pen of a tap the keyboard started, once the application has
 + * worked through everything the press generated. */
 +Boolean FrmNavFinishTap(void);
++
++/* Says the next dialog to appear was asked for from the keyboard, so it may
++ * take the navigator keys straight away. */
++void FrmNavFromKeyboard(void);
 +
 +/* For object drawing routines, which repaint over the focus ring. */
 +void FrmNavRingHide(void);

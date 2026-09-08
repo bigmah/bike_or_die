@@ -77,6 +77,11 @@ it did:
 | **Enter** / **Space** / F9 | press what the ring is on; with no ring, the dialog's default button | pick the highlighted item |
 | **Esc** | close a popup list | close the menu |
 
+A menu or dialog that comes up under the player's hands -- finishing a level puts one up
+-- does not take the keys still in flight from riding: it waits for the keyboard to fall
+still for half a second first, so the pedal taps do not walk a focus ring around it. One
+opened deliberately, from the menu or with a tap, has the keyboard straight away.
+
 This is Palm OS 5's own five-way navigation, which PumpkinOS had not implemented. The
 order the ring walks is the form's `fnav` resource where there is one -- Bike or Die
 ships ten, one per dialog it expects a Treo's navigator to drive -- and the objects' own
@@ -180,7 +185,9 @@ builds without synthesising system-wide mouse and keyboard events.
 
 `tools/scripts/keynav.txt` is the keyboard one: it starts a level having touched nothing
 but the arrow keys and Enter, so its last frame is only reached if every step of the
-menus answered them.
+menus answered them. `tools/scripts/finish.txt` is its opposite: it pedals all the way
+through the end of a level, where the last frame has to show the "Congratulations!"
+dialog with no focus ring on it.
 
 Useful knobs while debugging the ARM core:
 
