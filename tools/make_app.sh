@@ -63,6 +63,9 @@ export DYLD_LIBRARY_PATH="$HERE/bin"
 # Display: the game's ARM blitter writes little-endian RGB565.
 export PUMPKIN_DISPLAY_LE="${PUMPKIN_DISPLAY_LE:-1}"
 export PUMPKIN_SOUND="${PUMPKIN_SOUND:-1}"
+# Palm sound volumes (0-64). PumpkinOS defaults them to 0, and the game's
+# volume setting is "Automatic", which follows the system game volume.
+export PUMPKIN_VOLUME="${PUMPKIN_VOLUME:-64}"
 # HotSync user name; the game's registration code is keyed to it.
 export PUMPKIN_USER="${PUMPKIN_USER:-PalmDB}"
 # Use the statically recompiled 68k and ARM cores.

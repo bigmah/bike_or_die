@@ -23,8 +23,8 @@ cd "$RT"
 DYLD_LIBRARY_PATH="$PK/bin" \
 BOD_TEST_OUT="$OUT" BOD_TEST_SCRIPT="$SCRIPT" BOD_TEST_PERIOD="${PERIOD:-500}" \
 PUMPKIN_USER="${PUMPKIN_USER:-PalmDB}" PUMPKIN_DISPLAY_LE="${PUMPKIN_DISPLAY_LE:-1}" \
-PUMPKIN_SOUND=0 BOD_RECOMP="${BOD_RECOMP:-1}" \
-./pumpkin -d 1 -f "$RT/pumpkin.log" -s libscriptlua "$PK/script/bodtest.lua" >/dev/null 2>&1 &
+PUMPKIN_SOUND="${PUMPKIN_SOUND:-0}" BOD_RECOMP="${BOD_RECOMP:-1}" \
+./pumpkin -d "${DBG:-1}" -f "$RT/pumpkin.log" -s libscriptlua "$PK/script/bodtest.lua" >/dev/null 2>&1 &
 PID=$!
 sleep "$SECS"
 kill $PID 2>/dev/null; wait $PID 2>/dev/null

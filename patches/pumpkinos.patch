@@ -286,6 +286,45 @@ index f60f65d..9070427 100644
  	@$(STRIP) $(PROGRAM)
  
  emulation/systrap.o: emulation/systrap.c emulation/switch.c
+diff --git a/src/libpumpkin/Preferences.c b/src/libpumpkin/Preferences.c
+index dfebfea..31c0697 100644
+--- a/src/libpumpkin/Preferences.c
++++ b/src/libpumpkin/Preferences.c
+@@ -94,9 +94,11 @@ static void initPrefs(SystemPreferencesType *prefs) {
+   prefs->maskPrivateRecords = false;              // Only meaningful if hideSecretRecords is true. true to show a grey placeholder box for secret records.
+ 
+   // Additions for PalmOS 3.0:
+-  prefs->sysSoundVolume = 0;                      // system amplitude (0 - sndMaxAmp) - taps, beeps
+-  prefs->gameSoundVolume = 0;                     // game amplitude (0 - sndMaxAmp) - explosions
+-  prefs->alarmSoundVolume = 0;                    // alarm amplitude (0 - sndMaxAmp)
++  // Audible by default: a game whose volume setting is "Automatic" follows
++  // gameSoundVolume, so leaving these at 0 makes it silent with no clue why.
++  prefs->sysSoundVolume = sndMaxAmp;              // system amplitude (0 - sndMaxAmp) - taps, beeps
++  prefs->gameSoundVolume = sndMaxAmp;             // game amplitude (0 - sndMaxAmp) - explosions
++  prefs->alarmSoundVolume = sndMaxAmp;            // alarm amplitude (0 - sndMaxAmp)
+   prefs->beamReceive = false;                     // False turns off IR sniffing, sends still work.
+   prefs->calibrateDigitizerAtReset = false;       // True makes the user calibrate at soft reset time
+   prefs->systemKeyboardID = 0;                    // XXX ID of the preferred keyboard resource
+@@ -245,6 +247,19 @@ int PrefInitModule(void) {
+     OmSetSystemLocale(&systemLocale);
+   }
+ 
++  {
++    // PUMPKIN_VOLUME overrides the stored volumes (0 - 64), so sound can be
++    // fixed without discarding an existing preferences database.
++    char *e = sys_getenv("PUMPKIN_VOLUME");
++    if (e && e[0]) {
++      int v = sys_atoi(e);
++      if (v < 0) v = 0;
++      if (v > sndMaxAmp) v = sndMaxAmp;
++      prefs.sysSoundVolume = prefs.gameSoundVolume = prefs.alarmSoundVolume = v;
++      debug(DEBUG_INFO, PALMOS_MODULE, "sound volumes forced to %d", v);
++    }
++  }
++
+   if (DmFindDatabase(0, SAVED_PREFS) == 0) {
+     DmCreateDatabase(0, SAVED_PREFS, sysFileCSystem, sysFileTSavedPreferences, true);
+   }
 diff --git a/src/libpumpkin/emulation/KeySysTrap.c b/src/libpumpkin/emulation/KeySysTrap.c
 index c84d362..e978d0d 100644
 --- a/src/libpumpkin/emulation/KeySysTrap.c
@@ -1021,10 +1060,27 @@ index 3a41fc5..ce4f8a0 100644
    emu_state_t *state = pumpkin_get_local_storage(emu_key);
    logtrap_disasm(state->lt, m68k);
 diff --git a/src/libpumpkin/pumpkin.c b/src/libpumpkin/pumpkin.c
-index 93cf260..6006f82 100644
+index 93cf260..d41b3ba 100644
 --- a/src/libpumpkin/pumpkin.c
 +++ b/src/libpumpkin/pumpkin.c
-@@ -2468,12 +2468,28 @@ int pumpkin_launch(launch_request_t *request) {
+@@ -736,6 +736,16 @@ void pumpkin_init_misc(void) {
+   pumpkin_module.lockKey = prefs.value[pLockKey];
+   pumpkin_module.lockModifiers = prefs.value[pLockModifiers];
+   pumpkin_module.enableSound = prefs.value[pEnableSound];
++  {
++    /* The global switch defaults to off and is stored persistently; the
++     * per-app registry flag is ANDed with it, so PUMPKIN_SOUND has to set
++     * both or nothing is ever heard. */
++    char *e = sys_getenv("PUMPKIN_SOUND");
++    if (e && e[0]) {
++      pumpkin_module.enableSound = (e[0] != '0');
++      debug(DEBUG_INFO, PUMPKINOS, "global sound forced to %d", pumpkin_module.enableSound);
++    }
++  }
+ }
+ 
+ void pumpkin_set_spawner(int handle) {
+@@ -2468,12 +2478,28 @@ int pumpkin_launch(launch_request_t *request) {
          data->littleEndian = regEnd->littleEndian;
          MemPtrFree(regEnd);
        }
@@ -1053,7 +1109,7 @@ index 93cf260..6006f82 100644
  
        if ((regHeap = pumpkin_reg_get(creator, regHeapID, &regSize)) != NULL) {
          if (regHeap->heapSize) {
-@@ -3110,11 +3126,29 @@ int pumpkin_must_finish(void) {
+@@ -3110,11 +3136,29 @@ int pumpkin_must_finish(void) {
  }
  
  static void pumpkin_set_key(int key) {
@@ -1085,7 +1141,7 @@ index 93cf260..6006f82 100644
      case WINDOW_KEY_F1:    pumpkin_module.keyMask |= keyBitHard1;      break;
      case WINDOW_KEY_F2:    pumpkin_module.keyMask |= keyBitHard2;      break;
      case WINDOW_KEY_F3:    pumpkin_module.keyMask |= keyBitHard3;      break;
-@@ -3134,11 +3168,23 @@ static void pumpkin_set_key(int key) {
+@@ -3134,11 +3178,23 @@ static void pumpkin_set_key(int key) {
  }
  
  static int pumpkin_reset_key(int key) {

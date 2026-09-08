@@ -73,7 +73,8 @@ The launcher reads `~/.bikeordie.env` if it exists. Useful settings:
 |---|---|---|
 | `PUMPKIN_USER` | `PalmDB` | HotSync user name; the registration code is keyed to it |
 | `PUMPKIN_DISPLAY_LE` | `1` | the ARM blitter writes little-endian RGB565 |
-| `PUMPKIN_SOUND` | `1` | enable audio |
+| `PUMPKIN_SOUND` | `1` | enable audio (sets both the global and per-app switch) |
+| `PUMPKIN_VOLUME` | `64` | Palm sound volumes, 0-64 |
 | `BOD_RECOMP` | `1` | use the statically recompiled cores |
 | `BOD_ARM_ENGINE` | `recomp` | `interp` falls back to the ARM interpreter |
 | `BOD_RESET` | `0` | `1` re-seeds the game data on next launch |
@@ -87,6 +88,20 @@ Game data (saves, level packs, preferences) lives in
 Both cores are used by default. The game boots, renders and plays entirely on
 statically recompiled code; the ARM interpreter is only kept around as a reference for
 differential testing.
+
+## Sound
+
+Three separate things default to silent, and all three have to be on:
+
+- PumpkinOS's **global** sound switch (`prefs.value[pEnableSound]`, default 0),
+- the **per-app** registry flag (`regSoundID`, default 0),
+- the Palm **volume** preferences (`sysSoundVolume`/`gameSoundVolume`/`alarmSoundVolume`,
+  all default 0) -- and Bike or Die's own Sound setting is "Automatic", which means it
+  follows the system *game* volume.
+
+`PUMPKIN_SOUND` now sets the first two and `PUMPKIN_VOLUME` the third, both applied after
+the stored preferences load, so an existing preferences database does not need resetting.
+The game drives audio as an ARM-native `SndStreamCreate` callback at 44.1 kHz mono 16-bit.
 
 ## Display
 

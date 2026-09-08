@@ -1,0 +1,14 @@
+wait 4500
+tap 160 296
+wait 6000
+tap 160 160
+wait 2500
+tap 160 160
+wait 4500
+key 149
+wait 1200
+tap 178 10
+wait 1200
+tap 130 101
+wait 2000
+shot s1_sound
