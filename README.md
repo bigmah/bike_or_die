@@ -128,9 +128,36 @@ The launcher reads `~/.bikeordie.env` if it exists. Useful settings:
 | `BOD_ARM_ENGINE` | `recomp` | `interp` falls back to the ARM interpreter |
 | `BOD_RESET` | `0` | `1` re-seeds the game data on next launch |
 | `BOD_ZOOM` | `3` | integer window scale; the game itself is 320x320 |
+| `BOD_UNLOCK` | `44652` | the registration code to answer the About dialog with; `0` leaves it alone |
 
 Game data (saves, level packs, preferences) lives in
 `~/Library/Application Support/Bike or Die 2`.
+
+## Registration
+
+The game is shareware: the About dialog asks for a code keyed to the HotSync user
+name, and without one it runs in trial mode. `PUMPKIN_USER` is `PalmDB`, and
+44652 is the code for that name.
+
+Typing it in works, and lasts exactly as long as the process does. Bike or Die
+keeps its registration in its own application database, which PumpkinOS opens
+read-only (`StoLockForReading`, never for writing), so the write goes nowhere: a
+session that registered leaves a storage tree byte-identical to one that stayed
+in trial mode. Rather than teach it to remember, the port answers the dialog on
+the way in. `FrmDrawForm` fills the field and presses the button the first time
+it draws a form that has a text field and a button labelled `Unlock` -- found by
+what it is rather than by a resource id, so it stops matching by itself once the
+game is registered and that button is gone. The game then validates the code
+against the user name exactly as it would a typed one, and comes up registered
+before the dialog is ever seen. `BOD_UNLOCK=0` leaves it in trial mode; anyone
+whose code was issued for a different HotSync name sets both variables.
+
+Two related things now reach the disk that did not. A dirty resource used to be
+written only when its database was closed, and an application keeps its own
+databases open until it stops -- which a browser tab never does, and a killed
+process does not either -- so what it had saved went with it. A resource is now
+written when it is released, the way a record always has been, and whatever is
+still open at shutdown is flushed.
 
 ## Status
 

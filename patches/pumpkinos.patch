@@ -1684,7 +1684,7 @@ index fd1eb40..694b725 100644
      return;
    }
 diff --git a/src/libpumpkin/Form.c b/src/libpumpkin/Form.c
-index 1e9cef5..9c02f1c 100644
+index 1e9cef5..6e10d77 100644
 --- a/src/libpumpkin/Form.c
 +++ b/src/libpumpkin/Form.c
 @@ -11,6 +11,7 @@
@@ -2321,7 +2321,83 @@ index 1e9cef5..9c02f1c 100644
  
    if (formP == module->currentForm) {
      WinSetActiveWindow(NULL);
-@@ -1232,6 +1801,10 @@ void FrmDrawForm(FormType *formP) {
+@@ -1210,6 +1779,75 @@ void FrmDrawEmptyDialog(FormType *formP, RectangleType *rect, Int16 margin, WinH
+   WinSetBackColor(old);
+ }
+ 
++/* Answer the registration dialog on the way in.
++ *
++ * Bike or Die keeps its registration in its own application database, which
++ * PumpkinOS opens read-only -- so a code entered by hand is accepted, unlocks
++ * the game for that session, and is forgotten the moment the process goes.
++ * Rather than remember it, enter it again every time: the game validates it
++ * against the HotSync user name exactly as it does a typed one, so the dialog
++ * is answered before anyone sees it.
++ *
++ * The dialog is found by what it is rather than by a resource id: the one form
++ * that has a text field and a button labelled "Unlock". Once the game is
++ * registered that button is gone, so this stops matching on its own.
++ *
++ * BOD_UNLOCK is the code (default 44652, which is the one for the HotSync name
++ * the port uses); BOD_UNLOCK=0 leaves the dialog alone.
++ */
++#define BOD_UNLOCK_BUTTON "Unlock"
++
++static void bod_auto_unlock(FormType *formP) {
++  static int done = 0;
++  const ControlType *unlock = NULL;
++  const Char *label;
++  FieldType *fld = NULL;
++  UInt16 i, n, fldIndex = 0;
++  char *code;
++
++  if (done || formP == NULL) return;
++
++  code = sys_getenv("BOD_UNLOCK");
++  if (code == NULL) code = "44652";
++  if (code[0] == 0 || (code[0] == '0' && code[1] == 0)) {
++    done = 1;
++    return;
++  }
++
++  n = FrmGetNumberOfObjects(formP);
++  for (i = 0; i < n; i++) {
++    switch (FrmGetObjectType(formP, i)) {
++      case frmFieldObj:
++        if (fld == NULL) {
++          fld = (FieldType *)FrmGetObjectPtr(formP, i);
++          fldIndex = i;
++        }
++        break;
++      case frmControlObj:
++        if (unlock == NULL) {
++          const ControlType *ctl = (const ControlType *)FrmGetObjectPtr(formP, i);
++          label = ctl ? CtlGetLabel(ctl) : NULL;
++          if (label && !sys_strcmp(label, BOD_UNLOCK_BUTTON)) unlock = ctl;
++        }
++        break;
++      default:
++        break;
++    }
++  }
++
++  if (fld == NULL || unlock == NULL) return;
++
++  debug(DEBUG_INFO, "Form", "answering the registration dialog with \"%s\"", code);
++  done = 1;
++  FrmSetFocus(formP, fldIndex);
++  FldDelete(fld, 0, FldGetTextLength(fld));
++  FldInsert(fld, code, sys_strlen(code));
++  CtlHitControl(unlock);
++  /* Give the focus back, or the field's caret is left blinking over whatever
++   * the dialog redraws itself as. */
++  FrmSetFocus(formP, noFocus);
++}
++
+ void FrmDrawForm(FormType *formP) {
+   WinHandle oldd, olda;
+   RGBColorType rgb;
+@@ -1232,6 +1870,10 @@ void FrmDrawForm(FormType *formP) {
  
      margin = WinGetBorderRect(&formP->window, &rect);
  
@@ -2332,16 +2408,17 @@ index 1e9cef5..9c02f1c 100644
      if (!formP->attr.visible) {
        WinSaveRectangle(formP->bitsBehindForm, &rect);
      }
-@@ -1258,6 +1831,8 @@ void FrmDrawForm(FormType *formP) {
+@@ -1258,6 +1900,9 @@ void FrmDrawForm(FormType *formP) {
      WinSetDrawWindow(oldd);
      WinSetActiveWindow(olda);
  
 +    FrmNavShow(formP);
++    bod_auto_unlock(formP);
 +
      pumpkin_dirty_region_mode(dirtyRegionEnd);
    }
  }
-@@ -1280,6 +1855,7 @@ void FrmEraseForm(FormType *formP) {
+@@ -1280,6 +1925,7 @@ void FrmEraseForm(FormType *formP) {
      WinRestoreRectangle(formP->bitsBehindForm, &rect);
  
      formP->attr.visible = 0;
@@ -2349,7 +2426,7 @@ index 1e9cef5..9c02f1c 100644
    }
  }
  
-@@ -3699,6 +4275,7 @@ void pumpkin_destroy_form(FormType *formP) {
+@@ -3699,6 +4345,7 @@ void pumpkin_destroy_form(FormType *formP) {
      if (formP->rsrc) {
        pumpkin_heap_free(formP->rsrc, "form_rsrc");
      }
@@ -3739,6 +3816,131 @@ index 93cf260..d41b3ba 100644
      case WINDOW_KEY_F1:    pumpkin_module.keyMask &= ~keyBitHard1;    break;
      case WINDOW_KEY_F2:    pumpkin_module.keyMask &= ~keyBitHard2;    break;
      case WINDOW_KEY_F3:    pumpkin_module.keyMask &= ~keyBitHard3;    break;
+diff --git a/src/libpumpkin/storage.c b/src/libpumpkin/storage.c
+index 28de5ef..bba0f58 100644
+--- a/src/libpumpkin/storage.c
++++ b/src/libpumpkin/storage.c
+@@ -783,6 +783,60 @@ int StoRefresh(void) {
+   return r;
+ }
+ 
++/* Write what the application changed in a database it still has open.
++ *
++ * A dirty element is normally written when the database is closed, and an
++ * application keeps its own databases open for as long as it runs -- so
++ * anything it saved into one went with the process. Bike or Die keeps its
++ * registration there, which is why entering a valid code never survived a
++ * restart. */
++static void StoFlushDatabase(storage_t *sto, storage_db_t *db) {
++  storage_handle_t *h;
++  vfs_file_t *f;
++  void *encoded;
++  UInt32 i, size;
++  char buf[VFS_PATH];
++  int n = 0;
++
++  for (i = 0; i < db->numRecs; i++) {
++    if ((h = db->elements[i]) == NULL || !(h->htype & STO_INFLATED)) continue;
++
++    if (db->ftype == STO_TYPE_RES) {
++      if (!(h->d.res.attr & dmRecAttrDirty)) continue;
++      encoded = NULL;
++      if (h->d.res.encoder && h->d.res.decoded) {
++        encoded = h->d.res.encoder(h->d.res.decoded, &size);
++      }
++      storage_name(sto, db->name, STO_FILE_ELEMENT, h->d.res.id, h->d.res.type, 0, 0, buf);
++      if ((f = StoVfsOpen(sto->session, buf, VFS_WRITE | VFS_TRUNC)) != NULL) {
++        if (encoded) {
++          vfs_write(f, encoded, size);
++        } else {
++          vfs_write(f, h->buf, h->size);
++        }
++        vfs_close(f);
++        n++;
++      }
++      if (encoded) sys_free(encoded);
++      h->d.res.attr &= ~dmRecAttrDirty;
++    } else {
++      if (!(h->d.rec.attr & dmRecAttrDirty)) continue;
++      storage_name(sto, db->name, STO_FILE_ELEMENT, 0, 0, h->d.rec.attr & ATTR_MASK, h->d.rec.uniqueID, buf);
++      if ((f = StoVfsOpen(sto->session, buf, VFS_WRITE | VFS_TRUNC)) != NULL) {
++        vfs_write(f, h->buf, h->size);
++        vfs_close(f);
++        n++;
++      }
++      h->d.rec.attr &= ~dmRecAttrDirty;
++    }
++  }
++
++  if (n) {
++    if (db->ftype == STO_TYPE_REC) StoWriteIndex(sto, db);
++    debug(DEBUG_INFO, "STOR", "flushed %d unsaved element%s of \"%s\"", n, n == 1 ? "" : "s", db->name);
++  }
++}
++
+ int StoFinish(void) {
+   storage_t *sto = (storage_t *)pumpkin_get_local_storage(sto_key);
+   DmOpenType *dbRef;
+@@ -794,6 +848,9 @@ int StoFinish(void) {
+       if (dbRef->dbID < (sto->size - sizeof(storage_db_t))) {
+         db = (storage_db_t *)(sto->base + dbRef->dbID);
+         debug(DEBUG_ERROR, "STOR", "StoFinish database \"%s\" was left open", db->name);
++        if (dbRef->mode & dmModeWrite) {
++          StoFlushDatabase(sto, db);
++        }
+         if (mutex_lock(sto->mutex) == 0) {
+           if (StoGetFileLocks(sto, db, &read_locks, &write_locks) == 0) {
+             StoPutFileLocks(sto, db, read_locks - db->readCount, write_locks - db->writeCount);
+@@ -2460,7 +2517,12 @@ Err DmResourceType(MemHandle resourceH, DmResType *resType, DmResID *resID) {
+ Err DmReleaseResource(MemHandle resourceH) {
+   storage_t *sto = (storage_t *)pumpkin_get_local_storage(sto_key);
+   storage_handle_t *h;
+-  char st[8];
++  storage_db_t *db;
++  DmOpenType *dbRef;
++  vfs_file_t *f;
++  void *encoded;
++  UInt32 size;
++  char st[8], buf[VFS_PATH];
+   Err err = dmErrIndexOutOfRange;
+ 
+   if (resourceH) {
+@@ -2478,6 +2540,35 @@ Err DmReleaseResource(MemHandle resourceH) {
+           }
+           if (h->useCount == 0) {
+             if (h->d.res.type != 'BikL') {
++            /* Write it now if the application changed it. A dirty resource
++             * used to wait for its database to be closed, and an application
++             * keeps its own databases open until it stops -- which a browser
++             * tab never does, and a killed process does not either, so
++             * everything it had saved in one was lost. A record has always
++             * been written when it is released (DmReleaseRecord); a resource
++             * now is too. */
++            if ((h->d.res.attr & dmRecAttrDirty) &&
++                DmSearchResource(0, 0, resourceH, (DmOpenRef *)&dbRef) != 0xffff &&
++                dbRef && (dbRef->mode & dmModeWrite) &&
++                dbRef->dbID < (sto->size - sizeof(storage_db_t))) {
++              db = (storage_db_t *)(sto->base + dbRef->dbID);
++              encoded = NULL;
++              if (h->d.res.encoder && h->d.res.decoded) {
++                encoded = h->d.res.encoder(h->d.res.decoded, &size);
++              }
++              debug(DEBUG_TRACE, "STOR", "DmReleaseResource writing dirty resource %s %d", st, h->d.res.id);
++              storage_name(sto, db->name, STO_FILE_ELEMENT, h->d.res.id, h->d.res.type, 0, 0, buf);
++              if ((f = StoVfsOpen(sto->session, buf, VFS_WRITE | VFS_TRUNC)) != NULL) {
++                if (encoded) {
++                  vfs_write(f, encoded, size);
++                  sys_free(encoded);
++                } else {
++                  vfs_write(f, h->buf, h->size);
++                }
++                vfs_close(f);
++              }
++              h->d.res.attr &= ~dmRecAttrDirty;
++            }
+             if (!(h->d.res.attr & dmRecAttrDirty)) {
+               if (h->lockCount == 0) {
+                 if (h->d.res.destructor && h->d.res.decoded) {
 diff --git a/src/libwtest/Makefile b/src/libwtest/Makefile
 new file mode 100644
 index 0000000..1090b1f
