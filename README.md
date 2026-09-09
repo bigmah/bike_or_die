@@ -71,6 +71,13 @@ for select, so the arrows did nothing and Flip was unreachable; it now reports t
 palmOne navigator and Handspring rocker bits, with space and F9 as select.
 (`BOD_DUMP_KEYS=1` dumps that table if another game needs the same treatment.)
 
+A browser adds one more translation to the chain, and Safari gets it wrong: macOS sets
+`NSEventModifierFlagNumericPad` on the arrow keys, so WebKit reports them with
+`KeyboardEvent.location` = numpad, and SDL's Emscripten backend dutifully turns Up into
+keypad 8. Nothing downstream had a use for keypad 8, so in Safari the arrows did nothing
+at all -- while space, which is not a navigation key, worked. The scancode still says
+which physical key it was, so the display driver takes the five-way keys from there.
+
 ## Menus, from the keyboard
 
 Every menu and dialog is fully navigable without the mouse, which still works exactly as
@@ -168,6 +175,15 @@ frames that is fine, but a level load takes a few hundred milliseconds during wh
 refill is answered at all, so the queue has to be deep enough to cover one. 240 ms is;
 80 ms audibly is not, and costs about 60 ms of latency less.
 
+That is also why an unanswered refill must not be mistaken for the end of the stream.
+The mixer thread waited one second for the application to answer and then reported nought
+bytes -- which is how a stream says it is finished -- so the audio thread dropped it and
+never asked again. One slow moment therefore silenced the game for the rest of the
+session, which in a browser meant the first level load. An unanswered refill now says so
+with -1 and is asked for again; only a real end of stream ends it. A queue that has run
+dry is primed again before the device plays from it, rather than dribbling a chunk per
+pass into one that is already playing silence.
+
 ## Display
 
 The Palm screen is 320x320 and the window is that, scaled by an integer factor
@@ -251,12 +267,24 @@ Two things are arranged differently from the native build, both forced by the br
   implemented in JavaScript on the main thread, so every `open` from the application
   would be a round trip to it; the storage scan alone is a few thousand.
 
+Safari needs one thing Chrome does not: **the audio session has to be asked for by
+name.** It parks an `AudioContext` in `interrupted` -- which is neither `running` nor the
+`suspended` that SDL's own autoplay recovery looks for, so neither its resume-on-gesture
+handler nor its play-silence fallback ever fires, and the game plays to a device that is
+not listening. The page resumes it on any gesture and whenever the tab comes back, and
+keeps the listeners: the session is taken away again whenever another application wants
+it. Safari also answers a refill an order of magnitude slower than Chrome does, which is
+what made the silence permanent rather than a gap; see **Sound** above.
+
 Options can be passed in the query string, so `?BOD_ARM_ENGINE=interp` or
 `?PUMPKIN_USER=Me` work the way the environment variables above do, and `?BOD_DEBUG=2`
 raises the log level (`2:STOR` limits the higher level to one subsystem).
 
 `tools/webtest.js` is the browser counterpart of `tools/run.sh`: it drives the page in a
-real Chrome and screenshots the canvas, with the same vocabulary of actions.
+real Chrome and screenshots the canvas, with the same vocabulary of actions. Chrome is
+not enough on its own -- both of the bugs above are WebKit's, and neither reproduces
+there; Safari can be driven the same way over WebDriver with `safaridriver`, once
+**Allow remote automation** is ticked in its Developer settings.
 
     tools/webtest.js -u http://127.0.0.1:8080/pumpkin.html -w 30 \
         -k "d:3,m:160/295,d:8,k:ArrowUp/down,d:4,k:ArrowUp/up" -o build/shot.png
