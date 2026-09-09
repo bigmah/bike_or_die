@@ -1,3 +1,120 @@
+diff --git a/script/bod.lua b/script/bod.lua
+new file mode 100644
+index 0000000..a7a7d7b
+--- /dev/null
++++ b/script/bod.lua
+@@ -0,0 +1,86 @@
++function cleanup_callback()
++  if pumpkin then
++    pumpkin.finish()
++  end
++end
++
++pit.cleanup(cleanup_callback)
++
++abgr = false
++
++if custom_load then
++  lib = custom_load()
++end
++
++if not lib and pit.getenv("WAYLAND_DISPLAY") then
++  lib = pit.loadlib("libwwayland")
++  if lib then pit.loadlib("libaalsa") end
++end
++
++if not lib then
++  lib = pit.loadlib("libray")
++  if lib then
++    pit.loadlib("libaalsa")
++    abgr = true
++  end
++end
++
++if not lib and pit.getenv("DISPLAY") then
++  lib = pit.loadlib("libwxcb")
++  if lib then pit.loadlib("libaalsa") end
++end
++
++if not lib then
++  lib = pit.loadlib("liblsdl3")
++end
++
++if not lib then
++  lib = pit.loadlib("liblsdl2")
++end
++
++if not lib then
++  lib = pit.loadlib("libfb")
++  if lib then
++    lib.setup(0, 1, 0)
++    lib.cursor(true)
++  end
++end
++
++if not lib then
++  lib = pit.loadlib("libwnull")
++  lib.accept(true, 7000)
++  --lib.connect("127.0.0.1", 7000)
++end
++
++if not lib then
++  print("could not load a display lib")
++  pit.finish(0)
++  return
++end
++
++fullrefresh = false
++if pit.getenv("BE_HOST_CPU") then
++  fullrefresh = true
++end
++
++pit.mount("./vfs/", "/")
++
++pumpkin = pit.loadlib("libos")
++pumpkin.init()
++
++-- window zoom (integer); BOD_ZOOM=1 disables scaling
++local zoom = tonumber(pit.getenv("BOD_ZOOM") or "3") or 3
++
++pumpkin.start {
++  density  = 144,
++  width    = 320,
++  height   = 320,
++  abgr     = abgr,
++  fullrefresh = fullrefresh,
++  depth    = 16,
++  hdepth   = lib.hdepth,
++  xfactor  = zoom,
++  yfactor  = zoom,
++  taskbar  = false,
++  launcher = "BikeOrDie"
++}
+diff --git a/script/bodtest.lua b/script/bodtest.lua
+new file mode 100644
+index 0000000..0b71807
+--- /dev/null
++++ b/script/bodtest.lua
+@@ -0,0 +1,19 @@
++-- Headless harness: no window, frames written as PPM, input from a script file.
++function cleanup_callback() if pumpkin then pumpkin.finish() end end
++pit.cleanup(cleanup_callback)
++
++lib = pit.loadlib("libwtest")
++if not lib then print("could not load libwtest"); pit.finish(0); return end
++
++pit.mount("./vfs/", "/")
++pumpkin = pit.loadlib("libos")
++pumpkin.init()
++pumpkin.start {
++  density  = 144,
++  width    = 320,
++  height   = 320,
++  depth    = 16,
++  hdepth   = lib.hdepth,
++  taskbar  = false,
++  launcher = "BikeOrDie"
++}
 diff --git a/src/Makefile b/src/Makefile
 index 0c60d58..c6e71a5 100755
 --- a/src/Makefile
@@ -93,7 +210,7 @@ index 8201cc8..174a58b 100644
  #endif
  FormType;
 diff --git a/src/common.mak b/src/common.mak
-index d9caea2..4774cb2 100644
+index d9caea2..b0424e8 100644
 --- a/src/common.mak
 +++ b/src/common.mak
 @@ -23,7 +23,14 @@ ifeq ($(MACHINE),)
@@ -112,7 +229,23 @@ index d9caea2..4774cb2 100644
  SYS_CPU=1
  SYS_ENDIAN=1
  ifeq ($(BITS),)
-@@ -180,6 +187,16 @@ OSDEFS=$(MBITS) -DKERNEL $(RPI_DEFS) -DSOEXT=\"$(SOEXT)\"
+@@ -81,6 +88,7 @@ $(error Missing BITS parameter (must be either 32 or 64))
+ endif
+ 
+ AR=ar
++ARCMD=$(AR) -cr
+ NM=nm -j -u
+ 
+ ifneq (,$(wildcard /boot/firmware/config.txt))
+@@ -166,6 +174,7 @@ EMSC=$(SRC)/emscripten
+ BIN=$(EMSC)
+ VFS=$(EMSC)/vfs
+ SYS_OS=5
++ARCMD=$(EM_AR) -cru
+ SOEXT=.wasm
+ LUAPLAT=linux
+ OS=Emscripten
+@@ -180,6 +189,16 @@ OSDEFS=$(MBITS) -DKERNEL $(RPI_DEFS) -DSOEXT=\"$(SOEXT)\"
  PILRCDEFS=-D KERNEL
  CC=gcc
  
@@ -129,6 +262,665 @@ index d9caea2..4774cb2 100644
  else ifeq ($(OSNAME),Haiku)
  SYS_OS=7
  EXTLIBS=-lnetwork
+@@ -210,6 +229,9 @@ endif
+ 
+ ifeq ($(USE_C99),no)
+ C99=
++else ifeq ($(OSNAME),Emscripten)
++# EM_ASM is rejected outright in a strict -std=c* mode.
++C99=-std=gnu99
+ else
+ C99=-std=c99
+ endif
+diff --git a/src/emscripten/Makefile b/src/emscripten/Makefile
+index 4114db6..30e6dcf 100644
+--- a/src/emscripten/Makefile
++++ b/src/emscripten/Makefile
+@@ -4,16 +4,63 @@ include ../common.mak
+ 
+ PROGRAM=pumpkin
+ 
++# The statically recompiled game code, built by `make -C src WASM=1`.
++BOD=$(PUMPKINOS)/../..
++RECOMP=$(BOD)/build/librecomp-wasm.a
++
+ SOURCE=main.c
+ OBJS=$(SOURCE:%.c=%.wasm)
+ MODULES=libpit.a libpumpkin.a libscriptlua.a liblsdl2.a libos.a
+ 
++# PumpkinOS runs the OS, the application and the audio mixer on threads of
++# their own, so the pool has to be deep enough for all of them at once, and
++# the recompiled chunks are large functions that want a real stack.
++# The OS itself stays on the browser's main thread: SDL reaches WebGL through
++# EGL, whose calls Emscripten proxies to that thread unconditionally, so a
++# renderer created anywhere else has no context to draw with.
++# The memory is fixed rather than growable: growing a shared memory is both
++# slow and, in Chrome, fatal to the tab here, and 384 MB comfortably holds the
++# 64 MB system heap, the 8 MB the application gets and the packaged VFS.
++LINKFLAGS=-O1 -pthread \
++  -s USE_SDL=2 \
++  -s ENVIRONMENT=web,worker \
++  -s INITIAL_MEMORY=402653184 \
++  -s STACK_SIZE=8388608 -s DEFAULT_PTHREAD_STACK_SIZE=8388608 \
++  -s PROXY_TO_PTHREAD=1 -s PTHREAD_POOL_SIZE=8 \
++  -s EXPORTED_FUNCTIONS=_main,_cexit,_pumpkin_send_deploy,_bod_reset_saves \
++  -s EXPORTED_RUNTIME_METHODS=ccall,stringToNewUTF8,FS \
++  -s INCOMING_MODULE_JS_API=canvas,print,printErr,setStatus,preRun,postRun,onRuntimeInitialized,locateFile,mainScriptUrlOrBlob \
++  -s EXIT_RUNTIME \
++  -s WASMFS=1
++
++# e.g. EXTRA_LINKFLAGS="-sASSERTIONS=1 -g2" for a debuggable build.
++EXTRA_LINKFLAGS?=
++
++# Both preloaded trees are read-only, so /vfs -- the one PumpkinOS runs from --
++# is assembled at startup out of /boot (the script it boots from) and /pristine
++# (the game and its level packs), which is also where a first visit fills the
++# writable half from. WasmFS keeps the filesystem inside the wasm module, so a thread
++# opening a file does not have to go through the browser's main thread, and it
++# is what provides the OPFS backend the writable half is kept in.
++PRELOAD=--preload-file vfs@/boot --preload-file $(PUMPKINOS)/vfs@/pristine
++
+ $(PROGRAM).zip: $(PROGRAM).html coi-serviceworker.js
+ 	zip $(PROGRAM).zip $(PROGRAM).wasm $(PROGRAM).data $(PROGRAM).html $(PROGRAM).js coi-serviceworker.js
+ 
+-$(PROGRAM).html: $(OBJS) $(MODULES) template.html vfs/pumpkin.lua
+-	$(EM_CC) -o $(PROGRAM).js -s ALLOW_MEMORY_GROWTH=1 -s USE_SDL=2 -s ENVIRONMENT=web,worker -s PTHREAD_POOL_SIZE=4 -s EXPORTED_FUNCTIONS=_main,_cmain,_cexit,_pumpkin_send_deploy -s EXPORTED_RUNTIME_METHODS=ccall -s EXIT_RUNTIME -pthread -lidbfs.js --preload-file vfs $(OBJS) $(MODULES)
++# The shared CFLAGS say -ffreestanding, under which clang does not treat main
++# as special and so does not emit the __main_argc_argv entry point that
++# PROXY_TO_PTHREAD's startup object calls.
++main.wasm: main.c
++	@echo Compiling $<
++	@$(EM_CC) $(CFLAGS) -fhosted -c -o $@ $<
++
++$(PROGRAM).html: $(OBJS) $(MODULES) $(RECOMP) template.html bod-pre.js vfs/pumpkin.lua
++	@echo Linking $(PROGRAM).js
++	$(EM_CC) -o $(PROGRAM).js $(LINKFLAGS) $(EXTRA_LINKFLAGS) --pre-js bod-pre.js $(PRELOAD) $(OBJS) $(MODULES) $(RECOMP)
+ 	cp template.html $(PROGRAM).html
+ 
++serve: $(PROGRAM).html
++	@python3 $(BOD)/tools/webserver.py 8080 .
++
+ clean:
+ 	rm -f $(OBJS) $(PROGRAM).zip $(PROGRAM).wasm $(PROGRAM).data $(PROGRAM).html $(PROGRAM).js
+diff --git a/src/emscripten/bod-pre.js b/src/emscripten/bod-pre.js
+new file mode 100644
+index 0000000..7be454e
+--- /dev/null
++++ b/src/emscripten/bod-pre.js
+@@ -0,0 +1,53 @@
++// Browser-side setup for the Bike or Die 2 WebAssembly build: the environment
++// that tools/make_app.sh exports around the native one, and the page's half of
++// the saved data.
++
++// What tools/make_app.sh exports before running pumpkin. Anything here can be
++// overridden from the page (window.BOD_ENV) or the query string (?user=Me).
++var bodDefaultEnv = {
++  PUMPKIN_DISPLAY_LE: '1',    // the game's ARM blitter writes little-endian RGB565
++  PUMPKIN_SOUND:      '1',
++  PUMPKIN_VOLUME:     '64',   // PumpkinOS defaults the Palm volumes to 0
++  PUMPKIN_USER:       'PalmDB',
++  BOD_RECOMP:         '1',
++  BOD_ARM_ENGINE:     'recomp',
++  BOD_ZOOM:           '1'     // the page scales the canvas, not the game
++};
++
++// Returned to C as "KEY=VALUE\n..." and applied with setenv, so that the value
++// lives in the wasm heap where every thread can read it.
++function bodEnvString() {
++  var env = {}, k;
++  for (k in bodDefaultEnv) env[k] = bodDefaultEnv[k];
++  if (typeof self !== 'undefined' && self.BOD_ENV) {
++    for (k in self.BOD_ENV) env[k] = String(self.BOD_ENV[k]);
++  }
++  try {
++    // main() runs on a thread of its own, where there is no page to ask -- but
++    // the page passes its own query string on to the workers' script URL, so
++    // self.location has it in both places.
++    var q = new URLSearchParams(self.location.search);
++    if (q.get('user')) env.PUMPKIN_USER = q.get('user');
++    if (q.get('sound') !== null) env.PUMPKIN_SOUND = q.get('sound') === '0' ? '0' : '1';
++    q.forEach(function (v, n) {
++      if (n.indexOf('BOD_') === 0 || n.indexOf('PUMPKIN_') === 0) env[n] = v;
++    });
++  } catch (e) { /* no query string is fine */ }
++  var out = '';
++  for (k in env) out += k + '=' + env[k] + '\n';
++  return out;
++}
++
++// Everything the game writes is kept by the wasm side (see main.c); the page
++// only has to hold main() back until the runtime is up, and to offer a way to
++// throw the saved data away.
++var Module = typeof Module != 'undefined' ? Module : {};
++
++function bodReset() {
++  try {
++    Module.ccall('bod_reset_saves', null, null, null);
++  } catch (e) {
++    console.warn('could not clear the saved data:', e);
++  }
++  window.location.reload();
++}
+diff --git a/src/emscripten/main.c b/src/emscripten/main.c
+index ea74bb2..6fe5735 100644
+--- a/src/emscripten/main.c
++++ b/src/emscripten/main.c
+@@ -1,8 +1,260 @@
+ #include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <dirent.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <sys/stat.h>
++#include <errno.h>
+ #include <emscripten.h>
++#include <emscripten/wasmfs.h>
++#include <pthread.h>
++#include <time.h>
+ 
+ #include "main.h"
+ 
++/* The tree PumpkinOS writes to. The packaged copy of it is mounted read-only
++ * at /pristine and these are filled from it once, the way the native launcher
++ * copies its VFS into Application Support the first time it runs. */
++#define VFS_DIR      "/vfs"
++#define BOOT_DIR     "/boot"
++#define PRISTINE_DIR "/pristine"
++
++static char pbuf[1024], qbuf[1024];
++
++/* The launcher script exports a handful of variables before running pumpkin
++ * (display byte order, sound, the HotSync user the registration code is keyed
++ * to). The page decides them here; apply them with setenv so they live in the
++ * wasm heap, which every thread shares, rather than in the main thread's JS. */
++static void apply_env(void) {
++  char *env, *line, *next, *eq;
++
++  env = (char *)EM_ASM_PTR({ return stringToNewUTF8(bodEnvString()); });
++  if (env == NULL) return;
++
++  for (line = env; line && *line; line = next) {
++    next = strchr(line, '\n');
++    if (next) *next++ = 0;
++    if ((eq = strchr(line, '=')) == NULL) continue;
++    *eq = 0;
++    setenv(line, eq + 1, 1);
++  }
++
++  free(env);
++}
++
++static int copy_file(const char *src, const char *dst) {
++  char buf[16384];
++  ssize_t n;
++  int in, out, r = -1;
++
++  if ((in = open(src, O_RDONLY)) < 0) return -1;
++  if ((out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0666)) >= 0) {
++    r = 0;
++    while ((n = read(in, buf, sizeof(buf))) > 0) {
++      if (write(out, buf, n) != n) { r = -1; break; }
++    }
++    if (n < 0) r = -1;
++    close(out);
++  }
++  close(in);
++
++  return r;
++}
++
++/* Depth-first copy; the storage tree is two levels deep, so recursion is
++ * bounded by the path buffers rather than by anything the tree can do. */
++static int copy_tree(const char *src, const char *dst, int *files) {
++  struct dirent *ent;
++  struct stat st;
++  DIR *d;
++  int r = 0;
++
++  if ((d = opendir(src)) == NULL) return -1;   /* nothing saved yet */
++  mkdir(dst, 0777);
++
++  while ((ent = readdir(d)) != NULL) {
++    if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
++    if (snprintf(pbuf, sizeof(pbuf), "%s/%s", src, ent->d_name) >= (int)sizeof(pbuf)) continue;
++    if (snprintf(qbuf, sizeof(qbuf), "%s/%s", dst, ent->d_name) >= (int)sizeof(qbuf)) continue;
++    if (stat(pbuf, &st) != 0) continue;
++    if (S_ISDIR(st.st_mode)) {
++      char s[1024], t[1024];
++      strcpy(s, pbuf); strcpy(t, qbuf);
++      if (copy_tree(s, t, files) != 0) r = -1;
++    } else {
++      if (copy_file(pbuf, qbuf) != 0) r = -1;
++      else (*files)++;
++    }
++  }
++
++  closedir(d);
++
++  return r;
++}
++
++/* What the game changes is kept in the browser's origin private filesystem,
++ * so that unlocked levels, settings and best times outlive the tab.
++ *
++ * Only the changes: creating a file in OPFS costs on the order of a tenth of a
++ * second, and the packaged tree is four thousand of them, so /vfs itself is
++ * built in memory out of the two read-only trees that ship with the page and
++ * OPFS holds an overlay of the files written since. Restoring it is copying
++ * that handful back over the top.
++ */
++#define SAVE_DIR "/save"
++
++static const char *writable[] = { "app_registry", "app_storage", "app_card", NULL };
++static time_t saved_from;
++static int saving;
++
++static int save_changed(const char *src, const char *dst) {
++  struct dirent *ent;
++  struct stat st;
++  DIR *d;
++  int n = 0;
++
++  if ((d = opendir(src)) == NULL) return 0;
++
++  while ((ent = readdir(d)) != NULL) {
++    char s[1024], t[1024];
++    if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
++    if (snprintf(s, sizeof(s), "%s/%s", src, ent->d_name) >= (int)sizeof(s)) continue;
++    if (snprintf(t, sizeof(t), "%s/%s", dst, ent->d_name) >= (int)sizeof(t)) continue;
++    if (stat(s, &st) != 0) continue;
++    if (S_ISDIR(st.st_mode)) {
++      n += save_changed(s, t);
++    } else if (st.st_mtime >= saved_from) {
++      mkdir(dst, 0777);
++      if (copy_file(s, t) == 0) n++;
++    }
++  }
++
++  closedir(d);
++
++  return n;
++}
++
++/* Throw away everything the browser has kept, so the next visit starts from
++ * the packaged game again. Called from the page's reset button. */
++void bod_reset_saves(void) {
++  struct dirent *ent;
++  struct stat st;
++  DIR *d;
++  int i;
++
++  saving = 0;
++
++  for (i = 0; writable[i]; i++) {
++    char dir[1024];
++    snprintf(dir, sizeof(dir), "%s/%s", SAVE_DIR, writable[i]);
++    if ((d = opendir(dir)) == NULL) continue;
++    while ((ent = readdir(d)) != NULL) {
++      char sub[1024];
++      if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
++      if (snprintf(sub, sizeof(sub), "%s/%s", dir, ent->d_name) >= (int)sizeof(sub)) continue;
++      if (stat(sub, &st) != 0) continue;
++      if (S_ISDIR(st.st_mode)) {
++        DIR *e = opendir(sub);
++        struct dirent *f;
++        if (e) {
++          while ((f = readdir(e)) != NULL) {
++            char file[1024];
++            if (!strcmp(f->d_name, ".") || !strcmp(f->d_name, "..")) continue;
++            if (snprintf(file, sizeof(file), "%s/%s", sub, f->d_name) < (int)sizeof(file)) {
++              unlink(file);
++            }
++          }
++          closedir(e);
++        }
++        rmdir(sub);
++      } else {
++        unlink(sub);
++      }
++    }
++    closedir(d);
++  }
++
++  printf("saved data cleared\n");
++}
++
++/* One pass over the writable tree, copying out what has changed since the
++ * last one. Also called from libos on the way out, because the application
++ * writes its settings as it exits. */
++void bod_flush_saves(void) {
++  char from[1024], to[1024];
++  int i, n = 0;
++
++  if (!saving) return;
++
++  for (i = 0; writable[i]; i++) {
++    snprintf(from, sizeof(from), "%s/%s", VFS_DIR, writable[i]);
++    snprintf(to, sizeof(to), "%s/%s", SAVE_DIR, writable[i]);
++    n += save_changed(from, to);
++  }
++  if (n) {
++    printf("saved %d changed file%s\n", n, n == 1 ? "" : "s");
++    saved_from = time(NULL);
++  }
++}
++
++/* A pass every few seconds rather than on every write: the game writes a
++ * database when it finishes a level or a dialog is closed, and OPFS is far too
++ * slow to sit in front of that. */
++static void *saver(void *arg) {
++  for (;;) {
++    usleep(5000000);
++    bod_flush_saves();
++  }
++
++  return NULL;
++}
++
++static void mount_persistent(void) {
++  pthread_t t;
++  backend_t opfs;
++  char from[1024], to[1024];
++  int i, files;
++
++  /* The tree PumpkinOS runs from, assembled from the two packaged ones. */
++  mkdir(VFS_DIR, 0777);
++  snprintf(to, sizeof(to), "%s/app_install", VFS_DIR);
++  mkdir(to, 0777);
++  snprintf(from, sizeof(from), "%s/pumpkin.lua", BOOT_DIR);
++  snprintf(to, sizeof(to), "%s/pumpkin.lua", VFS_DIR);
++  if (copy_file(from, to) != 0) {
++    printf("could not install the boot script (errno %d)\n", errno);
++  }
++
++  for (i = 0; writable[i]; i++) {
++    snprintf(to, sizeof(to), "%s/%s", VFS_DIR, writable[i]);
++    mkdir(to, 0777);
++    if (i == 0) continue;                       /* the registry starts empty */
++    snprintf(from, sizeof(from), "%s/%s", PRISTINE_DIR, writable[i]);
++    files = 0;
++    copy_tree(from, to, &files);
++  }
++
++  /* The overlay of everything written since. */
++  if ((opfs = wasmfs_create_opfs_backend()) == NULL ||
++      wasmfs_create_directory(SAVE_DIR, 0777, opfs) != 0) {
++    printf("no origin private filesystem here; this session will not be saved\n");
++    return;
++  }
++
++  for (i = 0, files = 0; writable[i]; i++) {
++    snprintf(from, sizeof(from), "%s/%s", SAVE_DIR, writable[i]);
++    snprintf(to, sizeof(to), "%s/%s", VFS_DIR, writable[i]);
++    copy_tree(from, to, &files);
++  }
++  if (files) printf("restored %d saved file%s\n", files, files == 1 ? "" : "s");
++
++  saved_from = time(NULL);
++  saving = pthread_create(&t, NULL, saver, NULL) == 0;
++  printf(saving ? "changes are kept in this browser\n"
++                : "could not start the saver; this session will not be saved\n");
++}
++
+ void cmain(void) {
+   char *args[] = {
+     "pumpkin",
+@@ -12,8 +264,16 @@ void cmain(void) {
+     "vfs/pumpkin.lua",
+     NULL
+   };
++  char *level;
+   int n;
+ 
++  // BOD_DEBUG raises the log level (1 = info, 2 = trace, and "2:STOR" limits
++  // the higher level to one subsystem); ?BOD_DEBUG=2 in the page's query
++  // string reaches here.
++  if ((level = getenv("BOD_DEBUG")) != NULL && level[0]) {
++    args[2] = level;
++  }
++
+   for (n = 0; args[n]; n++);
+   pit_main(n, args, NULL, NULL);
+   // not reached: under Emscripten, pit_main never returns.
+@@ -21,23 +281,12 @@ void cmain(void) {
+ }
+ 
+ int main(int argc, char *argv[]) {
+-  EM_ASM(
+-    FS.mkdir('/vfs/app_registry');
+-    FS.mkdir('/vfs/app_storage');
+-    FS.mkdir('/vfs/app_card');
+-    FS.mount(IDBFS, {}, '/vfs/app_registry');
+-    FS.mount(IDBFS, {}, '/vfs/app_storage');
+-    FS.mount(IDBFS, {}, '/vfs/app_card');
+-    console.log('load IndexedDB');
+-    FS.syncfs(true, function (err) {
+-      console.log('call main');
+-      ccall('cmain', 'v');
+-    });
+-  );
+-
+-  // main will exit here, but cmain will be called asynchronously
+-  // after IndexedDB is loaded, so leave the runtime running.
+-  emscripten_exit_with_live_runtime();
++  // This runs on a thread of its own (PROXY_TO_PTHREAD), which is what lets
++  // the browser's main thread stay free: it is the only thread that can run
++  // the page's own work, and everything else waits on it sooner or later.
++  apply_env();
++  mount_persistent();
++  cmain();
+ 
+   return 0;
+ }
+diff --git a/src/emscripten/template.html b/src/emscripten/template.html
+index 216dea4..8e6efd4 100644
+--- a/src/emscripten/template.html
++++ b/src/emscripten/template.html
+@@ -2,37 +2,129 @@
+ <html>
+ <head>
+   <meta charset="utf-8">
+-  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1">
++  <title>Bike or Die 2</title>
++  <style>
++    :root { color-scheme: dark; }
++    body {
++      margin: 0; background: #14161a; color: #c9ced6;
++      font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
++      display: flex; flex-direction: column; align-items: center; gap: 14px;
++      padding: 22px 12px 32px;
++    }
++    h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .02em; }
++    h1 span { color: #6f7885; font-weight: 400; }
++    /* The game draws 320x320. The canvas stays that size and the page scales
++       it with nearest-neighbour, so the pixel art is exact and the blitter
++       does not do the scaling. */
++    #canvas {
++      width: 640px; height: 640px;
++      image-rendering: pixelated; image-rendering: crisp-edges;
++      background: #000; border-radius: 3px;
++      box-shadow: 0 0 0 1px #2a2f37, 0 18px 40px -18px #000;
++      touch-action: none;
++    }
++    @media (max-width: 700px) { #canvas { width: 320px; height: 320px; } }
++    #status { min-height: 1.5em; color: #8b94a2; font-variant-numeric: tabular-nums; }
++    #status.err { color: #e0777a; }
++    .keys { max-width: 640px; color: #7d8593; }
++    .keys table { border-collapse: collapse; width: 100%; }
++    .keys td { padding: 2px 10px 2px 0; vertical-align: top; }
++    .keys kbd {
++      font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
++      background: #20242b; border: 1px solid #333941; border-bottom-width: 2px;
++      border-radius: 4px; padding: 1px 5px; color: #cdd3db; white-space: nowrap;
++    }
++    button {
++      font: inherit; color: #c9ced6; background: #20242b;
++      border: 1px solid #333941; border-radius: 5px; padding: 4px 10px; cursor: pointer;
++    }
++    button:hover { background: #262b33; }
++  </style>
+ </head>
+ 
+ <body>
++  <h1>Bike or Die 2 <span>&mdash; ToySpring, 2008, recompiled to WebAssembly</span></h1>
++
++  <canvas id="canvas" width="320" height="320" tabindex="0"
++          oncontextmenu="event.preventDefault()"></canvas>
++
++  <div id="status">loading&hellip;</div>
++
++  <div class="keys">
++    <table>
++      <tr>
++        <td><kbd>&uarr;</kbd> forward</td>
++        <td><kbd>&darr;</kbd> brake</td>
++        <td><kbd>&larr;</kbd> <kbd>&rarr;</kbd> balance</td>
++        <td><kbd>Space</kbd> flip</td>
++      </tr>
++      <tr>
++        <td><kbd>F9</kbd> menu</td>
++        <td><kbd>F1</kbd>&ndash;<kbd>F4</kbd> Palm buttons</td>
++        <td><kbd>Esc</kbd> back</td>
++        <td><button onclick="bodReset()">reset saved data</button></td>
++      </tr>
++    </table>
++    <p>Progress, settings and level packs are kept in this browser.
++       Drop a <code>.prc</code> on the screen to install it.</p>
++  </div>
++
+   <script>
+-    function dragoverHandler(ev) {
+-      ev.preventDefault();
+-    }
++    var canvas = document.getElementById('canvas');
++    var statusEl = document.getElementById('status');
++
++    var Module = {
++      canvas: canvas,
++      // The OS runs on a worker, which cannot see the page's URL. Handing the
++      // workers a script URL that carries the query string lets the options
++      // in it reach the code that reads them.
++      mainScriptUrlOrBlob: 'pumpkin.js' + location.search,
++      // The canvas must not be resized out from under SDL by the CSS size.
++      setStatus: function (text) {
++        if (statusEl.classList.contains('err')) return;
++        statusEl.textContent = text || '';
++      },
++      printErr: function (text) {
++        console.error(text);
++        if (/abort|Aborted|RuntimeError/.test(text)) {
++          statusEl.className = 'err';
++          statusEl.textContent = text;
++        }
++      }
++    };
++
++    // The game wants the arrow keys, space and the function keys; the browser
++    // would scroll the page or reload with them.
++    var claimed = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space',
++                   'F1', 'F2', 'F3', 'F4', 'F5', 'F9', 'Escape'];
++    window.addEventListener('keydown', function (e) {
++      if (claimed.indexOf(e.code) >= 0 || claimed.indexOf(e.key) >= 0) e.preventDefault();
++    }, { capture: true });
++
++    canvas.addEventListener('mousedown', function () { canvas.focus(); });
++
+     function dropHandler(ev) {
+       ev.preventDefault();
+-      [...ev.dataTransfer.files].forEach((file, i) => {
+-        reader = new FileReader();
+-        reader.onload = function (ev) {
+-          view = new Uint8Array(ev.target.result);
+-          console.log('received ' + file.name);
+-          FS.writeFile('/vfs/app_install/' + file.name, view);
++      [...ev.dataTransfer.files].forEach(function (file) {
++        var reader = new FileReader();
++        reader.onload = function (e) {
++          FS.writeFile('/vfs/app_install/' + file.name, new Uint8Array(e.target.result));
+           Module.ccall('pumpkin_send_deploy', null, null, null);
+-        }
++          Module.setStatus('installed ' + file.name);
++        };
+         reader.readAsArrayBuffer(file);
+       });
+     }
++    canvas.addEventListener('dragover', function (e) { e.preventDefault(); });
++    canvas.addEventListener('drop', dropHandler);
+   </script>
+-  <div style="text-align:center;" ondrop="dropHandler(event)" ondragover="dragoverHandler(event)">
+-    <canvas id="canvas" width="800" height="600" style="box-shadow: 0px 0px 5px 5px rgb(80,128,176);" oncontextmenu="event.preventDefault()"></canvas>
+-  </div>
+-  <script type='text/javascript'>
+-    var Module = {
+-      canvas: (function() { return document.getElementById('canvas'); })()
+-    };
++  <script>
++    // Only needed on a host that will not send COOP/COEP itself: the worker
++    // installs itself and reloads once, which a server that sets the headers
++    // makes unnecessary.
++    if (!window.crossOriginIsolated) document.write('<script src="coi-serviceworker.js"><\/script>');
+   </script>
+-  <script src="coi-serviceworker.js"></script>
+   <script src="pumpkin.js"></script>
+ </body>
+ </html>
+diff --git a/src/emscripten/vfs/pumpkin.lua b/src/emscripten/vfs/pumpkin.lua
+index 069638e..f8adbda 100644
+--- a/src/emscripten/vfs/pumpkin.lua
++++ b/src/emscripten/vfs/pumpkin.lua
+@@ -1,3 +1,6 @@
++-- Boot script for the WebAssembly build: the browser equivalent of
++-- script/bod.lua. SDL2 is the only display library Emscripten builds, and the
++-- canvas is 320x320 -- the page scales it, so the game does not pay for it.
+ function cleanup_callback()
+   if pumpkin then
+     pumpkin.finish()
+@@ -6,18 +9,36 @@ end
+ 
+ pit.cleanup(cleanup_callback)
+ 
+-pit.loadlib("liblsdl2")
++lib = pit.loadlib("liblsdl2")
++if not lib then
++  print("could not load liblsdl2")
++  pit.finish(0)
++  return
++end
+ 
+ pit.mount("./vfs/", "/")
+ 
+ pumpkin = pit.loadlib("libos")
+ pumpkin.init()
+ 
++local zoom = tonumber(pit.getenv("BOD_ZOOM") or "1") or 1
++-- BOD_LAUNCHER=Launcher boots PumpkinOS's own launcher instead of the game,
++-- which is how you tell a problem in the OS from one in the game.
++local app = pit.getenv("BOD_LAUNCHER") or "BikeOrDie"
++-- SDL reaches WebGL through EGL, whose calls only work on the browser's main
++-- thread; the software renderer draws through the canvas instead, which is
++-- what lets the OS run on a thread of its own.
++local soft = (pit.getenv("BOD_SOFTWARE") or "1") ~= "0"
++
+ pumpkin.start {
+-  fullrefresh = true,
+-  density     = 144,
+-  width       = 800,
+-  height      = 600,
+-  hdepth      = 16,
+-  depth       = 16
++  density  = 144,
++  width    = 320,
++  height   = 320,
++  depth    = 16,
++  hdepth   = lib.hdepth,
++  xfactor  = zoom,
++  yfactor  = zoom,
++  taskbar  = false,
++  software = soft,
++  launcher = app
+ }
 diff --git a/src/liblsdl2/Makefile b/src/liblsdl2/Makefile
 index a8b7c26..b091717 100644
 --- a/src/liblsdl2/Makefile
@@ -146,7 +938,7 @@ index a8b7c26..b091717 100644
  CUSTOMFLAGS=$(MIXER_FLAGS) $(OPENGL_FLAGS)
  LIBS=-lSDL2 -lversion -limm32 -lgdi32 -lsetupapi -lwinmm -lole32 -loleaut32 $(MIXER_LIBS)
 diff --git a/src/liblsdl2/liblsdl2.c b/src/liblsdl2/liblsdl2.c
-index b8e2f67..66e081d 100644
+index b8e2f67..a21f69f 100644
 --- a/src/liblsdl2/liblsdl2.c
 +++ b/src/liblsdl2/liblsdl2.c
 @@ -780,6 +780,14 @@ static int libsdl_video_setup(libsdl_window_t *window) {
@@ -217,7 +1009,72 @@ index b8e2f67..66e081d 100644
        }
        audio->buffer = sys_calloc(1, audio->bsize * audio->channels);
        debug(DEBUG_TRACE, "SDL", "buffer size %d", audio->bsize);
-@@ -1568,22 +1609,27 @@ static int audio_action(void *_arg) {
+@@ -1521,6 +1562,64 @@ static void *convert_audio(sdl_audio_buffer_t *abuf, sdl_audio_t *audio, void *a
+   return buf;
+ }
+ 
++#if defined(EMSCRIPTEN)
++#include <emscripten/proxying.h>
++#include <emscripten/threading.h>
++
++/* SDL's Emscripten audio backend keeps its state in the page's JavaScript, so
++ * the three calls that open, start and close the device have to be made on the
++ * browser's main thread. The mixer stays on a thread of its own, as everywhere
++ * else, and SDL's callback reaches it through the same ring buffer. */
++typedef struct {
++  SDL_AudioSpec *desired;
++  SDL_AudioSpec *obtained;
++  SDL_AudioDeviceID dev;
++  int pause;
++  int op;
++} sdl_audio_main_t;
++
++static void audio_on_main(void *p) {
++  sdl_audio_main_t *a = (sdl_audio_main_t *)p;
++
++  switch (a->op) {
++    case 0: a->dev = SDL_OpenAudioDevice(NULL, 0, a->desired, a->obtained, 0); break;
++    case 1: SDL_PauseAudioDevice(a->dev, a->pause); break;
++    case 2: SDL_CloseAudioDevice(a->dev); break;
++  }
++}
++
++static void audio_on_main_call(sdl_audio_main_t *a) {
++  emscripten_proxy_sync(emscripten_proxy_get_system_queue(),
++                        emscripten_main_runtime_thread_id(), audio_on_main, a);
++}
++
++static SDL_AudioDeviceID audio_open_device(SDL_AudioSpec *desired, SDL_AudioSpec *obtained) {
++  sdl_audio_main_t a;
++  sys_memset(&a, 0, sizeof(a));
++  a.op = 0; a.desired = desired; a.obtained = obtained;
++  audio_on_main_call(&a);
++  return a.dev;
++}
++
++static void audio_pause_device(SDL_AudioDeviceID dev, int pause) {
++  sdl_audio_main_t a;
++  sys_memset(&a, 0, sizeof(a));
++  a.op = 1; a.dev = dev; a.pause = pause;
++  audio_on_main_call(&a);
++}
++
++static void audio_close_device(SDL_AudioDeviceID dev) {
++  sdl_audio_main_t a;
++  sys_memset(&a, 0, sizeof(a));
++  a.op = 2; a.dev = dev;
++  audio_on_main_call(&a);
++}
++#else
++#define audio_open_device(d, o)  SDL_OpenAudioDevice(NULL, 0, (d), (o), 0)
++#define audio_pause_device(v, p) SDL_PauseAudioDevice((v), (p))
++#define audio_close_device(v)    SDL_CloseAudioDevice((v))
++#endif
++
+ static void audio_callback(void *userdata, uint8_t *stream, int len) {
+   int aptr = *(int *)userdata;
+   sdl_audio_buffer_t *abuf;
+@@ -1568,22 +1667,27 @@ static int audio_action(void *_arg) {
    int aptr;
    unsigned char *msg;
    unsigned int msglen;
@@ -248,7 +1105,7 @@ index b8e2f67..66e081d 100644
    wait = 2000;
  
    for (; !thread_must_end();) {
-@@ -1596,9 +1642,9 @@ static int audio_action(void *_arg) {
+@@ -1596,9 +1700,9 @@ static int audio_action(void *_arg) {
      if (r == 1) {
        if (dev == 0) {
          switch (arg->pcm) {
@@ -261,7 +1118,12 @@ index b8e2f67..66e081d 100644
          }
          desired.freq = arg->rate;          // DSP frequency -- samples per second
          desired.channels = arg->channels;  // Number of channels: 1 mono, 2 stereo
-@@ -1612,8 +1658,18 @@ static int audio_action(void *_arg) {
+@@ -1608,12 +1712,22 @@ static int audio_action(void *_arg) {
+         desired.callback = audio_callback; // Callback that feeds the audio device (NULL to use SDL_QueueAudio())
+         desired.userdata = &aptr;          // Userdata passed to callback (ignored for NULL callbacks)
+ 
+-        if ((dev = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained, 0)) == -1) {
++        if ((dev = audio_open_device(&desired, &obtained)) == 0) {
            debug(DEBUG_ERROR, "SDL", "SDL_OpenAudioDevice failed: %s", SDL_GetError());
            break;
          }
@@ -282,18 +1144,18 @@ index b8e2f67..66e081d 100644
        }
  
        if (msg) {
-@@ -1633,6 +1689,10 @@ static int audio_action(void *_arg) {
+@@ -1633,6 +1747,10 @@ static int audio_action(void *_arg) {
            }
            
            // empty the buffer
 +          if (playing) {
-+            SDL_PauseAudioDevice(dev, 1);
++            audio_pause_device(dev, 1);
 +            playing = 0;
 +          }
            if ((abuf = ptr_lock(aptr, TAG_ABUF)) != NULL) {
              if (abuf->len > 0) {
                debug(DEBUG_TRACE, "SDL", "emptying %u bytes", abuf->len);
-@@ -1654,22 +1714,54 @@ static int audio_action(void *_arg) {
+@@ -1654,22 +1772,54 @@ static int audio_action(void *_arg) {
        wait = 2000;
        if (ptr) {
          if ((audio = ptr_lock(ptr, TAG_AUDIO)) != NULL) {
@@ -347,7 +1209,7 @@ index b8e2f67..66e081d 100644
 +          } else {
 +            if (!playing && level >= depth) {
 +              debug(DEBUG_INFO, "SDL", "device %d primed with %u bytes", dev, level);
-+              SDL_PauseAudioDevice(dev, 0);
++              audio_pause_device(dev, 0);
 +              playing = 1;
 +            }
 +            wait = (level > depth / 2 && outRate) ?
@@ -358,6 +1220,87 @@ index b8e2f67..66e081d 100644
            }
          } else {
            debug(DEBUG_TRACE, "SDL", "ptr %d deleted", ptr);
+@@ -1687,7 +1837,7 @@ static int audio_action(void *_arg) {
+ 
+   if (dev > 0) {
+     debug(DEBUG_INFO, "SDL", "close device %d", dev);
+-    SDL_CloseAudioDevice(dev);
++    audio_close_device(dev);
+   }
+ 
+   if (buf) {
+diff --git a/src/libos/libos.c b/src/libos/libos.c
+index 3490278..669c353 100644
+--- a/src/libos/libos.c
++++ b/src/libos/libos.c
+@@ -88,6 +88,10 @@ static int LoopIteration(libos_t *data, uint32_t dt) {
+ }
+ 
+ #if defined(EMSCRIPTEN)
++/* Defined by the Emscripten shell (src/emscripten/main.c), which owns the
++ * writable filesystem; absent in any other Emscripten build. */
++extern void bod_flush_saves(void) __attribute__((weak));
++
+ static void set_main_loop(void (*callback)(void *), void *data) {
+   emscripten_cancel_main_loop();
+   if (callback) {
+@@ -126,13 +130,10 @@ static void callback(void *_data) {
+     thread_close();
+     debug_close();
+ 
+-    // call cexit after IndexedDB is saved
+-    EM_ASM(
+-      FS.syncfs(false, function (err) {
+-        console.log('save IndexedDB');
+-        ccall('cexit', 'v');
+-      });
+-    );
++    // The application writes its settings on the way out, so the copy the
++    // browser keeps is brought up to date before the runtime goes.
++    if (bod_flush_saves) bod_flush_saves();
++    cexit();
+   }
+ }
+ #endif
+@@ -146,8 +147,14 @@ static void EventLoop(libos_t *data) {
+   request.code = sysAppLaunchCmdNormalLaunch;
+   request.opendb = 1;
+ #if defined(EMSCRIPTEN)
+-  extern UInt32 LauncherPilotMain(UInt16 cmd, MemPtr cmdPBP, UInt16 launchFlags);
+-  request.pilot_main = LauncherPilotMain;
++  // Nothing is loaded from a dlib resource in this build -- everything is
++  // linked in -- so the built-in Launcher is called directly. A Palm OS
++  // application has no native PilotMain to call at all and must reach the
++  // emulator, which only happens when this is left unset.
++  if (!sys_strcmp(data->launcher, "Launcher")) {
++    extern UInt32 LauncherPilotMain(UInt16 cmd, MemPtr cmdPBP, UInt16 launchFlags);
++    request.pilot_main = LauncherPilotMain;
++  }
+ #endif
+   pumpkin_launch(&request);
+ 
+diff --git a/src/libpit/Makefile b/src/libpit/Makefile
+index bccd047..4099569 100644
+--- a/src/libpit/Makefile
++++ b/src/libpit/Makefile
+@@ -10,7 +10,7 @@ PROGRAM=$(BIN)/libpit.a
+ OBJS=$(SOURCE:%.c=%.wasm) script.wasm threadptr.wasm mutex.wasm httpc.wasm httpd.wasm template.wasm
+ all: $(PROGRAM)
+ $(PROGRAM): $(OBJS)
+-	@echo Creating $(PROGRAM).a
++	@echo Creating $(PROGRAM)
+ 	@$(ARCMD) $(PROGRAM) $(OBJS)
+ 
+ else ifeq ($(OSNAME),Kernel)
+@@ -19,7 +19,7 @@ PROGRAM=$(BIN)/libpit.a
+ OBJS=$(SOURCE:%.c=%.o) threadnull.o mutexnull.o fmodl.o strtod.o floatscan.o intscan.o qsort.o vsnprintf.o vsscanf.o
+ all: $(PROGRAM)
+ $(PROGRAM): $(OBJS)
+-	@echo Creating $(PROGRAM).a
++	@echo Creating $(PROGRAM)
+ 	@$(ARCMD) $(PROGRAM) $(OBJS)
+ 
+ else
 diff --git a/src/libpit/mutex.c b/src/libpit/mutex.c
 index fe20037..f7433f3 100644
 --- a/src/libpit/mutex.c
@@ -454,6 +1397,22 @@ index 75c478a..9cde6d1 100644
    }
  
    // check if library is already loaded
+diff --git a/src/libpit/threadptr.c b/src/libpit/threadptr.c
+index e862f4d..97ff9a7 100644
+--- a/src/libpit/threadptr.c
++++ b/src/libpit/threadptr.c
+@@ -73,7 +73,10 @@ void thread_set(thread_key_t *key, void *value) {
+ }
+ 
+ void *thread_get(thread_key_t *key) {
+-  return pthread_getspecific(key->key);
++  // The debug code asks for the thread name from inside thread_init itself,
++  // before the key exists. Reading through the null key is an out-of-bounds
++  // access that traps under WebAssembly.
++  return key ? pthread_getspecific(key->key) : NULL;
+ }
+ 
+ static int thread_create(void *(*action)(void *), void *arg) {
 diff --git a/src/libpumpkin/Control.c b/src/libpumpkin/Control.c
 index 5fafa62..c36d79b 100644
 --- a/src/libpumpkin/Control.c
@@ -1326,7 +2285,7 @@ index 7ab63d3..29570b1 100644
  }
  
 diff --git a/src/libpumpkin/Makefile b/src/libpumpkin/Makefile
-index f60f65d..9070427 100644
+index f60f65d..4c04855 100644
 --- a/src/libpumpkin/Makefile
 +++ b/src/libpumpkin/Makefile
 @@ -18,7 +18,9 @@ endif
@@ -1340,6 +2299,22 @@ index f60f65d..9070427 100644
      $(HEAP_DEBUG) $(LOGTRAP) $(GIT_COMMIT_ID) $(GIT_NOT_CLEAN) $(GIT_TAG_NAME)
  
  GPSLIB_SOURCE=GPSLib68K.c
+@@ -42,13 +44,13 @@ TOS_SOURCE=tos/tos.c tos/gemdos_impl.c tos/bios_impl.c tos/xbios_impl.c tos/vdi.
+ 
+ GLUE_SOURCE=BmpGlue.c CtlGlue.c DateGlue.c FldGlue.c FntGlue.c FrmGlue.c LstGlue.c MemGlue.c TblGlue.c TxtGlue.c WinGlue.c
+ 
+-SOURCE=notif_serde.c launch_serde.c build.c pumpkin.c deploy.o storage.c script.c fill.c AboutBox.c AddressSortLib.c AlarmMgr.c AttentionMgr.c Bitmap.c CharAttr.c ColorTable.c BtLib.c Category.c Clipboard.c ConnectionMgr.c ConsoleMgr.c Control.c CPMLib68KInterface.c SonyLib.c Crc.c DateTime.c Day.c DebugMgr.c DLServer.c Encrypt.c md5.c sha1.c ErrorBase.c Event.c ExgLib.c ExgMgr.c ExpansionMgr.c FatalAlert.c FeatureMgr.c Field.c FileStream.c Find.c FixedMath.c FloatMgr.c Font.c FontSelect.c Form.c FSLib.c Graffiti.c GraffitiReference.c GraffitiShift.c HAL.c HostControl.c IMCUtils.c INetMgr.c InsPoint.c IntlMgr.c IrLib.c Keyboard.c KeyMgr.c Launcher.c List.c LocaleMgr.c Localize.c Lz77Mgr.c Menu.c ModemMgr.c NetBitUtils.c NetMgr.c OverlayMgr.c Password.c PceNativeCall.c PdiLib.c PenInputMgr.c PenMgr.c PhoneLookup.c Preferences.c PrivateRecords.c Progress.c Rect.c ScrollBar.c SelTime.c SelDay.c SelTimeZone.c SerialLinkMgr.c SerialMgr.c SerialMgrOld.c SerialSdrv.c SerialVdrv.c SlotDrvrLib.c SoundMgr.c SslLib.c StringMgr.c SysEvtMgr.c SystemMgr.c SysUtils.c Table.c TelephonyMgr.c TextMgr.c TextServicesMgr.c TimeMgr.c UDAMgr.c UIColor.c UIControls.c UIResources.c VFSMgr.c VFSExplorer.c FileBrowser.c Window.c Chat.c cmheap.c grail.c wav.c dia.c taskbar.o wman.c peditor.c syntax.c edit.c RegistryMgr.c language.c calibrate.c unzip.c junzip.c puff.c plibc.c dosbox.c ssfn_font.c logtrap.c $(GLUE_SOURCE) $(GPSLIB_SOURCE) $(GPDLIB_SOURCE) $(EMU_SOURCE) $(TOS_SOURCE) kdtree.c
++SOURCE=notif_serde.c launch_serde.c build.c pumpkin.c deploy.c storage.c script.c fill.c AboutBox.c AddressSortLib.c AlarmMgr.c AttentionMgr.c Bitmap.c CharAttr.c ColorTable.c BtLib.c Category.c Clipboard.c ConnectionMgr.c ConsoleMgr.c Control.c CPMLib68KInterface.c SonyLib.c Crc.c DateTime.c Day.c DebugMgr.c DLServer.c Encrypt.c md5.c sha1.c ErrorBase.c Event.c ExgLib.c ExgMgr.c ExpansionMgr.c FatalAlert.c FeatureMgr.c Field.c FileStream.c Find.c FixedMath.c FloatMgr.c Font.c FontSelect.c Form.c FSLib.c Graffiti.c GraffitiReference.c GraffitiShift.c HAL.c HostControl.c IMCUtils.c INetMgr.c InsPoint.c IntlMgr.c IrLib.c Keyboard.c KeyMgr.c Launcher.c List.c LocaleMgr.c Localize.c Lz77Mgr.c Menu.c ModemMgr.c NetBitUtils.c NetMgr.c OverlayMgr.c Password.c PceNativeCall.c PdiLib.c PenInputMgr.c PenMgr.c PhoneLookup.c Preferences.c PrivateRecords.c Progress.c Rect.c ScrollBar.c SelTime.c SelDay.c SelTimeZone.c SerialLinkMgr.c SerialMgr.c SerialMgrOld.c SerialSdrv.c SerialVdrv.c SlotDrvrLib.c SoundMgr.c SslLib.c StringMgr.c SysEvtMgr.c SystemMgr.c SysUtils.c Table.c TelephonyMgr.c TextMgr.c TextServicesMgr.c TimeMgr.c UDAMgr.c UIColor.c UIControls.c UIResources.c VFSMgr.c VFSExplorer.c FileBrowser.c Window.c Chat.c cmheap.c grail.c wav.c dia.c taskbar.c wman.c peditor.c syntax.c edit.c RegistryMgr.c language.c calibrate.c unzip.c junzip.c puff.c plibc.c dosbox.c ssfn_font.c logtrap.c $(GLUE_SOURCE) $(GPSLIB_SOURCE) $(GPDLIB_SOURCE) $(EMU_SOURCE) $(TOS_SOURCE) kdtree.c
+ #pumpkin_syscall.c
+ 
+ ifeq ($(OSNAME),Emscripten)
+ 
+ LAUNCHER=$(SRC)/Launcher
+-LAUNCHER_SOURCE=$(LAUNCHER)/Launcher.c $(LAUNCHER)/editstr.c $(LAUNCHER)/editbmp.c $(LAUNCHER)/editform.c $(LAUNCHER)/editbin.c $(LAUNCHER)/editsurf.c
++LAUNCHER_SOURCE=$(LAUNCHER)/Launcher.c $(LAUNCHER)/editstr.c $(LAUNCHER)/editbmp.c $(LAUNCHER)/editform.c $(LAUNCHER)/editbin.c $(LAUNCHER)/editsurf.c $(LAUNCHER)/editreg.c
+ LAUNCHER_OBJS=$(LAUNCHER_SOURCE:%.c=%.wasm)
+ 
+ PROGRAM=$(BIN)/libpumpkin.a
 @@ -81,9 +83,9 @@ else
  
  PROGRAM=$(BIN)/libpumpkin$(SOEXT)
@@ -2613,3 +3588,440 @@ index 93cf260..d41b3ba 100644
      case WINDOW_KEY_F1:    pumpkin_module.keyMask &= ~keyBitHard1;    break;
      case WINDOW_KEY_F2:    pumpkin_module.keyMask &= ~keyBitHard2;    break;
      case WINDOW_KEY_F3:    pumpkin_module.keyMask &= ~keyBitHard3;    break;
+diff --git a/src/libwtest/Makefile b/src/libwtest/Makefile
+new file mode 100644
+index 0000000..1090b1f
+--- /dev/null
++++ b/src/libwtest/Makefile
+@@ -0,0 +1,6 @@
++include ../common.mak
++
++PROGRAM=libwtest
++SOURCE=libwtest.c
++
++include ../lib.mak
+diff --git a/src/libwtest/libwtest.c b/src/libwtest/libwtest.c
+new file mode 100644
+index 0000000..0f730ee
+--- /dev/null
++++ b/src/libwtest/libwtest.c
+@@ -0,0 +1,419 @@
++/* Headless window driver for automated testing.
++ *
++ * Keeps the composed framebuffer in memory, writes periodic PPM snapshots, and
++ * feeds input from a plain-text script, so the game can be exercised without a
++ * visible window and without synthesising system-wide mouse/keyboard events.
++ *
++ *   BOD_TEST_OUT     directory for frames         (default /tmp/bodtest)
++ *   BOD_TEST_SCRIPT  input script
++ *   BOD_TEST_PERIOD  ms between snapshots         (default 500)
++ *
++ * Script grammar, one action per line:
++ *   wait <ms>              let the game run
++ *   key <code>             key down + up
++ *   keydown <code> / keyup <code>
++ *   pen <x> <y>            pointer motion
++ *   tap <x> <y>            pointer down + up
++ *   shot <label>           snapshot now, named
++ */
++
++#include "sys.h"
++#include "script.h"
++#include "thread.h"
++#include "pwindow.h"
++#include "audio.h"
++#include "debug.h"
++#include "xalloc.h"
++
++#define MAX_ACTIONS 512
++
++typedef struct {
++  int op;                 /* see OP_ below */
++  int a, b;
++  char label[32];
++} action_t;
++
++enum { OP_WAIT = 1, OP_KEYDOWN, OP_KEYUP, OP_PEN, OP_TAPDOWN, OP_TAPUP, OP_SHOT };
++
++typedef struct {
++  int width, height, spixel;
++  uint16_t *buf;
++  int x, y, buttons;
++  action_t act[MAX_ACTIONS];
++  int nact, cur;
++  int64_t resume_at;      /* microseconds */
++  int64_t next_shot;
++  int period;
++  uint32_t frame;
++  char out[256];
++} libwtest_window_t;
++
++struct texture_t {
++  int width, height;
++  uint8_t *buf;
++};
++
++static window_provider_t window_provider;
++
++/* ---------------------------------------------------------------- audio
++ * Writes whatever the sound layer produces to <BOD_TEST_OUT>/audio.raw, so a
++ * headless run can be checked for actual samples instead of guessing. */
++static audio_provider_t audio_provider;
++static int (*wt_getaudio)(void *buffer, int len, void *data);
++static void *wt_audio_data;
++static int wt_rate = 44100, wt_channels = 1, wt_pcm;
++static int wt_audio_fd = -1;
++static int64_t wt_audio_next;
++static uint32_t wt_audio_bytes;
++
++static void wt_audio_open(void) {
++  char path[320];
++  char *e = sys_getenv("BOD_TEST_OUT");
++  if (wt_audio_fd >= 0) return;
++  sys_snprintf(path, sizeof(path) - 1, "%s/audio.raw", (e && e[0]) ? e : "/tmp/bodtest");
++  wt_audio_fd = sys_create(path, SYS_WRITE | SYS_TRUNC, 0644);
++  debug(DEBUG_INFO, "WTEST", "audio -> %s (fd %d)", path, wt_audio_fd);
++}
++
++static int wt_audio_init(int pcm, int channels, int rate) {
++  wt_pcm = pcm; wt_channels = channels ? channels : 1; wt_rate = rate ? rate : 44100;
++  debug(DEBUG_INFO, "WTEST", "audio init pcm=%d channels=%d rate=%d", pcm, channels, rate);
++  wt_audio_open();
++  return 1;
++}
++static int wt_audio_finish(int handle) { return 0; }
++static audio_t wt_audio_create(int pcm, int channels, int rate, void *data) {
++  wt_pcm = pcm; wt_channels = channels ? channels : 1; wt_rate = rate ? rate : 44100;
++  debug(DEBUG_INFO, "WTEST", "audio create pcm=%d channels=%d rate=%d", pcm, channels, rate);
++  wt_audio_open();
++  return 1;
++}
++static int wt_audio_start(int handle, audio_t audio,
++                          int (*getaudio)(void *buffer, int len, void *data), void *data) {
++  wt_getaudio = getaudio;
++  wt_audio_data = data;
++  wt_audio_next = sys_get_clock();
++  debug(DEBUG_INFO, "WTEST", "audio stream started");
++  return 0;
++}
++static int wt_audio_play(audio_t audio, uint8_t *raw, int len) {
++  wt_audio_open();
++  if (wt_audio_fd >= 0 && raw && len > 0) { sys_write(wt_audio_fd, raw, len); wt_audio_bytes += len; }
++  return 0;
++}
++static int wt_audio_destroy(audio_t audio) { wt_getaudio = NULL; return 0; }
++static int wt_mixer_init(void) { return 0; }
++static int wt_mixer_play(uint8_t *buf, uint32_t len, int volume) {
++  debug(DEBUG_INFO, "WTEST", "mixer play %u bytes volume %d", len, volume);
++  return 0;
++}
++static int wt_mixer_stop(void) { return 0; }
++
++/* Pump the stream callback from the main loop, paced by the sample rate. */
++static void wt_audio_pump(void) {
++  static uint8_t buf[8192];
++  int64_t now, due;
++  int want, got;
++
++  if (!wt_getaudio || wt_audio_fd < 0) return;
++  now = sys_get_clock();
++  if (now < wt_audio_next) return;
++  due = now - wt_audio_next;
++  if (due > 200000) due = 200000;                 /* cap catch-up */
++  want = (int)((due * wt_rate / 1000000) * wt_channels * 2);
++  if (want <= 0) want = wt_channels * 2;
++  if (want > (int)sizeof(buf)) want = sizeof(buf);
++  got = wt_getaudio(buf, want, wt_audio_data);
++  if (got > 0) { sys_write(wt_audio_fd, buf, got); wt_audio_bytes += got; }
++  wt_audio_next = now;
++}
++
++
++/* ---------------------------------------------------------------- snapshots */
++
++static void snapshot(libwtest_window_t *window, const char *label) {
++  char path[320], hdr[64];
++  int fd, i, n;
++  uint8_t *rgb;
++
++  if (label && label[0])
++    sys_snprintf(path, sizeof(path) - 1, "%s/%s.ppm", window->out, label);
++  else
++    sys_snprintf(path, sizeof(path) - 1, "%s/f%05u.ppm", window->out, window->frame);
++  window->frame++;
++
++  if ((fd = sys_create(path, SYS_WRITE | SYS_TRUNC, 0644)) < 0) return;
++  n = sys_snprintf(hdr, sizeof(hdr) - 1, "P6\n%d %d\n255\n", window->width, window->height);
++  sys_write(fd, (uint8_t *)hdr, n);
++
++  if ((rgb = xmalloc(window->width * window->height * 3)) != NULL) {
++    for (i = 0; i < window->width * window->height; i++) {
++      uint16_t p = window->buf[i];          /* RGB565 */
++      rgb[i*3+0] = ((p >> 11) & 0x1F) << 3;
++      rgb[i*3+1] = ((p >>  5) & 0x3F) << 2;
++      rgb[i*3+2] = ( p        & 0x1F) << 3;
++    }
++    sys_write(fd, rgb, window->width * window->height * 3);
++    xfree(rgb);
++  }
++  sys_close(fd);
++}
++
++/* ------------------------------------------------------------------- script */
++
++static int keyname(const char *s) {
++  if (!sys_strcmp(s, "up"))    return WINDOW_KEY_UP;
++  if (!sys_strcmp(s, "down"))  return WINDOW_KEY_DOWN;
++  if (!sys_strcmp(s, "left"))  return WINDOW_KEY_LEFT;
++  if (!sys_strcmp(s, "right")) return WINDOW_KEY_RIGHT;
++  if (s[0] && !s[1]) return s[0];
++  return sys_atoi(s);
++}
++
++static void load_script(libwtest_window_t *window, const char *path) {
++  char line[256], w0[64], w1[64], w2[64];
++  int fd, n, len = 0;
++  uint8_t c;
++
++  if ((fd = sys_open(path, SYS_READ)) < 0) {
++    debug(DEBUG_ERROR, "WTEST", "cannot open script \"%s\"", path);
++    return;
++  }
++  for (;;) {
++    n = sys_read(fd, &c, 1);
++    if (n == 1 && c != '\n' && len < (int)sizeof(line) - 1) { line[len++] = c; continue; }
++    line[len] = 0;
++    if (len && line[0] != '#') {
++      action_t *a = &window->act[window->nact];
++      w0[0] = w1[0] = w2[0] = 0;
++      sys_sscanf(line, "%63s %63s %63s", w0, w1, w2);
++      a->op = 0;
++      if      (!sys_strcmp(w0, "wait"))    { a->op = OP_WAIT;    a->a = sys_atoi(w1); }
++      else if (!sys_strcmp(w0, "key"))     { a->op = OP_KEYDOWN; a->a = keyname(w1); a->b = 1; }
++      else if (!sys_strcmp(w0, "keydown")) { a->op = OP_KEYDOWN; a->a = keyname(w1); }
++      else if (!sys_strcmp(w0, "keyup"))   { a->op = OP_KEYUP;   a->a = keyname(w1); }
++      else if (!sys_strcmp(w0, "pen"))     { a->op = OP_PEN;     a->a = sys_atoi(w1); a->b = sys_atoi(w2); }
++      else if (!sys_strcmp(w0, "tap")) {
++        /* a tap needs a motion first: the button handler uses the last
++         * reported pen position, not the button event's own coordinates */
++        a->op = OP_PEN; a->a = sys_atoi(w1); a->b = sys_atoi(w2);
++        if (window->nact < MAX_ACTIONS - 3) {
++          window->nact++;
++          a = &window->act[window->nact];
++          a->op = OP_TAPDOWN; a->a = sys_atoi(w1); a->b = sys_atoi(w2);
++        }
++      }
++      else if (!sys_strcmp(w0, "shot"))    { a->op = OP_SHOT;    sys_strncpy(a->label, w1, sizeof(a->label)-1); }
++      if (a->op && window->nact < MAX_ACTIONS - 2) window->nact++;
++    }
++    len = 0;
++    if (n != 1) break;
++  }
++  sys_close(fd);
++  debug(DEBUG_INFO, "WTEST", "loaded %d actions from %s", window->nact, path);
++}
++
++/* -------------------------------------------------------------- provider */
++
++static window_t *libwtest_create(int encoding, int *width, int *height, int xfactor, int yfactor,
++                                 int rotate, int fullscreen, int software, char *driver, void *data) {
++  libwtest_window_t *window;
++  char *e;
++
++  if ((window = xcalloc(1, sizeof(libwtest_window_t))) == NULL) return NULL;
++  window->width = *width;
++  window->height = *height;
++  window->spixel = sizeof(uint16_t);
++  window->buf = xcalloc(window->width * window->height, window->spixel);
++  e = sys_getenv("BOD_TEST_OUT");
++  sys_strncpy(window->out, (e && e[0]) ? e : "/tmp/bodtest", sizeof(window->out) - 1);
++  e = sys_getenv("BOD_TEST_PERIOD");
++  window->period = (e && e[0]) ? sys_atoi(e) : 500;
++  e = sys_getenv("BOD_TEST_SCRIPT");
++  if (e && e[0]) load_script(window, e);
++  window->next_shot = sys_get_clock() + (int64_t)window->period * 1000;
++  debug(DEBUG_INFO, "WTEST", "headless %dx%d, frames in %s", window->width, window->height, window->out);
++  return (window_t *)window;
++}
++
++static int libwtest_destroy(window_t *_window) {
++  libwtest_window_t *window = (libwtest_window_t *)_window;
++  if (window) {
++    snapshot(window, "final");
++    if (window->buf) xfree(window->buf);
++    xfree(window);
++  }
++  return 0;
++}
++
++static int libwtest_render(window_t *_window) { return 0; }
++
++static texture_t *libwtest_create_texture(window_t *_window, int width, int height) {
++  libwtest_window_t *window = (libwtest_window_t *)_window;
++  texture_t *texture;
++  if (!window) return NULL;
++  if ((texture = xcalloc(1, sizeof(texture_t))) == NULL) return NULL;
++  texture->width = width;
++  texture->height = height;
++  if ((texture->buf = xcalloc(width * height, window->spixel)) == NULL) { xfree(texture); return NULL; }
++  return texture;
++}
++
++static int libwtest_destroy_texture(window_t *_window, texture_t *texture) {
++  if (texture) { if (texture->buf) xfree(texture->buf); xfree(texture); }
++  return 0;
++}
++
++static int libwtest_update_texture(window_t *_window, texture_t *texture, uint8_t *raw) {
++  if (texture) sys_memcpy(texture->buf, raw, texture->width * texture->height * sizeof(uint16_t));
++  return 0;
++}
++
++static int libwtest_update_texture_rect(window_t *_window, texture_t *texture, uint8_t *src,
++                                        int tx, int ty, int w, int h) {
++  libwtest_window_t *window = (libwtest_window_t *)_window;
++  uint8_t *s, *d;
++  int pitch, len, i;
++
++  if (!window || !texture || !src || w <= 0 || h <= 0 || tx < 0 || ty < 0 ||
++      (tx + w) > texture->width || (ty + h) > texture->height) return -1;
++  s = &src[(ty * texture->width + tx) * window->spixel];
++  d = &texture->buf[(ty * texture->width + tx) * window->spixel];
++  pitch = texture->width * window->spixel;
++  len = w * window->spixel;
++  for (i = 0; i < h; i++) { sys_memcpy(d, s, len); s += pitch; d += pitch; }
++  return 0;
++}
++
++static int libwtest_draw_texture_rect(window_t *_window, texture_t *texture,
++                                      int tx, int ty, int w, int h, int x, int y) {
++  libwtest_window_t *window = (libwtest_window_t *)_window;
++  uint8_t *s, *d;
++  int spitch, dpitch, len, i;
++
++  if (!window || !texture || w <= 0 || h <= 0) return -1;
++  if (x >= window->width || y >= window->height || x + w <= 0 || y + h <= 0) return -1;
++  if (x < 0) { tx -= x; w += x; x = 0; }
++  if (y < 0) { ty -= y; h += y; y = 0; }
++  if (w <= 0 || h <= 0) return -1;
++  if (x + w > window->width)  w = window->width - x;
++  if (y + h > window->height) h = window->height - y;
++  if (tx < 0 || ty < 0 || tx + w > texture->width || ty + h > texture->height) return -1;
++
++  s = &texture->buf[(ty * texture->width + tx) * window->spixel];
++  d = (uint8_t *)&window->buf[(y * window->width + x)];
++  spitch = texture->width * window->spixel;
++  dpitch = window->width * window->spixel;
++  len = w * window->spixel;
++  for (i = 0; i < h; i++) { sys_memcpy(d, s, len); s += spitch; d += dpitch; }
++  return 0;
++}
++
++static int libwtest_draw_texture(window_t *window, texture_t *texture, int x, int y) {
++  return libwtest_draw_texture_rect(window, texture, 0, 0, texture->width, texture->height, x, y);
++}
++
++static void libwtest_status(window_t *_window, int *x, int *y, int *buttons) {
++  libwtest_window_t *window = (libwtest_window_t *)_window;
++  if (x) *x = window->x;
++  if (y) *y = window->y;
++  if (buttons) *buttons = window->buttons;
++}
++
++static int libwtest_event2(window_t *_window, int wait, int *arg1, int *arg2) {
++  libwtest_window_t *window = (libwtest_window_t *)_window;
++  int64_t now;
++  action_t *a;
++
++  if (!window) return 0;
++  now = sys_get_clock();
++
++  wt_audio_pump();
++
++  if (now >= window->next_shot) {
++    snapshot(window, NULL);
++    window->next_shot = now + (int64_t)window->period * 1000;
++  }
++  if (now < window->resume_at) return 0;
++  if (window->cur >= window->nact) return 0;
++
++  a = &window->act[window->cur];
++  switch (a->op) {
++    case OP_WAIT:
++      window->resume_at = now + (int64_t)a->a * 1000;
++      window->cur++;
++      return 0;
++    case OP_SHOT:
++      snapshot(window, a->label);
++      window->cur++;
++      return 0;
++    case OP_PEN:
++      window->x = a->a; window->y = a->b;
++      *arg1 = a->a; *arg2 = a->b;
++      window->cur++;
++      return WINDOW_MOTION;
++    case OP_TAPDOWN:
++      window->x = a->a; window->y = a->b;
++      window->buttons = 1;
++      a->op = OP_TAPUP;                 /* emit the release next time round */
++      *arg1 = 1; *arg2 = 0;
++      window->resume_at = now + 60000;
++      return WINDOW_BUTTONDOWN;
++    case OP_TAPUP:
++      window->buttons = 0;
++      *arg1 = 1; *arg2 = 0;
++      window->cur++;
++      window->resume_at = now + 60000;
++      return WINDOW_BUTTONUP;
++    case OP_KEYDOWN:
++      *arg1 = a->a; *arg2 = 0;
++      if (a->b) { a->op = OP_KEYUP; window->resume_at = now + 40000; }
++      else window->cur++;
++      return WINDOW_KEYDOWN;
++    case OP_KEYUP:
++      *arg1 = a->a; *arg2 = 0;
++      window->cur++;
++      window->resume_at = now + 40000;
++      return WINDOW_KEYUP;
++  }
++  window->cur++;
++  return 0;
++}
++
++int libwtest_load(void) {
++  sys_memset(&window_provider, 0, sizeof(window_provider));
++  window_provider.create = libwtest_create;
++  window_provider.destroy = libwtest_destroy;
++  window_provider.render = libwtest_render;
++  window_provider.create_texture = libwtest_create_texture;
++  window_provider.destroy_texture = libwtest_destroy_texture;
++  window_provider.update_texture = libwtest_update_texture;
++  window_provider.update_texture_rect = libwtest_update_texture_rect;
++  window_provider.draw_texture = libwtest_draw_texture;
++  window_provider.draw_texture_rect = libwtest_draw_texture_rect;
++  window_provider.status = libwtest_status;
++  window_provider.event2 = libwtest_event2;
++
++  sys_memset(&audio_provider, 0, sizeof(audio_provider));
++  audio_provider.init = wt_audio_init;
++  audio_provider.finish = wt_audio_finish;
++  audio_provider.create = wt_audio_create;
++  audio_provider.start = wt_audio_start;
++  audio_provider.play = wt_audio_play;
++  audio_provider.destroy = wt_audio_destroy;
++  audio_provider.mixer_init = wt_mixer_init;
++  audio_provider.mixer_play = wt_mixer_play;
++  audio_provider.mixer_stop = wt_mixer_stop;
++  return 0;
++}
++
++int libwtest_init(int pe, script_ref_t obj) {
++  debug(DEBUG_INFO, "WTEST", "registering provider %s", WINDOW_PROVIDER);
++  script_set_pointer(pe, WINDOW_PROVIDER, &window_provider);
++  debug(DEBUG_INFO, "WTEST", "registering provider %s", AUDIO_PROVIDER);
++  script_set_pointer(pe, AUDIO_PROVIDER, &audio_provider);
++  script_add_iconst(pe, obj, "hdepth", 16);
++  return 0;
++}
++
++int libwtest_unload(void) { return 0; }

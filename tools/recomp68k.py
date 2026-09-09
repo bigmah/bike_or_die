@@ -16,7 +16,13 @@ CS.detail = True
 DREG = {globals()[f'M68K_REG_D{i}']: f'd{i}' for i in range(8)}
 AREG = {globals()[f'M68K_REG_A{i}']: f'a{i}' for i in range(8)}
 
-CHUNK_SLOTS = 3072          # instruction slots (2 bytes each) per generated C function
+# Instruction slots (2 bytes each) per generated C function. This sets how big
+# the generated functions get, and they are already unusual: one label and one
+# label-array entry per slot. A native compiler takes 3072 without complaint,
+# but WebAssembly does not -- at that size clang either exceeds the 50k locals
+# a function may have or, at -O1, produces a function that misbehaves -- so
+# keep it small enough for both. BOD_CHUNK_SLOTS overrides it.
+CHUNK_SLOTS = int(os.environ.get('BOD_CHUNK_SLOTS', '512'))
 
 CC = {'t':'CC_T','f':'CC_F','hi':'CC_HI','ls':'CC_LS','cc':'CC_CC','hs':'CC_CC',
       'cs':'CC_CS','lo':'CC_CS','ne':'CC_NE','eq':'CC_EQ','vc':'CC_VC','vs':'CC_VS',

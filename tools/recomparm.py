@@ -12,7 +12,10 @@ from capstone.arm import *
 CS = Cs(CS_ARCH_ARM, CS_MODE_ARM | CS_MODE_LITTLE_ENDIAN)
 CS.detail = True
 
-CHUNK_SLOTS = 3072            # 4 bytes each
+# Instruction slots (4 bytes each) per generated C function; see recomp68k.py.
+# An ARM instruction translates to roughly twice the C a 68k one does, so this
+# is half of what that one uses.
+CHUNK_SLOTS = int(os.environ.get('BOD_CHUNK_SLOTS', '256'))
 
 CCMAP = {
     ARM_CC_EQ:'ACC_EQ', ARM_CC_NE:'ACC_NE', ARM_CC_HS:'ACC_HS', ARM_CC_LO:'ACC_LO',

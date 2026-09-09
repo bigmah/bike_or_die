@@ -39,3 +39,21 @@ frozen clock in `armsyscall.c` used only while diffing):
 - Tracing (`BOD_ARM_TRACE`, `BOD_ARM_ENGINE`, `BOD_ARM_DETTIME`, `BOD_ARM_RING`) exists to
   diff the recompiled ARM against the interpreter instruction by instruction; that is how
   the two real translation bugs were found. See `tools/diff_trace.py`.
+
+## WebAssembly port
+
+`OSNAME=Emscripten` is upstream's own target; these are the changes that make it build
+and run (`tools/make_web.sh` drives it).
+
+| file | change |
+|---|---|
+| `src/common.mak` | `ARCMD` defined outside `lib.mak` -- the `libpit` and `libpumpkin` Makefiles use it without including that -- and `-std=gnu99` for Emscripten, since `EM_ASM` is rejected in a strict `-std=c*` mode |
+| `src/libpit/Makefile` | uses the `ARCMD` above (its archive step ran an empty command before) |
+| `src/libpumpkin/Makefile` | `deploy.o`/`taskbar.o` in `SOURCE` said `.o`, so the wasm build silently archived the *native* objects; the Emscripten Launcher list was missing `editreg.c` |
+| `src/libpit/threadptr.c` | `thread_get` returns NULL for a key that does not exist yet -- the debug code asks for the thread name from inside `thread_init`, and reading through the null key traps under WebAssembly |
+| `src/libos/libos.c` | the built-in Launcher's `PilotMain` is only forced when the launcher *is* the Launcher; a Palm OS application has to reach the emulator instead. On exit, flushes the saved data instead of an IndexedDB sync |
+| `src/liblsdl2/liblsdl2.c` | SDL's audio device is opened, paused and closed on the browser's main thread (`emscripten_proxy_sync`), where SDL's Emscripten backend keeps its state |
+| `src/emscripten/*` | `main.c` builds the writable VFS and keeps changes in OPFS; `bod-pre.js` and `template.html` are the page; the Makefile links the recompiled game code in |
+
+The link is `-sPROXY_TO_PTHREAD -sWASMFS` with a fixed 384 MB memory; see the README for
+why each of those is needed.

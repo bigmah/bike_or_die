@@ -1,4 +1,7 @@
 /* Dispatch loop for the statically recompiled ARM32 code. */
+#include <stdio.h>
+#include <stdlib.h>
+
 #include "rarm.h"
 #include "rarm_gen.h"
 
@@ -18,8 +21,24 @@ static int seg_of(uint32_t pc) {
   return -1;
 }
 
+/* See r68k_run: BOD_WEB_TRACE=1 makes the loop report where it is. */
+static int bod_trace = -1;
+
 void rarm_run(rarm_state *S) {
+  static unsigned long bodn = 0;
+
+  if (bod_trace < 0) {
+    const char *e = getenv("BOD_WEB_TRACE");
+    /* The value is how many dispatches to skip between reports; 1 reports
+     * every one, which is what you want when the loop has stopped moving. */
+    bod_trace = (e && e[0]) ? atoi(e) : 0;
+    if (bod_trace < 0) bod_trace = 0;
+  }
+
   while (!S->halt) {
+    if (bod_trace && (bodn++ % (unsigned long)bod_trace) == 0) {
+      fprintf(stderr, "BODTRACE rarm n=%lu pc=0x%08X\n", bodn, S->r[15]);
+    }
     uint32_t pc = S->r[15];
     int n = seg_of(pc);
     if (n < 0) {

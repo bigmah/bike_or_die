@@ -11,3 +11,5 @@
 # build products
 __pycache__/
 /tools/macinput
+/tools/node_modules/
+/tools/package-lock.json

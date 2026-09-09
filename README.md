@@ -37,6 +37,12 @@ to be translated too, not just run.
    | 68000 | 23,337 | 23,330 (99.97%; the 7 misses are data bytes) |
    | ARM32 | 23,877 | 23,877 (100%) |
 
+   Each function covers 1 KB of the original code. A native compiler will take far
+   larger ones, but these functions are unusual -- a label and a label-array entry per
+   instruction -- and WebAssembly will not: past a few hundred instructions clang either
+   exceeds the 50,000 locals a wasm function may have or, at `-O1`, produces one that
+   misbehaves. `BOD_CHUNK_SLOTS` changes it.
+
    That becomes ~185k lines of generated C (`src/gen`), ~11 MB of native code.
 3. **Bridging.** Traps become direct calls into the Palm OS layer; `PceNativeCall`,
    the ARM→68k trampoline and the PACE syscall addresses are handled by the glue in
@@ -200,6 +206,7 @@ Useful knobs while debugging the ARM core:
 | `BOD_ARM_RING=1` | dump recent ARM state to `/tmp/bod_ring.txt` on a wild access |
 | `BOD_ARM_STRICT=1` | make out-of-range accesses fatal instead of clamped |
 | `BOD_ARM_LOCKSTEP=<n>` | run every instruction of `armc` *n* under both cores and report the first register that disagrees |
+| `BOD_WEB_TRACE=<n>` | report where each dispatch loop is every *n* dispatches; `1` reports every one. Written for the browser, where a blocked thread cannot be looked at, but it works anywhere |
 
 Lockstep needs a single-step core for that blob, which is large and generated on demand:
 
@@ -210,6 +217,49 @@ has none and pays nothing for them.
 
 `tools/bikecheck.py` scores a frame for how much of the (red) bike is visible, which is
 what makes the bisection automatic.
+
+## In a browser
+
+The same two recompiled cores also build to WebAssembly, so the game runs in a browser
+with no native binary at all:
+
+    tools/make_web.sh                       # emcc; needs emscripten in PATH
+    tools/webserver.py 8080 build/web       # then open http://127.0.0.1:8080/
+
+`build/web` is a directory of static files (36 MB, about 12 MB over the wire) that can be
+served from anywhere. It needs the two headers that make a page cross-origin isolated --
+`Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`
+-- because PumpkinOS runs on threads and `SharedArrayBuffer` is what they share memory
+through. `tools/webserver.py` sends them; on a host that will not, the page falls back to
+the bundled `coi-serviceworker.js`, which installs a service worker that adds them.
+
+Everything the native build does, this does: the recompiled 68k and ARM cores, the
+level packs, the keyboard (including the five-way navigation through menus and dialogs),
+and sound. Progress, settings and best times are kept in the browser's origin private
+filesystem and restored on the next visit; the page has a button that throws them away.
+
+Two things are arranged differently from the native build, both forced by the browser:
+
+- **The OS runs on a worker.** `-sPROXY_TO_PTHREAD` moves `main` off the browser's main
+  thread, which then does nothing but answer the calls the other threads proxy to it. It
+  has to stay free: every file the application opens and every SDL audio call is one of
+  those, and PumpkinOS's own threads block on each other's locks, so a main thread that
+  waits for a lock deadlocks the lot. That also rules out WebGL, whose context Emscripten
+  can only create on the main thread, so SDL draws through its software renderer -- at
+  320x320 with the page doing the scaling, that costs nothing.
+- **The filesystem lives inside the wasm module** (`-sWASMFS`). The default one is
+  implemented in JavaScript on the main thread, so every `open` from the application
+  would be a round trip to it; the storage scan alone is a few thousand.
+
+Options can be passed in the query string, so `?BOD_ARM_ENGINE=interp` or
+`?PUMPKIN_USER=Me` work the way the environment variables above do, and `?BOD_DEBUG=2`
+raises the log level (`2:STOR` limits the higher level to one subsystem).
+
+`tools/webtest.js` is the browser counterpart of `tools/run.sh`: it drives the page in a
+real Chrome and screenshots the canvas, with the same vocabulary of actions.
+
+    tools/webtest.js -u http://127.0.0.1:8080/pumpkin.html -w 30 \
+        -k "d:3,m:160/295,d:8,k:ArrowUp/down,d:4,k:ArrowUp/up" -o build/shot.png
 
 ## Licensing
 

@@ -1,0 +1,9 @@
+{
+  "name": "bike-or-die-web-harness",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser harness for the WebAssembly build (tools/webtest.js). Drives the local Chrome; it does not download one.",
+  "dependencies": {
+    "puppeteer-core": "^25.10.0"
+  }
+}
