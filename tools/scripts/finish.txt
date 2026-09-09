@@ -2,9 +2,7 @@
 # "Congratulations!" dialog looks like when it lands under the player's hands.
 # The taps still in flight must not raise a focus ring on it: the last frame
 # should be the plain dialog, with the avatar drawn unboxed.
-wait 4500
-tap 160 296
-wait 6000
+wait 10500
 tap 160 160
 wait 2500
 tap 160 160

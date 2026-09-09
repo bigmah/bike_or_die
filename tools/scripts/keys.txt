@@ -1,0 +1,32 @@
+# Ride the tutorial with the keys the settings panel binds -- W, A and D by
+# default, so a run with BOD_KEYS="forward=i left=j right=l" should sit still
+# and one with the letters it names should look exactly like this.
+wait 10500
+tap 160 160
+wait 2500
+tap 160 160
+wait 4500
+shot j0_start
+key w
+key w
+key w
+key w
+key w
+key w
+key w
+key w
+key w
+key w
+wait 1500
+shot j1_forward
+key a
+key a
+key a
+key a
+wait 800
+key d
+key d
+key d
+key d
+wait 1500
+shot j2_balance

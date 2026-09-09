@@ -1,7 +1,5 @@
 # Boot into the tutorial level and pedal.
-wait 6000
-tap 160 296
-wait 7000
+wait 13000
 tap 160 160
 wait 3000
 tap 160 160

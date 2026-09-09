@@ -71,6 +71,9 @@ export PUMPKIN_USER="${PUMPKIN_USER:-PalmDB}"
 # Use the statically recompiled 68k and ARM cores.
 export BOD_RECOMP="${BOD_RECOMP:-1}"
 export BOD_ARM_ENGINE="${BOD_ARM_ENGINE:-recomp}"
+# The keys that ride, on top of the arrows. The browser build has a panel for
+# this; here it is whatever ~/.bikeordie.env says, or WASD and space.
+export BOD_KEYS="${BOD_KEYS:-}"
 exec "$DATA/pumpkin" -d 1 -f "$DATA/pumpkin.log" -s libscriptlua "$HERE/script/bod.lua"
 LAUNCH
 chmod +x "$OUT/Contents/MacOS/BikeOrDie"

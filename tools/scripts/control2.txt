@@ -1,6 +1,4 @@
-wait 4500
-tap 160 296
-wait 6000
+wait 10500
 tap 160 160
 wait 2500
 tap 160 160

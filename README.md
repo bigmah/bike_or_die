@@ -68,6 +68,20 @@ navigator bits the game polls rather than translated into arrow keys, so they ke
 their ordinary meaning too and typing a name or a code is unaffected. Space does the
 same thing for Select.
 
+Which letters those are is up to you. In the browser the cog above the screen opens a
+panel that binds one key to each of the five actions; it takes effect where it is set,
+without reloading, and is kept in that browser. Everywhere else the same thing is
+`BOD_KEYS`, whose default is what the panel starts from:
+
+    BOD_KEYS="forward=w brake=s left=a right=d flip=space"
+
+Actions are separated by spaces and the keys for one by commas, so `forward=w,i` gives
+an action two keys and `flip=` takes its away. A key is a single character or one of
+`space`, `enter`, `tab`, `esc`, `backspace`, `up`, `down`, `left`, `right`, `pgup`,
+`pgdown`, `home`, `end`, `ins`, `del`, `f1`-`f12`. The arrow keys ride whatever this
+says: they are the Palm navigator itself rather than an extra binding, so the bike can
+always be steered with them.
+
 A Palm OS 5 device has no left/right/select in the base key manager, so games poll a
 vendor navigator mask instead. Bike or Die keeps its table of available physical keys at
 `globals+0x3E74` and expects `keyBitNavLeft`/`NavRight`/`NavSelect`
@@ -133,6 +147,7 @@ The launcher reads `~/.bikeordie.env` if it exists. Useful settings:
 | `BOD_ARM_ENGINE` | `recomp` | `interp` falls back to the ARM interpreter |
 | `BOD_RESET` | `0` | `1` re-seeds the game data on next launch |
 | `BOD_ZOOM` | `3` | integer window scale; the game itself is 320x320 |
+| `BOD_KEYS` | WASD | the keys that ride, on top of the arrows; see **Controls** |
 | `BOD_UNLOCK` | `44652` | the registration code to answer the About dialog with; `0` leaves it alone |
 
 Game data (saves, level packs, preferences) lives in
@@ -154,8 +169,16 @@ it draws a form that has a text field and a button labelled `Unlock` -- found by
 what it is rather than by a resource id, so it stops matching by itself once the
 game is registered and that button is gone. The game then validates the code
 against the user name exactly as it would a typed one, and comes up registered
-before the dialog is ever seen. `BOD_UNLOCK=0` leaves it in trial mode; anyone
-whose code was issued for a different HotSync name sets both variables.
+before the dialog is ever seen.
+
+Answering it leaves it up: the same form redraws as its "registered to"
+thank-you, which somebody then has to close before the game starts. So that
+button is pressed too, on the redraw, and the game comes up in play rather than
+behind a dialog nobody asked for. Only that one redraw is touched -- the About
+dialog opened from the menu later on behaves normally, and a code the game
+refuses leaves "Unlock" where it was, which is the signal to stop and leave the
+dialog alone. `BOD_UNLOCK=0` leaves it in trial mode; anyone whose code was
+issued for a different HotSync name sets both variables.
 
 Two related things now reach the disk that did not. A dirty resource used to be
 written only when its database was closed, and an application keeps its own
@@ -241,7 +264,9 @@ builds without synthesising system-wide mouse and keyboard events.
 but the arrow keys and Enter, so its last frame is only reached if every step of the
 menus answered them. `tools/scripts/finish.txt` is its opposite: it pedals all the way
 through the end of a level, where the last frame has to show the "Congratulations!"
-dialog with no focus ring on it.
+dialog with no focus ring on it. `tools/scripts/keys.txt` rides with the letters
+rather than the arrows, so running it under a `BOD_KEYS` that moves them elsewhere
+should leave the bike where it stands.
 
 Useful knobs while debugging the ARM core:
 
@@ -285,6 +310,10 @@ Everything the native build does, this does: the recompiled 68k and ARM cores, t
 level packs, the keyboard (including the five-way navigation through menus and dialogs),
 and sound. Progress, settings and best times are kept in the browser's origin private
 filesystem and restored on the next visit; the page has a button that throws them away.
+The cog above the screen binds the riding keys, over the game rather than beside it so
+that opening it does not move the screen. What it sets goes to the runtime through
+`pumpkin_set_ride_keys` and into this browser's storage, so it takes effect at once and
+is there on the next visit.
 
 Two things are arranged differently from the native build, both forced by the browser:
 

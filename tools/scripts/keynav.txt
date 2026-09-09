@@ -1,9 +1,8 @@
-# Drive the menus with nothing but the keyboard: dismiss the trial dialog with
-# its default button, open the Palm menu, walk to Game -> Select Level, move the
+# Drive the menus with nothing but the keyboard: skip the intro with the
+# default button, open the Palm menu, walk to Game -> Select Level, move the
 # focus ring into the level list and out to "Play this level", and start it.
 wait 4500
-shot k0_about
-key 13
+shot k0_intro
 wait 6000
 key 13
 wait 2500

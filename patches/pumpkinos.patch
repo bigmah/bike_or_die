@@ -273,7 +273,7 @@ index d9caea2..b0424e8 100644
  C99=-std=c99
  endif
 diff --git a/src/emscripten/Makefile b/src/emscripten/Makefile
-index 4114db6..30e6dcf 100644
+index 4114db6..02a2f83 100644
 --- a/src/emscripten/Makefile
 +++ b/src/emscripten/Makefile
 @@ -4,16 +4,63 @@ include ../common.mak
@@ -303,7 +303,7 @@ index 4114db6..30e6dcf 100644
 +  -s INITIAL_MEMORY=402653184 \
 +  -s STACK_SIZE=8388608 -s DEFAULT_PTHREAD_STACK_SIZE=8388608 \
 +  -s PROXY_TO_PTHREAD=1 -s PTHREAD_POOL_SIZE=8 \
-+  -s EXPORTED_FUNCTIONS=_main,_cexit,_pumpkin_send_deploy,_bod_reset_saves \
++  -s EXPORTED_FUNCTIONS=_main,_cexit,_pumpkin_send_deploy,_bod_reset_saves,_pumpkin_set_ride_keys,_pumpkin_get_ride_keys \
 +  -s EXPORTED_RUNTIME_METHODS=ccall,stringToNewUTF8,FS \
 +  -s INCOMING_MODULE_JS_API=canvas,print,printErr,setStatus,preRun,postRun,onRuntimeInitialized,locateFile,mainScriptUrlOrBlob \
 +  -s EXIT_RUNTIME \
@@ -714,10 +714,10 @@ index ea74bb2..6fe5735 100644
    return 0;
  }
 diff --git a/src/emscripten/template.html b/src/emscripten/template.html
-index 216dea4..39c03d9 100644
+index 216dea4..a05c90a 100644
 --- a/src/emscripten/template.html
 +++ b/src/emscripten/template.html
-@@ -2,37 +2,157 @@
+@@ -2,37 +2,376 @@
  <html>
  <head>
    <meta charset="utf-8">
@@ -745,12 +745,42 @@ index 216dea4..39c03d9 100644
 +      touch-action: none;
 +    }
 +    @media (max-width: 700px) { #canvas { width: 320px; height: 320px; } }
++    /* The title bar and the settings panel are the width of the screen below
++       them, so the cog sits over the screen's right edge. */
++    .bar, .screen { width: 640px; max-width: 100%; }
++    @media (max-width: 700px) { .bar, .screen { width: 320px; } }
++    .bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
++    .screen { position: relative; line-height: 0; }
++    #cog {
++      display: flex; padding: 5px; border-radius: 6px; color: #7d8593; line-height: 0;
++    }
++    #cog:hover, #cog[aria-expanded="true"] { color: #c9ced6; }
++    /* The settings sit over the game rather than beside it, so that opening
++       them does not move the screen. */
++    #settings {
++      position: absolute; left: 0; right: 0; top: 0; z-index: 1;
++      max-height: 100%; overflow: auto;
++      background: #14161af2; border-radius: 3px; box-shadow: 0 0 0 1px #2a2f37;
++      line-height: 1.5; padding: 18px 20px;
++      display: flex; flex-direction: column; gap: 12px; align-items: flex-start;
++    }
++    /* The rule above outranks the browser's own [hidden] { display: none }. */
++    #settings[hidden] { display: none; }
++    #settings h2 { font-size: 13px; font-weight: 600; margin: 0; letter-spacing: .04em;
++                   text-transform: uppercase; color: #8b94a2; }
++    #binds { border-collapse: collapse; }
++    #binds td { padding: 3px 12px 3px 0; }
++    #binds td:first-child { color: #8b94a2; }
++    #binds button { min-width: 5.5em; font-variant-caps: all-small-caps; letter-spacing: .06em; }
++    #binds button.listening { color: #14161a; background: #c9ced6; border-color: #c9ced6; }
++    #settings p { margin: 0; color: #7d8593; max-width: 34em; }
++    #settings .row { display: flex; gap: 8px; }
 +    #status { min-height: 1.5em; color: #8b94a2; font-variant-numeric: tabular-nums; }
 +    #status.err { color: #e0777a; }
-+    .keys { max-width: 640px; color: #7d8593; }
-+    .keys table { border-collapse: collapse; width: 100%; }
-+    .keys td { padding: 2px 10px 2px 0; vertical-align: top; }
-+    .keys kbd {
++    .keys { width: 640px; max-width: 100%; color: #7d8593;
++            display: flex; flex-direction: column; gap: 6px; }
++    .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; }
++    kbd {
 +      font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
 +      background: #20242b; border: 1px solid #333941; border-bottom-width: 2px;
 +      border-radius: 4px; padding: 1px 5px; color: #cdd3db; white-space: nowrap;
@@ -764,28 +794,50 @@ index 216dea4..39c03d9 100644
  </head>
  
  <body>
-+  <h1>Bike or Die 2 <span>&mdash; ToySpring, 2008, recompiled to WebAssembly</span></h1>
++  <div class="bar">
++    <h1>Bike or Die 2 <span>&mdash; ToySpring, 2008, recompiled to WebAssembly</span></h1>
++    <button id="cog" title="Controls" aria-label="Controls" aria-expanded="false">
++      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
++           stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
++        <circle cx="12" cy="12" r="3.2"/>
++        <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3
++                 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1
++                 a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1
++                 a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3
++                 H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1
++                 a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1
++                 a1.6 1.6 0 0 0-1.5 1z"/>
++      </svg>
++    </button>
++  </div>
 +
-+  <canvas id="canvas" width="320" height="320" tabindex="0"
-+          oncontextmenu="event.preventDefault()"></canvas>
++  <div class="screen">
++    <canvas id="canvas" width="320" height="320" tabindex="0"
++            oncontextmenu="event.preventDefault()"></canvas>
++
++    <div id="settings" hidden>
++      <h2>Controls</h2>
++      <table id="binds"></table>
++      <p>Click a key and press the one you want; <kbd>Backspace</kbd> takes it away
++         and <kbd>Esc</kbd> leaves it as it was. The arrow keys ride whatever these
++         say, so the bike can always be steered with them.</p>
++      <div class="row">
++        <button id="binds-done">Done</button>
++        <button id="binds-reset">Restore defaults</button>
++      </div>
++    </div>
++  </div>
 +
 +  <div id="status">loading&hellip;</div>
 +
 +  <div class="keys">
-+    <table>
-+      <tr>
-+        <td><kbd>&uarr;</kbd> <kbd>W</kbd> forward</td>
-+        <td><kbd>&darr;</kbd> <kbd>S</kbd> brake</td>
-+        <td><kbd>&larr;</kbd><kbd>&rarr;</kbd> <kbd>A</kbd><kbd>D</kbd> balance</td>
-+        <td><kbd>Space</kbd> flip</td>
-+      </tr>
-+      <tr>
-+        <td><kbd>F9</kbd> menu</td>
-+        <td><kbd>F1</kbd>&ndash;<kbd>F4</kbd> Palm buttons</td>
-+        <td><kbd>Esc</kbd> back</td>
-+        <td><button onclick="bodReset()">reset saved data</button></td>
-+      </tr>
-+    </table>
++    <div class="legend" id="legend"></div>
++    <div class="legend">
++      <span><kbd>F9</kbd> menu</span>
++      <span><kbd>F1</kbd>&ndash;<kbd>F4</kbd> Palm buttons</span>
++      <span><kbd>Esc</kbd> back</span>
++      <button onclick="bodReset()">reset saved data</button>
++    </div>
 +    <p>Progress, settings and level packs are kept in this browser.
 +       Drop a <code>.prc</code> on the screen to install it.</p>
 +  </div>
@@ -796,8 +848,147 @@ index 216dea4..39c03d9 100644
 +    var canvas = document.getElementById('canvas');
 +    var statusEl = document.getElementById('status');
 +
++    // ---------------------------------------------------------- the controls
++    //
++    // The game's five riding actions and the key each one answers to, on top
++    // of the arrow keys, which always ride. This is the browser's half of
++    // BOD_KEYS: the same spec string, handed to the runtime through
++    // pumpkin_set_ride_keys() so that a change takes effect where it is made,
++    // and kept in this browser so the next visit starts with it.
++    var BOD_ACTIONS = [
++      ['forward', 'Forward',       '&uarr;'],
++      ['brake',   'Brake',         '&darr;'],
++      ['left',    'Balance left',  '&larr;'],
++      ['right',   'Balance right', '&rarr;'],
++      ['flip',    'Flip',          'F9']
++    ];
++    var BOD_KEYS_DEFAULT = 'forward=w brake=s left=a right=d flip=space';
++    var BOD_KEYS_STORE = 'bod.keys';
++
++    // What BOD_KEYS calls the keys a browser reports by name, and what to
++    // print them as.
++    var BOD_NAMED = {
++      ' ': 'space', 'Spacebar': 'space', 'Enter': 'enter', 'Tab': 'tab',
++      'Escape': 'esc', 'Backspace': 'backspace', 'Delete': 'del', 'Insert': 'ins',
++      'ArrowUp': 'up', 'ArrowDown': 'down', 'ArrowLeft': 'left', 'ArrowRight': 'right',
++      'PageUp': 'pgup', 'PageDown': 'pgdown', 'Home': 'home', 'End': 'end'
++    };
++    var BOD_PRINTED = {
++      space: 'Space', up: '\u2191', down: '\u2193', left: '\u2190', right: '\u2192',
++      enter: 'Enter', esc: 'Esc', tab: 'Tab', pgup: 'PgUp', pgdown: 'PgDn',
++      home: 'Home', end: 'End', ins: 'Ins', del: 'Del', backspace: 'Bksp'
++    };
++
++    var bodKeys = {}, bodListening = null;
++
++    function bodKeyName(e) {
++      if (BOD_NAMED[e.key]) return BOD_NAMED[e.key];
++      if (/^F([1-9]|1[0-2])$/.test(e.key)) return e.key.toLowerCase();
++      if (e.key && e.key.length === 1 && e.key > ' ') return e.key.toLowerCase();
++      return '';
++    }
++
++    function bodPrinted(name) {
++      if (!name) return '\u2014';
++      return BOD_PRINTED[name] || name.toUpperCase();
+     }
++
++    function bodParseKeys(spec) {
++      var map = {};
++      (spec || '').split(/[\s;]+/).forEach(function (entry) {
++        var i = entry.indexOf('=');
++        // Only the first key of an action: the panel binds one, and the arrows
++        // are wired in the runtime rather than listed here.
++        if (i > 0) map[entry.slice(0, i).toLowerCase()] = entry.slice(i + 1).split(',')[0];
++      });
++      return map;
++    }
++
++    function bodKeysSpec() {
++      return BOD_ACTIONS.map(function (a) { return a[0] + '=' + (bodKeys[a[0]] || ''); }).join(' ');
++    }
++
++    // The runtime reads BOD_KEYS out of the environment when the OS comes up,
++    // which is later than this can be called, so what is set here wins from
++    // then on -- and a ?BOD_KEYS= in the query string is left to do its job.
++    function bodSendKeys() {
++      try {
++        if (window.Module && Module.ccall) {
++          Module.ccall('pumpkin_set_ride_keys', null, ['string'], [bodKeysSpec()]);
++        }
++      } catch (e) {
++        console.warn('could not set the controls:', e);
++      }
++    }
++
++    function bodDrawKeys() {
++      var binds = document.getElementById('binds'), legend = document.getElementById('legend');
++      binds.innerHTML = '';
++      legend.innerHTML = '';
++      BOD_ACTIONS.forEach(function (a) {
++        var row = binds.insertRow();
++        row.insertCell().textContent = a[1];
++        var b = document.createElement('button');
++        b.innerHTML = bodPrinted(bodKeys[a[0]]);
++        b.onclick = function () { bodListen(a[0], b); };
++        row.insertCell().appendChild(b);
++        row.insertCell().innerHTML = 'or <kbd>' + a[2] + '</kbd>';
++        var span = document.createElement('span');
++        span.innerHTML = '<kbd>' + a[2] + '</kbd>' +
++          (bodKeys[a[0]] ? ' <kbd>' + bodPrinted(bodKeys[a[0]]) + '</kbd>' : '') +
++          ' ' + a[1].toLowerCase();
++        legend.appendChild(span);
++      });
++    }
++
++    function bodSaveKeys() {
++      try { localStorage.setItem(BOD_KEYS_STORE, bodKeysSpec()); } catch (e) { /* private window */ }
++      bodSendKeys();
++      bodDrawKeys();
++    }
++
++    function bodListen(action, button) {
++      if (bodListening) bodListening.button.classList.remove('listening');
++      bodListening = { action: action, button: button };
++      button.classList.add('listening');
++      button.innerHTML = '\u2026';
++    }
++
++    function bodSettings(open) {
++      var panel = document.getElementById('settings');
++      if (bodListening) { bodListening.button.classList.remove('listening'); bodListening = null; }
++      panel.hidden = !open;
++      document.getElementById('cog').setAttribute('aria-expanded', open ? 'true' : 'false');
++      bodDrawKeys();
++      if (!open) canvas.focus();
++    }
++
++    (function () {
++      var stored = null, fromQuery;
++      try { stored = localStorage.getItem(BOD_KEYS_STORE); } catch (e) { /* private window */ }
++      try { fromQuery = new URLSearchParams(location.search).get('BOD_KEYS'); } catch (e) { }
++      // Both of those name only the actions they change, the way BOD_KEYS does,
++      // so they go over the defaults rather than replacing them.
++      var given = bodParseKeys(fromQuery || stored || '');
++      bodKeys = bodParseKeys(BOD_KEYS_DEFAULT);
++      Object.keys(given).forEach(function (a) { bodKeys[a] = given[a]; });
++      // The query string reaches the runtime on its own; anything else this
++      // page knows has to be handed over once the runtime is there to take it.
++      window.bodPendingKeys = !fromQuery && !!stored;
++      document.getElementById('cog').onclick = function () {
++        bodSettings(document.getElementById('settings').hidden);
++      };
++      document.getElementById('binds-done').onclick = function () { bodSettings(false); };
++      document.getElementById('binds-reset').onclick = function () {
++        bodKeys = bodParseKeys(BOD_KEYS_DEFAULT);
++        bodSaveKeys();
++      };
++      bodDrawKeys();
++    })();
++
 +    var Module = {
 +      canvas: canvas,
++      onRuntimeInitialized: function () { if (window.bodPendingKeys) bodSendKeys(); },
 +      // The OS runs on a worker, which cannot see the page's URL. Handing the
 +      // workers a script URL that carries the query string lets the options
 +      // in it reach the code that reads them.
@@ -817,11 +1008,39 @@ index 216dea4..39c03d9 100644
 +    };
 +
 +    // The game wants the arrow keys, space and the function keys; the browser
-+    // would scroll the page or reload with them.
++    // would scroll the page or reload with them. Whatever the controls are
++    // bound to is claimed as well, for the same reason.
 +    var claimed = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space',
 +                   'F1', 'F2', 'F3', 'F4', 'F5', 'F9', 'Escape'];
 +    window.addEventListener('keydown', function (e) {
++      var name = bodKeyName(e);
++
++      // Binding a key: the keystroke is the answer to the panel and must not
++      // also reach the game, which is listening on the document below this.
++      if (bodListening) {
++        e.preventDefault();
++        e.stopPropagation();
++        if (e.key !== 'Escape') {
++          bodKeys[bodListening.action] = (e.key === 'Backspace' || e.key === 'Delete') ? '' : name;
++        }
++        bodListening.button.classList.remove('listening');
++        bodListening = null;
++        bodSaveKeys();
++        return;
++      }
++
++      // The panel covers the screen, so the game does not get the keys pressed
++      // over it -- but the browser still does, so the panel can be walked with
++      // the keyboard like any other.
++      if (!document.getElementById('settings').hidden) {
++        e.stopPropagation();
++        if (e.key === 'Escape') bodSettings(false);
++      }
++
 +      if (claimed.indexOf(e.code) >= 0 || claimed.indexOf(e.key) >= 0) e.preventDefault();
++      else if (name) {
++        for (var a in bodKeys) { if (bodKeys[a] === name) { e.preventDefault(); break; } }
++      }
 +    }, { capture: true });
 +
 +    canvas.addEventListener('mousedown', function () { canvas.focus(); });
@@ -837,7 +1056,7 @@ index 216dea4..39c03d9 100644
 +      if (ctx && ctx.state !== 'running' && ctx.resume) {
 +        ctx.resume().catch(function () { /* not in a gesture; the next one will */ });
 +      }
-     }
++    }
 +    ['pointerdown', 'mousedown', 'keydown', 'touchstart'].forEach(function (type) {
 +      window.addEventListener(type, bodResumeAudio, { capture: true });
 +    });
@@ -1684,7 +1903,7 @@ index fd1eb40..694b725 100644
      return;
    }
 diff --git a/src/libpumpkin/Form.c b/src/libpumpkin/Form.c
-index 1e9cef5..6e10d77 100644
+index 1e9cef5..69e097b 100644
 --- a/src/libpumpkin/Form.c
 +++ b/src/libpumpkin/Form.c
 @@ -11,6 +11,7 @@
@@ -2321,11 +2540,11 @@ index 1e9cef5..6e10d77 100644
  
    if (formP == module->currentForm) {
      WinSetActiveWindow(NULL);
-@@ -1210,6 +1779,75 @@ void FrmDrawEmptyDialog(FormType *formP, RectangleType *rect, Int16 margin, WinH
+@@ -1210,6 +1779,116 @@ void FrmDrawEmptyDialog(FormType *formP, RectangleType *rect, Int16 margin, WinH
    WinSetBackColor(old);
  }
  
-+/* Answer the registration dialog on the way in.
++/* Answer the registration dialog on the way in, and take it back down.
 + *
 + * Bike or Die keeps its registration in its own application database, which
 + * PumpkinOS opens read-only -- so a code entered by hand is accepted, unlocks
@@ -2334,61 +2553,102 @@ index 1e9cef5..6e10d77 100644
 + * against the HotSync user name exactly as it does a typed one, so the dialog
 + * is answered before anyone sees it.
 + *
++ * Answering it leaves it up: the game redraws the same form as its "registered
++ * to" thank-you, which somebody then has to close before the game starts. So
++ * that button is pressed too, on the redraw, and the game comes up in play
++ * rather than behind a dialog nobody asked for. Only that one redraw is
++ * touched -- the About dialog opened deliberately from the menu later on
++ * behaves normally.
++ *
 + * The dialog is found by what it is rather than by a resource id: the one form
-+ * that has a text field and a button labelled "Unlock". Once the game is
-+ * registered that button is gone, so this stops matching on its own.
++ * that has a text field and a button labelled "Unlock", which afterwards has a
++ * button labelled "Close" and no "Unlock". Once the game is registered that
++ * button is gone, so this stops matching on its own; a code the game refuses
++ * leaves "Unlock" where it was, which is the signal to stop and leave the
++ * dialog alone.
 + *
 + * BOD_UNLOCK is the code (default 44652, which is the one for the HotSync name
 + * the port uses); BOD_UNLOCK=0 leaves the dialog alone.
 + */
 +#define BOD_UNLOCK_BUTTON "Unlock"
++#define BOD_UNLOCK_CLOSE  "Close"
++
++/* The first button on the form showing `label`, or NULL. Visibility matters:
++ * the dialog is one form throughout, whose buttons are hidden and relabelled
++ * in place -- registering hides "Unlock" where it stands and turns "Continue
++ * in trial mode" into "Close". */
++static const ControlType *bod_button(FormType *formP, const char *label) {
++  const ControlType *ctl;
++  const Char *s;
++  UInt16 i, n;
++
++  n = FrmGetNumberOfObjects(formP);
++  for (i = 0; i < n; i++) {
++    if (FrmGetObjectType(formP, i) != frmControlObj) continue;
++    ctl = (const ControlType *)FrmGetObjectPtr(formP, i);
++    if (ctl == NULL || !ctl->attr.visible) continue;
++    s = CtlGetLabel(ctl);
++    if (s && !sys_strcmp(s, label)) return ctl;
++  }
++
++  return NULL;
++}
 +
 +static void bod_auto_unlock(FormType *formP) {
-+  static int done = 0;
-+  const ControlType *unlock = NULL;
-+  const Char *label;
++  static int state = 0;         /* 0 looking for it, 1 answered, 2 finished */
++  static UInt16 answered = 0;
++  static int redraws = 0;
++  const ControlType *ctl;
 +  FieldType *fld = NULL;
 +  UInt16 i, n, fldIndex = 0;
 +  char *code;
 +
-+  if (done || formP == NULL) return;
++  if (state == 2 || formP == NULL) return;
++
++  /* Waiting for the answer to take. The dialog is drawn again before the game
++   * has read the button press, and once more after: the one to close is the
++   * one offering "Close" and no longer offering "Unlock". A code the game
++   * refuses never produces it, so give up after a few and leave the dialog to
++   * whoever is looking at it. */
++  if (state == 1) {
++    if (formP->formId != answered) return;
++    if (++redraws > 8) {
++      debug(DEBUG_INFO, "Form", "the registration dialog did not take the code; leaving it up");
++      state = 2;
++      return;
++    }
++    if (bod_button(formP, BOD_UNLOCK_BUTTON)) return;
++    if ((ctl = bod_button(formP, BOD_UNLOCK_CLOSE)) == NULL) return;
++    debug(DEBUG_INFO, "Form", "closing the registration dialog");
++    state = 2;
++    CtlHitControl(ctl);
++    return;
++  }
 +
 +  code = sys_getenv("BOD_UNLOCK");
 +  if (code == NULL) code = "44652";
 +  if (code[0] == 0 || (code[0] == '0' && code[1] == 0)) {
-+    done = 1;
++    state = 2;
 +    return;
 +  }
 +
 +  n = FrmGetNumberOfObjects(formP);
-+  for (i = 0; i < n; i++) {
-+    switch (FrmGetObjectType(formP, i)) {
-+      case frmFieldObj:
-+        if (fld == NULL) {
-+          fld = (FieldType *)FrmGetObjectPtr(formP, i);
-+          fldIndex = i;
-+        }
-+        break;
-+      case frmControlObj:
-+        if (unlock == NULL) {
-+          const ControlType *ctl = (const ControlType *)FrmGetObjectPtr(formP, i);
-+          label = ctl ? CtlGetLabel(ctl) : NULL;
-+          if (label && !sys_strcmp(label, BOD_UNLOCK_BUTTON)) unlock = ctl;
-+        }
-+        break;
-+      default:
-+        break;
++  for (i = 0; i < n && fld == NULL; i++) {
++    if (FrmGetObjectType(formP, i) == frmFieldObj) {
++      fld = (FieldType *)FrmGetObjectPtr(formP, i);
++      fldIndex = i;
 +    }
 +  }
 +
-+  if (fld == NULL || unlock == NULL) return;
++  if (fld == NULL || (ctl = bod_button(formP, BOD_UNLOCK_BUTTON)) == NULL) return;
 +
 +  debug(DEBUG_INFO, "Form", "answering the registration dialog with \"%s\"", code);
-+  done = 1;
++  state = 1;
++  answered = formP->formId;
 +  FrmSetFocus(formP, fldIndex);
 +  FldDelete(fld, 0, FldGetTextLength(fld));
 +  FldInsert(fld, code, sys_strlen(code));
-+  CtlHitControl(unlock);
++  CtlHitControl(ctl);
 +  /* Give the focus back, or the field's caret is left blinking over whatever
 +   * the dialog redraws itself as. */
 +  FrmSetFocus(formP, noFocus);
@@ -2397,7 +2657,7 @@ index 1e9cef5..6e10d77 100644
  void FrmDrawForm(FormType *formP) {
    WinHandle oldd, olda;
    RGBColorType rgb;
-@@ -1232,6 +1870,10 @@ void FrmDrawForm(FormType *formP) {
+@@ -1232,6 +1911,10 @@ void FrmDrawForm(FormType *formP) {
  
      margin = WinGetBorderRect(&formP->window, &rect);
  
@@ -2408,7 +2668,7 @@ index 1e9cef5..6e10d77 100644
      if (!formP->attr.visible) {
        WinSaveRectangle(formP->bitsBehindForm, &rect);
      }
-@@ -1258,6 +1900,9 @@ void FrmDrawForm(FormType *formP) {
+@@ -1258,6 +1941,9 @@ void FrmDrawForm(FormType *formP) {
      WinSetDrawWindow(oldd);
      WinSetActiveWindow(olda);
  
@@ -2418,7 +2678,7 @@ index 1e9cef5..6e10d77 100644
      pumpkin_dirty_region_mode(dirtyRegionEnd);
    }
  }
-@@ -1280,6 +1925,7 @@ void FrmEraseForm(FormType *formP) {
+@@ -1280,6 +1966,7 @@ void FrmEraseForm(FormType *formP) {
      WinRestoreRectangle(formP->bitsBehindForm, &rect);
  
      formP->attr.visible = 0;
@@ -2426,7 +2686,7 @@ index 1e9cef5..6e10d77 100644
    }
  }
  
-@@ -3699,6 +4345,7 @@ void pumpkin_destroy_form(FormType *formP) {
+@@ -3699,6 +4386,7 @@ void pumpkin_destroy_form(FormType *formP) {
      if (formP->rsrc) {
        pumpkin_heap_free(formP->rsrc, "form_rsrc");
      }
@@ -3709,10 +3969,27 @@ index 0000000..32aa3f0
 +
 +#endif
 diff --git a/src/libpumpkin/pumpkin.c b/src/libpumpkin/pumpkin.c
-index 93cf260..117a88b 100644
+index 93cf260..ef5376a 100644
 --- a/src/libpumpkin/pumpkin.c
 +++ b/src/libpumpkin/pumpkin.c
-@@ -736,6 +736,16 @@ void pumpkin_init_misc(void) {
+@@ -341,6 +341,7 @@ static pumpkin_module_t pumpkin_module;
+ static thread_key_t *task_key;
+ 
+ static void pumpkin_make_current(int i);
++static void pumpkin_init_ride_keys(void);
+ static uint32_t pumpkin_launch_request(LocalID dbID, char *name, UInt16 cmd, launch_union_t *param, UInt16 flags, PilotMainF pilotMain, UInt16 opendb);
+ 
+ void *pumpkin_heap_base(void) {
+@@ -708,6 +709,8 @@ void pumpkin_init_misc(void) {
+   LocalID dbID;
+   PumpkinPreferencesType prefs;
+ 
++  pumpkin_init_ride_keys();
++
+   dbID = DmFindDatabase(0, BOOT_NAME);
+   dbRef = DmOpenDatabase(0, dbID, dmModeReadOnly);
+   PrefInitModule();
+@@ -736,6 +739,16 @@ void pumpkin_init_misc(void) {
    pumpkin_module.lockKey = prefs.value[pLockKey];
    pumpkin_module.lockModifiers = prefs.value[pLockModifiers];
    pumpkin_module.enableSound = prefs.value[pEnableSound];
@@ -3729,7 +4006,7 @@ index 93cf260..117a88b 100644
  }
  
  void pumpkin_set_spawner(int handle) {
-@@ -2468,12 +2478,28 @@ int pumpkin_launch(launch_request_t *request) {
+@@ -2468,12 +2481,28 @@ int pumpkin_launch(launch_request_t *request) {
          data->littleEndian = regEnd->littleEndian;
          MemPtrFree(regEnd);
        }
@@ -3758,32 +4035,211 @@ index 93cf260..117a88b 100644
  
        if ((regHeap = pumpkin_reg_get(creator, regHeapID, &regSize)) != NULL) {
          if (regHeap->heapSize) {
-@@ -3109,12 +3135,50 @@ int pumpkin_must_finish(void) {
+@@ -3109,12 +3138,225 @@ int pumpkin_must_finish(void) {
    return r;
  }
  
-+/* WASD rides the bike too, on top of the arrow keys, which still do.
++/* The keys that ride, on top of the arrow keys, which always do.
 + *
-+ * The letters keep their ordinary meaning: they are reported as characters as
-+ * well, the way space is, so typing a player name or a registration code is
-+ * unaffected. All this adds is the navigator bits the game polls while riding
-+ * -- the same ones the arrows set, taken from the game's own table of physical
-+ * keys (BOD_DUMP_KEYS): up and down are the page keys, left and right the
-+ * palmOne navigator. */
-+static uint32_t pumpkin_wasd_mask(int key) {
-+  switch (key) {
-+    case 'w': case 'W': return keyBitPageUp;
-+    case 's': case 'S': return keyBitPageDown;
-+    case 'a': case 'A': return keyBitLeft  | keyBitRockerLeft  | keyBitNavLeft;
-+    case 'd': case 'D': return keyBitRight | keyBitRockerRight | keyBitNavRight;
++ * The arrows and F9 are the Palm navigator itself, wired below; these are the
++ * extra ones, WASD and space to begin with, and they are what the settings
++ * panel changes. They keep their ordinary meaning: a letter is still reported
++ * as a character, the way space is, so typing a player name or a registration
++ * code is unaffected. All this adds is the navigator bits the game polls while
++ * riding -- the same ones the arrows set, taken from the game's own table of
++ * physical keys (BOD_DUMP_KEYS): forward and brake are the page keys, left and
++ * right the palmOne navigator, flip is Select.
++ *
++ * BOD_KEYS rebinds them. Its default is what the table below says --
++ *
++ *     BOD_KEYS="forward=w brake=s left=a right=d flip=space"
++ *
++ * -- actions separated by spaces or semicolons and the keys for one by commas,
++ * so "forward=w,i" gives an action two keys and "flip=" takes its key away.
++ * Only the actions named are touched. A key is a single character or one of
++ * the names in bod_ride_names below. The browser build's settings panel says
++ * the same thing through pumpkin_set_ride_keys() while the game is running.
++ */
++#define BOD_RIDE_KEYS 4
++
++static struct {
++  const char *action;
++  uint32_t mask;
++  int key[BOD_RIDE_KEYS];
++} bod_ride[] = {
++  { "forward", keyBitPageUp,                                     { 'w' } },
++  { "brake",   keyBitPageDown,                                   { 's' } },
++  { "left",    keyBitLeft  | keyBitRockerLeft  | keyBitNavLeft,  { 'a' } },
++  { "right",   keyBitRight | keyBitRockerRight | keyBitNavRight, { 'd' } },
++  { "flip",    keyBitNavSelect | keyBitRockerCenter,             { ' ' } }
++};
++
++#define BOD_RIDE_ACTIONS ((int)(sizeof(bod_ride) / sizeof(bod_ride[0])))
++
++/* Set once the map has been given explicitly, so that the environment, which
++ * is read later than the browser can call in, does not undo it. */
++static int bod_ride_given = 0;
++
++static const struct { const char *name; int key; } bod_ride_names[] = {
++  { "space",     ' '               },
++  { "enter",     13                },
++  { "tab",        9                },
++  { "esc",       27                },
++  { "backspace",  8                },
++  { "up",        WINDOW_KEY_UP     },
++  { "down",      WINDOW_KEY_DOWN   },
++  { "left",      WINDOW_KEY_LEFT   },
++  { "right",     WINDOW_KEY_RIGHT  },
++  { "pgup",      WINDOW_KEY_PGUP   },
++  { "pgdown",    WINDOW_KEY_PGDOWN },
++  { "home",      WINDOW_KEY_HOME   },
++  { "end",       WINDOW_KEY_END    },
++  { "ins",       WINDOW_KEY_INS    },
++  { "del",       WINDOW_KEY_DEL    },
++  { "f1",        WINDOW_KEY_F1     },
++  { "f2",        WINDOW_KEY_F2     },
++  { "f3",        WINDOW_KEY_F3     },
++  { "f4",        WINDOW_KEY_F4     },
++  { "f5",        WINDOW_KEY_F5     },
++  { "f6",        WINDOW_KEY_F6     },
++  { "f7",        WINDOW_KEY_F7     },
++  { "f8",        WINDOW_KEY_F8     },
++  { "f9",        WINDOW_KEY_F9     },
++  { "f10",       WINDOW_KEY_F10    },
++  { "f11",       WINDOW_KEY_F11    },
++  { "f12",       WINDOW_KEY_F12    },
++  { NULL,        0                 }
++};
++
++/* The next token: everything up to one of `stop` or the end, NUL-terminated. */
++static const char *bod_ride_token(const char *p, const char *stop, char *buf, int max) {
++  int n = 0;
++
++  for (; *p && sys_strchr(stop, *p) == NULL; p++) {
++    if (n < max - 1) buf[n++] = *p;
++  }
++  buf[n] = 0;
++
++  return p;
++}
++
++/* The key the spec calls `name`: one character, or one of the names above. */
++static int bod_ride_key(const char *name) {
++  int i;
++
++  if (name[0] == 0) return 0;
++  if (name[1] == 0) return name[0] > ' ' && name[0] < 127 ? sys_tolower(name[0]) : 0;
++
++  for (i = 0; bod_ride_names[i].name; i++) {
++    if (!sys_strcasecmp(bod_ride_names[i].name, name)) return bod_ride_names[i].key;
 +  }
 +
 +  return 0;
 +}
 +
++/* What the spec calls `key`; `buf` holds the answer for the ordinary ones. */
++static const char *bod_ride_name(int key, char *buf) {
++  int i;
++
++  for (i = 0; bod_ride_names[i].name; i++) {
++    if (bod_ride_names[i].key == key) return bod_ride_names[i].name;
++  }
++  buf[0] = key;
++  buf[1] = 0;
++
++  return buf;
++}
++
++void pumpkin_set_ride_keys(const char *spec) {
++  char token[24];
++  const char *p;
++  int i, n, key;
++
++  if (spec == NULL) return;
++  bod_ride_given = 1;
++
++  for (p = spec; *p; ) {
++    if (sys_strchr(" \t;,", *p)) { p++; continue; }
++
++    p = bod_ride_token(p, "= \t;", token, sizeof(token));
++    for (i = 0; i < BOD_RIDE_ACTIONS; i++) {
++      if (!sys_strcasecmp(bod_ride[i].action, token)) break;
++    }
++    if (i == BOD_RIDE_ACTIONS) {
++      debug(DEBUG_ERROR, PUMPKINOS, "BOD_KEYS: \"%s\" is not one of the actions", token);
++      p = bod_ride_token(p, " \t;", token, sizeof(token));
++      continue;
++    }
++
++    /* Cleared first, so that an action named with nothing after it unbinds. */
++    for (n = 0; n < BOD_RIDE_KEYS; n++) bod_ride[i].key[n] = 0;
++    if (*p != '=') continue;
++
++    for (n = 0, p++; *p && sys_strchr(" \t;", *p) == NULL; ) {
++      p = bod_ride_token(p, ", \t;", token, sizeof(token));
++      if (*p == ',') p++;
++      if (token[0] == 0) continue;
++      if ((key = bod_ride_key(token)) == 0) {
++        debug(DEBUG_ERROR, PUMPKINOS, "BOD_KEYS: there is no key called \"%s\"", token);
++      } else if (n < BOD_RIDE_KEYS) {
++        bod_ride[i].key[n++] = key;
++      } else {
++        debug(DEBUG_ERROR, PUMPKINOS, "BOD_KEYS: %s already has %d keys; \"%s\" ignored",
++              bod_ride[i].action, BOD_RIDE_KEYS, token);
++      }
++    }
++  }
++
++  debug(DEBUG_INFO, PUMPKINOS, "ride keys: %s", pumpkin_get_ride_keys());
++}
++
++/* The map as BOD_KEYS would write it, which is how the settings panel reads
++ * back what it is starting from. */
++char *pumpkin_get_ride_keys(void) {
++  static char spec[256];
++  char name[8];
++  int i, j, n = 0;
++
++  for (i = 0; i < BOD_RIDE_ACTIONS && n < (int)sizeof(spec) - 1; i++) {
++    n += sys_snprintf(spec + n, sizeof(spec) - n, "%s%s=", i ? " " : "", bod_ride[i].action);
++    for (j = 0; j < BOD_RIDE_KEYS && bod_ride[i].key[j] && n < (int)sizeof(spec) - 1; j++) {
++      n += sys_snprintf(spec + n, sizeof(spec) - n, "%s%s", j ? "," : "",
++                        bod_ride_name(bod_ride[i].key[j], name));
++    }
++  }
++
++  return spec;
++}
++
++static void pumpkin_init_ride_keys(void) {
++  char *spec = sys_getenv("BOD_KEYS");
++
++  if (bod_ride_given || spec == NULL || spec[0] == 0) return;
++  pumpkin_set_ride_keys(spec);
++}
++
++static uint32_t pumpkin_ride_mask(int key) {
++  uint32_t mask = 0;
++  int i, j;
++
++  if (key == 0) return 0;
++  if (key >= 'A' && key <= 'Z') key += 'a' - 'A';
++
++  for (i = 0; i < BOD_RIDE_ACTIONS; i++) {
++    for (j = 0; j < BOD_RIDE_KEYS && bod_ride[i].key[j]; j++) {
++      if (bod_ride[i].key[j] == key) {
++        mask |= bod_ride[i].mask;
++        break;
++      }
++    }
++  }
++
++  return mask;
++}
++
  static void pumpkin_set_key(int key) {
 +  debug(DEBUG_TRACE, PUMPKINOS, "key down %d (0x%X)", key, key);
-+  pumpkin_module.keyMask |= pumpkin_wasd_mask(key);
++  pumpkin_module.keyMask |= pumpkin_ride_mask(key);
    switch (key) {
      case WINDOW_KEY_DOWN:  pumpkin_module.keyMask |= keyBitPageDown;   break;
      case WINDOW_KEY_UP:    pumpkin_module.keyMask |= keyBitPageUp;     break;
@@ -3798,25 +4254,21 @@ index 93cf260..117a88b 100644
 +    case WINDOW_KEY_RIGHT:
 +      pumpkin_module.keyMask |= keyBitRight | keyBitRockerRight | keyBitNavRight;
 +      break;
-+    /* Navigator "select". F9 already produces the select *event* (Event.c), and
-+     * space is the comfortable one to hold while playing. Space still reports
-+     * itself as an ordinary character as well, so typing is unaffected. */
++    /* Navigator "select", which is Flip. F9 already produces the select
++     * *event* (Event.c) so it stays here whatever the ride keys say; space is
++     * one of those, and reports itself as an ordinary character as well. */
 +    case WINDOW_KEY_F9:
 +      pumpkin_module.keyMask |= keyBitNavSelect | keyBitRockerCenter;
-+      break;
-+    case ' ':
-+      pumpkin_module.keyMask |= keyBitNavSelect | keyBitRockerCenter;
-+      pumpkin_module.extKeyMask[' ' >> 6] |= ((uint64_t)1) << (' ' & 63);
 +      break;
      case WINDOW_KEY_F1:    pumpkin_module.keyMask |= keyBitHard1;      break;
      case WINDOW_KEY_F2:    pumpkin_module.keyMask |= keyBitHard2;      break;
      case WINDOW_KEY_F3:    pumpkin_module.keyMask |= keyBitHard3;      break;
-@@ -3134,11 +3198,24 @@ static void pumpkin_set_key(int key) {
+@@ -3134,11 +3376,20 @@ static void pumpkin_set_key(int key) {
  }
  
  static int pumpkin_reset_key(int key) {
 +  debug(DEBUG_TRACE, PUMPKINOS, "key up %d (0x%X)", key, key);
-+  pumpkin_module.keyMask &= ~pumpkin_wasd_mask(key);
++  pumpkin_module.keyMask &= ~pumpkin_ride_mask(key);
    switch (key) {
      case WINDOW_KEY_DOWN:  pumpkin_module.keyMask &= ~keyBitPageDown; break;
      case WINDOW_KEY_UP:    pumpkin_module.keyMask &= ~keyBitPageUp;   break;
@@ -3831,13 +4283,24 @@ index 93cf260..117a88b 100644
 +    case WINDOW_KEY_F9:
 +      pumpkin_module.keyMask &= ~(keyBitNavSelect | keyBitRockerCenter);
 +      break;
-+    case ' ':
-+      pumpkin_module.keyMask &= ~(keyBitNavSelect | keyBitRockerCenter);
-+      pumpkin_module.extKeyMask[' ' >> 6] &= ~(((uint64_t)1) << (' ' & 63));
-+      break;
      case WINDOW_KEY_F1:    pumpkin_module.keyMask &= ~keyBitHard1;    break;
      case WINDOW_KEY_F2:    pumpkin_module.keyMask &= ~keyBitHard2;    break;
      case WINDOW_KEY_F3:    pumpkin_module.keyMask &= ~keyBitHard3;    break;
+diff --git a/src/libpumpkin/pumpkin.h b/src/libpumpkin/pumpkin.h
+index 64f99fc..91bc79a 100644
+--- a/src/libpumpkin/pumpkin.h
++++ b/src/libpumpkin/pumpkin.h
+@@ -250,6 +250,10 @@ void *pumpkin_get_local_storage(local_storage_key_t key);
+ void pumpkin_deploy_files(char *path);
+ void pumpkin_init_misc(void);
+ void pumpkin_send_deploy(void);
++/* The keys that ride, as "forward=w brake=s left=a right=d flip=space"; see
++ * BOD_KEYS in pumpkin.c. Also called from the browser build's settings panel. */
++void pumpkin_set_ride_keys(const char *spec);
++char *pumpkin_get_ride_keys(void);
+ void pumpkin_local_refresh(void);
+ void pumpkin_set_spawner(int handle);
+ int pumpkin_is_spawner(void);
 diff --git a/src/libpumpkin/storage.c b/src/libpumpkin/storage.c
 index 28de5ef..bba0f58 100644
 --- a/src/libpumpkin/storage.c
