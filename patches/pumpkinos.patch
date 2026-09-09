@@ -714,7 +714,7 @@ index ea74bb2..6fe5735 100644
    return 0;
  }
 diff --git a/src/emscripten/template.html b/src/emscripten/template.html
-index 216dea4..6996ac5 100644
+index 216dea4..39c03d9 100644
 --- a/src/emscripten/template.html
 +++ b/src/emscripten/template.html
 @@ -2,37 +2,157 @@
@@ -774,9 +774,9 @@ index 216dea4..6996ac5 100644
 +  <div class="keys">
 +    <table>
 +      <tr>
-+        <td><kbd>&uarr;</kbd> forward</td>
-+        <td><kbd>&darr;</kbd> brake</td>
-+        <td><kbd>&larr;</kbd> <kbd>&rarr;</kbd> balance</td>
++        <td><kbd>&uarr;</kbd> <kbd>W</kbd> forward</td>
++        <td><kbd>&darr;</kbd> <kbd>S</kbd> brake</td>
++        <td><kbd>&larr;</kbd><kbd>&rarr;</kbd> <kbd>A</kbd><kbd>D</kbd> balance</td>
 +        <td><kbd>Space</kbd> flip</td>
 +      </tr>
 +      <tr>
@@ -3709,7 +3709,7 @@ index 0000000..32aa3f0
 +
 +#endif
 diff --git a/src/libpumpkin/pumpkin.c b/src/libpumpkin/pumpkin.c
-index 93cf260..d41b3ba 100644
+index 93cf260..117a88b 100644
 --- a/src/libpumpkin/pumpkin.c
 +++ b/src/libpumpkin/pumpkin.c
 @@ -736,6 +736,16 @@ void pumpkin_init_misc(void) {
@@ -3758,11 +3758,32 @@ index 93cf260..d41b3ba 100644
  
        if ((regHeap = pumpkin_reg_get(creator, regHeapID, &regSize)) != NULL) {
          if (regHeap->heapSize) {
-@@ -3110,11 +3136,29 @@ int pumpkin_must_finish(void) {
+@@ -3109,12 +3135,50 @@ int pumpkin_must_finish(void) {
+   return r;
  }
  
++/* WASD rides the bike too, on top of the arrow keys, which still do.
++ *
++ * The letters keep their ordinary meaning: they are reported as characters as
++ * well, the way space is, so typing a player name or a registration code is
++ * unaffected. All this adds is the navigator bits the game polls while riding
++ * -- the same ones the arrows set, taken from the game's own table of physical
++ * keys (BOD_DUMP_KEYS): up and down are the page keys, left and right the
++ * palmOne navigator. */
++static uint32_t pumpkin_wasd_mask(int key) {
++  switch (key) {
++    case 'w': case 'W': return keyBitPageUp;
++    case 's': case 'S': return keyBitPageDown;
++    case 'a': case 'A': return keyBitLeft  | keyBitRockerLeft  | keyBitNavLeft;
++    case 'd': case 'D': return keyBitRight | keyBitRockerRight | keyBitNavRight;
++  }
++
++  return 0;
++}
++
  static void pumpkin_set_key(int key) {
 +  debug(DEBUG_TRACE, PUMPKINOS, "key down %d (0x%X)", key, key);
++  pumpkin_module.keyMask |= pumpkin_wasd_mask(key);
    switch (key) {
      case WINDOW_KEY_DOWN:  pumpkin_module.keyMask |= keyBitPageDown;   break;
      case WINDOW_KEY_UP:    pumpkin_module.keyMask |= keyBitPageUp;     break;
@@ -3790,11 +3811,12 @@ index 93cf260..d41b3ba 100644
      case WINDOW_KEY_F1:    pumpkin_module.keyMask |= keyBitHard1;      break;
      case WINDOW_KEY_F2:    pumpkin_module.keyMask |= keyBitHard2;      break;
      case WINDOW_KEY_F3:    pumpkin_module.keyMask |= keyBitHard3;      break;
-@@ -3134,11 +3178,23 @@ static void pumpkin_set_key(int key) {
+@@ -3134,11 +3198,24 @@ static void pumpkin_set_key(int key) {
  }
  
  static int pumpkin_reset_key(int key) {
 +  debug(DEBUG_TRACE, PUMPKINOS, "key up %d (0x%X)", key, key);
++  pumpkin_module.keyMask &= ~pumpkin_wasd_mask(key);
    switch (key) {
      case WINDOW_KEY_DOWN:  pumpkin_module.keyMask &= ~keyBitPageDown; break;
      case WINDOW_KEY_UP:    pumpkin_module.keyMask &= ~keyBitPageUp;   break;

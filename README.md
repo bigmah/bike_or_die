@@ -52,9 +52,9 @@ to be translated too, not just run.
 
 | key | action |
 |---|---|
-| **↑** | Forward (pedal) |
-| **↓** | Brake |
-| **←** / **→** | Balance left / right |
+| **↑** / **W** | Forward (pedal) |
+| **↓** / **S** | Brake |
+| **←** / **→**, **A** / **D** | Balance left / right |
 | **Space** | **Flip** -- turn around and ride the other way |
 | F1-F4 | the four Palm hardware buttons |
 | F5 | Palm menu (Game / Rec / Options / Help) |
@@ -62,6 +62,11 @@ to be translated too, not just run.
 Those are the game's own defaults, visible and rebindable under **Options → Control**
 (F5, then Options, then Control). Its five actions map to a Palm 5-way navigator:
 Forward=Up, Brake=Down, Balance=Left/Right, Flip=Select.
+
+WASD rides as well, and the arrow keys still do -- the letters are added to the
+navigator bits the game polls rather than translated into arrow keys, so they keep
+their ordinary meaning too and typing a name or a code is unaffected. Space does the
+same thing for Select.
 
 A Palm OS 5 device has no left/right/select in the base key manager, so games poll a
 vendor navigator mask instead. Bike or Die keeps its table of available physical keys at
