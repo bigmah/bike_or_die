@@ -145,7 +145,7 @@ void pumpkin_load_fonts(void) {
 /* ---- input: the console's buttons, as a keyboard and as a navigator ---- */
 #define KEYQ 16
 static struct { int ev, key; } keyq[KEYQ];
-static volatile int keyq_in, keyq_out;
+static volatile int keyq_in, keyq_out, halfres_changed;
 static u16 keys_last;
 static volatile u32 palm_keymask;
 
@@ -175,10 +175,11 @@ void input_poll(void) {
   unsigned i;
   if (!diff) return;
   if ((diff & now & KEY_SELECT) != 0) {
-    /* Select switches between the sharp and the fast renderer, from the next level on */
+    /* Select switches between the sharp and the fast renderer, from the next level on.
+     * (This runs in the vblank interrupt, on a 160-byte stack: no logging here.) */
     extern int bod_halfres;
     bod_halfres = !bod_halfres;
-    debug(DEBUG_INFO, "GBA", "%s rendering from the next level", bod_halfres ? "half-size (fast)" : "full-size (sharp)");
+    halfres_changed = 1;
   }
   for (i = 0; i < sizeof keymap / sizeof keymap[0]; i++) {
     if (!(diff & keymap[i].gba)) continue;
@@ -194,6 +195,7 @@ int pumpkin_event(int *key, int *mods, int *buttons, uint8_t *data, uint32_t *n,
   int ev;
   (void)data;
   *mods = 0; *buttons = 0; *n = 0; *key = 0;
+  if (halfres_changed) { extern int bod_halfres; halfres_changed = 0; debug(DEBUG_INFO, "GBA", "%s rendering from the next level", bod_halfres ? "half-size (fast)" : "full-size (sharp)"); }
   if (keyq_in == keyq_out) {
     /* A Palm would sleep here for the timeout; the engine itself takes longer
      * than a frame, so give the time straight back to it. Only an idle wait
