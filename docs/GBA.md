@@ -15,7 +15,8 @@ in the browser; the headless test harness is `tools/gba/run.sh`.
 | A | select (five-way centre) |
 | B | escape / back |
 | Start | menu |
-| Select, L, R | hard keys 4, 2, 3 |
+| Select | switch between the fast renderer (default) and the sharp one, from the next level |
+| L, R | hard keys 2, 3 |
 
 Progress and settings are saved to the cartridge's 32 KB SRAM (mGBA keeps it in a
 `.sav` file next to the ROM). The first boot seeds the game's settings from
@@ -44,6 +45,12 @@ was sized for a fixed capacity per row and regrown by 1.5x until nothing overflo
 (`gba/src/edge.c`, the patched insert routine), into rows of exactly the size they need.
 A level whose table would still crowd out the rest of the load gets coarser bands.
 
+**The scene is drawn at half size.** By default the engine renders into a 120x80
+window and the copy to the screen doubles every pixel, which quarters the sampling,
+line and sprite work; the menus, dialogs and text stay at full resolution. Select
+switches to full-size rendering, which looks like the original and runs at 12-14
+frames per second instead of 21-22.
+
 **Hot code runs from IWRAM.** Executing the engine from the cartridge is slow whenever it
 reads ROM data (the prefetch restarts after every texel). `tools/gba/hotmove.py` moves
 whole functions into IWRAM at ROM build time, rewriting branches, out-of-range calls
@@ -63,8 +70,8 @@ resources in ROM behind the same chunk headers it uses for RAM (`gba/src/storage
 | | Palm (native build) | GBA |
 |---|---|---|
 | level load (tutorial) | under a second | about 7 s |
-| frame rate | 30+ | 12-14 |
-| RAM at play | ~600 KB | ~200 KB of 256 KB |
+| frame rate | 30+ | 21-22 half size, 12-14 full size |
+| RAM at play | ~600 KB | ~180 KB of 256 KB |
 | textures | error-diffused | checkerboard dithered |
 | edge bands (tutorial) | 8 units | 64 units |
 | sound | yes | no |

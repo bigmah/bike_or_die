@@ -3601,10 +3601,10 @@ index 6715831..92552f5 100644
    }
  
 diff --git a/src/libpumpkin/Window.c b/src/libpumpkin/Window.c
-index e595948..a312640 100644
+index e595948..205a467 100644
 --- a/src/libpumpkin/Window.c
 +++ b/src/libpumpkin/Window.c
-@@ -15,6 +15,11 @@
+@@ -15,7 +15,18 @@
  #include "language.h"
  #include "sys.h"
  #include "debug.h"
@@ -3614,9 +3614,26 @@ index e595948..a312640 100644
 +#define bod_put8(bits, offset, b) (bits)[offset] = (b)
 +#endif
  #include "xalloc.h"
++#ifdef BOD_GBA
++/* The game's render window at half size: the engine draws a quarter of the
++ * pixels and the copy to the screen doubles them (gba/src/platform.c). */
++extern int bod_halfres;
++WinHandle bod_half_win;
++#endif
  
  #define LEGACY_SCREEN_SIZE 160 * 160
-@@ -629,7 +634,15 @@ void WinSetBounds(WinHandle winHandle, const RectangleType *rP) {
+ 
+@@ -387,6 +398,9 @@ WinHandle WinCreateBitmapWindow(BitmapType *bitmapP, UInt16 *error) {
+ }
+ 
+ void WinDeleteWindow(WinHandle winHandle, Boolean eraseIt) {
++#ifdef BOD_GBA
++  if (winHandle == bod_half_win) bod_half_win = NULL;
++#endif
+   win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
+   BitmapType *bitmapP;
+   char buf[64];
+@@ -629,7 +643,15 @@ void WinSetBounds(WinHandle winHandle, const RectangleType *rP) {
      WinScreenGetAttribute(winScreenDensity, &density);
      WinScreenMode(winScreenModeGetDefaults, NULL, NULL, &depth, NULL);
      old = winHandle->bitmapP;
@@ -3632,7 +3649,7 @@ index e595948..a312640 100644
      if (bmp) {
        BmpSetLittleEndianBits(bmp, module->littleEndian);
        winHandle->bitmapP = bmp;
-@@ -1002,6 +1015,134 @@ static UInt32 getPattern(win_module_t *module, WinHandle wh, Coord x, Coord y, P
+@@ -1002,6 +1024,134 @@ static UInt32 getPattern(win_module_t *module, WinHandle wh, Coord x, Coord y, P
    return c;
  }
  
@@ -3767,7 +3784,7 @@ index e595948..a312640 100644
  static void draw_hline(win_module_t *module, Coord x1, Coord x2, Coord y, PatternType pattern) {
    Coord x, aux;
    UInt32 c, d;
-@@ -1012,6 +1153,8 @@ static void draw_hline(win_module_t *module, Coord x1, Coord x2, Coord y, Patter
+@@ -1012,6 +1162,8 @@ static void draw_hline(win_module_t *module, Coord x1, Coord x2, Coord y, Patter
      x2 = aux;
    }
  
@@ -3776,7 +3793,7 @@ index e595948..a312640 100644
    for (x = x1; x <= x2; x++) {
      c = getPattern(module, module->drawWindow, x, y, pattern);
      d = getPattern(module, module->displayWindow, x, y, pattern);
-@@ -1029,6 +1172,8 @@ static void draw_vline(win_module_t *module, Coord x, Coord y1, Coord y2, Patter
+@@ -1029,6 +1181,8 @@ static void draw_vline(win_module_t *module, Coord x, Coord y1, Coord y2, Patter
      y2 = aux;
    }
  
@@ -3785,7 +3802,7 @@ index e595948..a312640 100644
    for (y = y1; y <= y2; y++) {
      c = getPattern(module, module->drawWindow, x, y, pattern);
      d = getPattern(module, module->displayWindow, x, y, pattern);
-@@ -1215,7 +1360,123 @@ void WinInvertLine(Coord x1, Coord y1, Coord x2, Coord y2) {
+@@ -1215,7 +1369,123 @@ void WinInvertLine(Coord x1, Coord y1, Coord x2, Coord y2) {
  
  // fill=true : draw filled retangle inside rP (including limits)
  // fill=false: draw retangle border around rP (ouside limits)
@@ -3909,7 +3926,7 @@ index e595948..a312640 100644
    Coord x1, y1, x2, y2, y, d, aux;
    Int16 i;
  
-@@ -1724,6 +1985,135 @@ void WinCopyWindow(WinHandle src, WinHandle dst, RectangleType *srcRect, Coord d
+@@ -1724,6 +1994,135 @@ void WinCopyWindow(WinHandle src, WinHandle dst, RectangleType *srcRect, Coord d
    }
  }
  
@@ -4045,7 +4062,7 @@ index e595948..a312640 100644
  void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect, Coord x, Coord y, WinDrawOperation mode, Boolean text) {
    win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
    BitmapType *windowBitmap, *displayBitmap;
-@@ -1747,6 +2137,9 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
+@@ -1747,6 +2146,9 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
      displayDensity = BmpGetDensity(displayBitmap);
      displayEndianness = BmpGetLittleEndianBits(displayBitmap);
      blitDisplay = wh == module->activeWindow && wh != module->displayWindow;
@@ -4055,7 +4072,7 @@ index e595948..a312640 100644
  
      scaleBitmapOff = (module->drawState.scalingMode & kBitmapScalingOff) != 0;
  
-@@ -1754,8 +2147,24 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
+@@ -1754,8 +2156,24 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
      delete = false;
  
      if (compression != BitmapCompressionTypeNone) {
@@ -4080,7 +4097,7 @@ index e595948..a312640 100644
      }
  
      bitmapDensity = BmpGetDensity(bitmapP);
-@@ -1836,6 +2245,24 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
+@@ -1836,6 +2254,24 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
        return;
      }
  
@@ -4105,7 +4122,7 @@ index e595948..a312640 100644
      x1 = wh->clippingBounds.left;
      x2 = wh->clippingBounds.right;
      y1 = wh->clippingBounds.top;
-@@ -1964,6 +2391,22 @@ void WinConvertToDisplay(WinHandle wh, Coord *x, Coord *y) {
+@@ -1964,6 +2400,33 @@ void WinConvertToDisplay(WinHandle wh, Coord *x, Coord *y) {
  }
  
  void WinCopyRectangle(WinHandle srcWin, WinHandle dstWin, const RectangleType *srcRect, Coord dstX, Coord dstY, WinDrawOperation mode) {
@@ -4119,6 +4136,17 @@ index e595948..a312640 100644
 +    win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
 +    WinHandle d = dstWin ? dstWin : module->displayWindow;
 +    if (bod_menu_visible() && d && ((UInt32)BmpGetBits(WinGetBitmap(d)) >> 24) == 0x06) return;   /* the frame would wipe the menu */
++    if (srcWin && srcWin == bod_half_win && d && ((UInt32)BmpGetBits(WinGetBitmap(d)) >> 24) == 0x06) {
++      extern void bod_copy_doubled(const UInt8 *src, UInt16 srcRow, UInt8 *dst, UInt16 dstRow, int w, int h);
++      BitmapType *sb = WinGetBitmap(srcWin), *db = WinGetBitmap(d);
++      Coord sw, sh, dw, dh; UInt16 srb, drb;
++      ColorTableType *ct = BmpGetColortable(sb);
++      if (ct) bod_palette_follow(ct);
++      BmpGetDimensions(sb, &sw, &sh, &srb);
++      BmpGetDimensions(db, &dw, &dh, &drb);
++      bod_copy_doubled(BmpGetBits(sb), srb, BmpGetBits(db), drb, sw < dw / 2 ? sw : dw / 2, sh < dh / 2 ? sh : dh / 2);
++      return;
++    }
 +    if (srcWin && d && ((UInt32)BmpGetBits(WinGetBitmap(d)) >> 24) == 0x06) {
 +      ColorTableType *ct = BmpGetColortable(WinGetBitmap(srcWin));
 +      if (ct) bod_palette_follow(ct);
@@ -4128,7 +4156,23 @@ index e595948..a312640 100644
    win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
    char sbuf[64], dbuf[64];
  
-@@ -3075,6 +3518,10 @@ Err WinPalette(UInt8 operation, Int16 startIndex, UInt16 paletteEntries, RGBColo
+@@ -2972,8 +3435,15 @@ WinHandle WinCreateOffscreenWindow(Coord width, Coord height, WindowFormatType f
+   WinHandle wh = NULL;
+   char buf[64];
+   Err err = sysErrNoFreeResource;
++#ifdef BOD_GBA
++  int half = bod_halfres && width == 240 && height == 160 && bod_half_win == NULL;
++  if (half) { width = 120; height = 80; }
++#endif
+ 
+   if ((wh = pumpkin_heap_alloc(sizeof(WindowType), "Window")) != NULL) {
++#ifdef BOD_GBA
++    if (half) { bod_half_win = wh; debug(DEBUG_INFO, "Window", "render window at half size"); }
++#endif
+     RctSetRectangle(&wh->windowBounds, 0, 0, width, height);
+ 
+     switch (format) {
+@@ -3075,6 +3545,10 @@ Err WinPalette(UInt8 operation, Int16 startIndex, UInt16 paletteEntries, RGBColo
    if (wh) {
      debug(DEBUG_TRACE, "Window", "WinPalette drawWindow %s", WinGetDescr(wh, buf, sizeof(buf)));
      colorTable = BmpGetColortable(WinGetBitmap(wh));
@@ -4139,7 +4183,7 @@ index e595948..a312640 100644
      if (colorTable == NULL) {
        debug(DEBUG_ERROR, "Window", "WinPalette drawWindow colorTable is NULL");
        return winErrPalette;
-@@ -3131,6 +3578,9 @@ Err WinPalette(UInt8 operation, Int16 startIndex, UInt16 paletteEntries, RGBColo
+@@ -3131,6 +3605,9 @@ Err WinPalette(UInt8 operation, Int16 startIndex, UInt16 paletteEntries, RGBColo
              //broadcastDisplayChange(module->depth, module->depth);
              pumpkin_dirty_region_mode(dirtyRegionReset);
              WinDirtyRegion(module->displayWindow, 0, 0, module->width-1, module->height-1);

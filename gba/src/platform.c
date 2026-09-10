@@ -147,6 +147,23 @@ void bod_palette_follow(ColorTableType *ct) {
   bod_palette_changed(ct);
 }
 
+int bod_halfres = 1;
+
+/* Pixel-double a half-size frame into the screen (gba/src/copy2x.s). */
+extern void bod_copy2x(const uint8_t *src, uint32_t srcRow, uint8_t *dst, uint32_t dstRow, uint32_t w, uint32_t h);
+void bod_copy_doubled(const uint8_t *src, uint16_t srcRow, uint8_t *dst, uint16_t dstRow, int w, int h) {
+  if (w <= 0 || h <= 0 || ((uint32_t)src & 1) || ((uint32_t)dst & 3) || (srcRow & 1) || (dstRow & 3)) {
+    int y, x;
+    for (y = 0; y < h; y++) {
+      const uint8_t *s = src + y * srcRow;
+      volatile uint16_t *d0 = (volatile uint16_t *)(dst + (2 * y) * dstRow), *d1 = (volatile uint16_t *)(dst + (2 * y + 1) * dstRow);
+      for (x = 0; x < w; x++) { uint16_t v = s[x] * 0x0101u; d0[x] = v; d1[x] = v; }
+    }
+    return;
+  }
+  bod_copy2x(src, srcRow, dst, dstRow, (uint32_t)w & ~1u, (uint32_t)h);
+}
+
 /* A window whose bitmap is a region of the screen, for the menus: they are
  * drawn at a fixed place and there is no memory for a copy of the screen
  * behind them while a level is loaded. */

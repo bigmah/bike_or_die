@@ -356,7 +356,8 @@ there; Safari can be driven the same way over WebDriver with `safaridriver`, onc
 original ARM code running natively on the ARM7TDMI, and PumpkinOS trimmed to 256 KB.
 Textures are served from ROM and tinted at render time, the renderer's edge table is
 packed, and its hot loops are relocated into IWRAM; it loads a level in about 7 seconds
-and plays at 12-14 frames per second, without sound. See `docs/GBA.md`.
+and plays at 21-22 frames per second drawing the scene at half size (12-14 at full
+size), without sound. See `docs/GBA.md`.
 
 ## Licensing
 

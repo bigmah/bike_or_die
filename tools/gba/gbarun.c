@@ -151,13 +151,15 @@ static void run_frames(int n) {
     if (profile && (int)frame_no >= profile_from) {
       /* sample the program counter a few times per frame by stepping a little */
       int k;
+      /* samples spread at random over the frame's first ~100k instructions,
+       * so a workload with a period near the frame's cannot alias */
       for (k = 0; k < 16 && nsamples < NSAMPLES; k++) {
-        int32_t pc = 0, lr = 0, m;
+        int32_t pc = 0, lr = 0, m, n = 500 + (rand() % 12000);
+        for (m = 0; m < n; m++) core->step(core);
         core->readRegister(core, "pc", &pc);
         core->readRegister(core, "r14", &lr);
         samples_lr[nsamples] = (uint32_t)lr;
         samples[nsamples++] = (uint32_t)pc;
-        for (m = 0; m < 200; m++) core->step(core);
       }
     }
     if (period_frames && frame_no % period_frames == 0) {

@@ -172,6 +172,12 @@ void input_poll(void) {
   u16 now = (u16)KEYS_HELD(), diff = now ^ keys_last;
   unsigned i;
   if (!diff) return;
+  if ((diff & now & KEY_SELECT) != 0) {
+    /* Select switches between the sharp and the fast renderer, from the next level on */
+    extern int bod_halfres;
+    bod_halfres = !bod_halfres;
+    debug(DEBUG_INFO, "GBA", "%s rendering from the next level", bod_halfres ? "half-size (fast)" : "full-size (sharp)");
+  }
   for (i = 0; i < sizeof keymap / sizeof keymap[0]; i++) {
     if (!(diff & keymap[i].gba)) continue;
     if (now & keymap[i].gba) { keyq_push(MSG_KEYDOWN, keymap[i].win); palm_keymask |= keymap[i].mask; }
