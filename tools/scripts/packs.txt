@@ -1,0 +1,27 @@
+# Switch level packs the way the window's Level Pack... sheet does, and check
+# the game really plays the new one: pick a pack, let "Play this level" start
+# it, then open the chooser again -- the level list it walks through on the
+# way is titled with the pack the game is on, which the log line of the next
+# pack command reports. Frames: p2_playing is the new pack's first level.
+wait 4500
+wait 6000
+key 13
+wait 2500
+key 13
+wait 4500
+shot p0_game
+pack open
+wait 3000
+shot p1_packs
+pack pick 11
+wait 6000
+shot p2_playing
+pack open
+wait 3000
+shot p3_packs_again
+pack cancel
+wait 2000
+shot p4_after
+pack menu Next Level
+wait 4000
+shot p5_next

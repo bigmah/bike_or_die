@@ -166,6 +166,15 @@ display driver creates it. Two things are arranged around the game:
   Dock, and a strip would push the bottom of the game under it. The title, which only ever
   said "PumpkinOS", makes way.
 
+Picking a pack used to leave the game on the one it was already on, in both builds. The
+chooser did its part -- the level list came back titled with the new pack, and the pack's
+results database was created -- but the level that started was Introduction's, and so was
+every level after it. The game finds the pack it has switched to by name, from its ARM
+code, through Palm OS 5's `DmFindDatabase` (offset 0x15C of the Boot library's table),
+which PumpkinOS did not provide. A call it does not provide hands back its first argument
+untouched, so the game opened the pointer to the pack's name as if it were the pack, was
+refused, and quietly fell back to "BOD - Introduction". `armsyscall.c` answers it now.
+
 ## Configuration
 
 The launcher reads `~/.bikeordie.env` if it exists. Useful settings:
@@ -300,7 +309,11 @@ menus answered them. `tools/scripts/finish.txt` is its opposite: it pedals all t
 through the end of a level, where the last frame has to show the "Congratulations!"
 dialog with no focus ring on it. `tools/scripts/keys.txt` rides with the letters
 rather than the arrows, so running it under a `BOD_KEYS` that moves them elsewhere
-should leave the bike where it stands.
+should leave the bike where it stands. `tools/scripts/packs.txt` switches level packs
+through `bodpack.c` -- a script's `pack` action sends it a command, as the window's
+level controls do -- and logs the chooser's status before each one, including the title
+of the level list the game last showed: after the switch that has to be the new pack's
+name, not "BOD - Introduction".
 
 Useful knobs while debugging the ARM core:
 

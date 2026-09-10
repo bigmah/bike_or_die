@@ -6217,7 +6217,7 @@ index 2f178be..a220624 100644
      }
    }
 diff --git a/src/libpumpkin/emulation/armsyscall.c b/src/libpumpkin/emulation/armsyscall.c
-index a39ed7a..127fa47 100644
+index a39ed7a..9c8d634 100644
 --- a/src/libpumpkin/emulation/armsyscall.c
 +++ b/src/libpumpkin/emulation/armsyscall.c
 @@ -1,3 +1,4 @@
@@ -6242,7 +6242,24 @@ index a39ed7a..127fa47 100644
  uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3, uint32_t sp) {
    uint8_t *ram = pumpkin_heap_base();
    char st[8], st2[8];
-@@ -243,6 +254,15 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+@@ -112,6 +123,16 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+           r0 = err;
+           }
+           break;
++        case 0x15C: {
++          // LocalID DmFindDatabase(const Char *nameP) XXX cardNo parameter does not exist
++          // Bike or Die looks up the level pack it has switched to by name, and
++          // opens whatever this returns.
++          char *nameP = r0 ? (char *)(ram + r0) : NULL;
++          r = DmFindDatabase(0, nameP);
++          debug(DEBUG_TRACE, "ARM", "arm syscall DmFindDatabase(0x%08X \"%s\"): 0x%08X", r0, nameP ? nameP : "", r);
++          r0 = r;
++          }
++          break;
+         case 0x170: {
+           // UInt16 DmFindResource(DmOpenRef dbP, DmResType resType, DmResID resID, MemHandle resH)
+           DmOpenRef dbP = r0 ? (DmOpenRef)(ram + r0) : NULL;
+@@ -243,6 +264,15 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
              put4l(value, ram, r2);
            }
            break;
@@ -6258,7 +6275,7 @@ index a39ed7a..127fa47 100644
          case 0x43C:
            // Err FtrSet(UInt32 creator, UInt16 featureNum, UInt32 newValue)
            pumpkin_id2s(r0, st);
-@@ -260,6 +280,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+@@ -260,6 +290,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
          case 0x4B8: {
            // Err MemChunkFree(MemPtr chunkDataP)
            void *p = r0 ? ram + r0 : NULL;
@@ -6266,7 +6283,7 @@ index a39ed7a..127fa47 100644
            err = MemChunkFree(p);
            debug(DEBUG_TRACE, "ARM", "arm syscall MemChunkFree(0x%04X): %d", r0, err);
            r0 = err;
-@@ -269,6 +290,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+@@ -269,6 +300,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
            // MemPtr MemChunkNew(UInt16 heapID, UInt32 size, UInt16 attr)
            MemPtr p = MemChunkNew(r0, r1, r2);
            r = p ? (uint8_t *)p - ram : 0;
@@ -6274,7 +6291,7 @@ index a39ed7a..127fa47 100644
            debug(DEBUG_TRACE, "ARM", "arm syscall MemChunkNew(%u, %u, 0x%04X): 0x%08X", r0, r1, r2, r);
            r0 = r;
            break;
-@@ -284,6 +306,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+@@ -284,6 +316,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
            MemHandle h = r0 ? (MemHandle)(ram + r0) : NULL;
            uint8_t *p = MemHandleLock(h);
            r = p ? p - ram : 0;
@@ -6282,7 +6299,7 @@ index a39ed7a..127fa47 100644
            debug(DEBUG_TRACE, "ARM", "arm syscall MemHandleLock(0x%08X): 0x%08X", r0, r);
            r0 = r;
            }
-@@ -305,6 +328,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+@@ -305,6 +338,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
            UInt32 *freeP = r1 ? (UInt32 *)(ram + r1) : NULL;
            UInt32 *maxP = r2 ? (UInt32 *)(ram + r2) : NULL;
            err = MemHeapFreeBytes(r0, freeP, maxP);
@@ -6290,7 +6307,7 @@ index a39ed7a..127fa47 100644
            debug(DEBUG_TRACE, "ARM", "arm syscall MemHeapFreeBytes(%u, 0x%08X, 0x%08X): %d", r0, r1, r2, err);
            r0 = err;
            }
-@@ -314,6 +338,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+@@ -314,6 +348,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
            void *dstP = r0 ? ram + r0 : NULL;
            void *sP = r1 ? ram + r1 : NULL;
            err = MemMove(dstP, sP, r2);
@@ -6298,7 +6315,7 @@ index a39ed7a..127fa47 100644
            debug(DEBUG_TRACE, "ARM", "arm syscall MemMove(0x%08X, 0x%08X, %d): %d", r0, r1, r2, err);
            r0 = err;
            }
-@@ -331,6 +356,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+@@ -331,6 +366,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
            void *p = MemPtrNew(r0);
            r = p ? (uint8_t *)p - ram : 0;
            debug(DEBUG_TRACE, "ARM", "arm syscall MemPtrNew(%u): 0x%08X", r0, r);
@@ -6306,7 +6323,7 @@ index a39ed7a..127fa47 100644
            r0 = r;
            }
            break;
-@@ -343,6 +369,14 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+@@ -343,6 +379,14 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
            r0 = r;
            }
            break;
@@ -6321,7 +6338,7 @@ index a39ed7a..127fa47 100644
          case 0x5A4: {
            // Err MemPtrUnlock(MemPtr p)
            void *p = r0 ? ram + r0 : NULL;
-@@ -355,6 +389,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+@@ -355,6 +399,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
            // Err MemSet(void *dstP, Int32 numBytes, UInt8 value)
            void *dstP = r0 ? ram + r0 : NULL;
            err = MemSet(dstP, r1, r2);
@@ -6329,7 +6346,7 @@ index a39ed7a..127fa47 100644
            debug(DEBUG_TRACE, "ARM", "arm syscall MemSet(0x%08X, %d, %u): %d", r0, r1, r2, err);
            r0 = err;
            }
-@@ -634,13 +669,13 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+@@ -634,13 +679,13 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
            break;
          case 0x924:
            // UInt32 TimGetSeconds(void)
@@ -6345,7 +6362,7 @@ index a39ed7a..127fa47 100644
            debug(DEBUG_TRACE, "ARM", "arm syscall TimGetTicks(): %u", r0);
            break;
          case 0xAF8: {
-@@ -730,6 +765,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+@@ -730,6 +775,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
            ColorTableType *colorTableP = r3 ? (ColorTableType *)(ram + r3) : NULL;
            BitmapTypeV3 *bmp1 = BmpCreateBitmapV3(bmp, r1, bitsP, colorTableP);
            r = bmp1 ? (uint8_t *)bmp1 - ram : 0;
@@ -6353,13 +6370,13 @@ index a39ed7a..127fa47 100644
            debug(DEBUG_TRACE, "ARM", "arm syscall BmpCreateBitmapV3(0x%08X, %u, 0x%08X, 0x%08X): 0x%08X", r0, r1, r2, r3, r);
            r0 = r;
            }
-@@ -784,7 +820,14 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+@@ -784,7 +830,14 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
            }
            break;
          default:
 +#ifdef BOD_GBA
 +          /* The desktop build answers these with 0 too, and the game is happy. */
-+          if (function != 0xB78 && function != 0xBEC && function != 0xC70 && function != 0xC80 && function != 0xC98 && function != 0x15C) {
++          if (function != 0xB78 && function != 0xBEC && function != 0xC70 && function != 0xC80 && function != 0xC98) {
 +            extern uint32_t arm_syscall_lr; debug(DEBUG_ERROR, "ARM", "unmapped arm syscall 0x%04X in BOOT (r0=0x%08X r1=0x%08X r2=0x%08X r3=0x%08X lr=0x%08X)", function, r0, r1, r2, r3, arm_syscall_lr);
 +          }
 +#else
@@ -7843,10 +7860,10 @@ index 0000000..1090b1f
 +include ../lib.mak
 diff --git a/src/libwtest/libwtest.c b/src/libwtest/libwtest.c
 new file mode 100644
-index 0000000..0f730ee
+index 0000000..2f4afef
 --- /dev/null
 +++ b/src/libwtest/libwtest.c
-@@ -0,0 +1,419 @@
+@@ -0,0 +1,503 @@
 +/* Headless window driver for automated testing.
 + *
 + * Keeps the composed framebuffer in memory, writes periodic PPM snapshots, and
@@ -7864,7 +7881,14 @@ index 0000000..0f730ee
 + *   pen <x> <y>            pointer motion
 + *   tap <x> <y>            pointer down + up
 + *   shot <label>           snapshot now, named
++ *   pack <command>         hand a command to the level pack chooser, as the
++ *                          window's level controls do (see bodpack.c)
 + */
++
++#include <dlfcn.h>
++#ifdef __APPLE__
++#include <mach-o/dyld.h>
++#endif
 +
 +#include "sys.h"
 +#include "script.h"
@@ -7879,10 +7903,10 @@ index 0000000..0f730ee
 +typedef struct {
 +  int op;                 /* see OP_ below */
 +  int a, b;
-+  char label[32];
++  char label[64];         /* a shot's name, or a pack command */
 +} action_t;
 +
-+enum { OP_WAIT = 1, OP_KEYDOWN, OP_KEYUP, OP_PEN, OP_TAPDOWN, OP_TAPUP, OP_SHOT };
++enum { OP_WAIT = 1, OP_KEYDOWN, OP_KEYUP, OP_PEN, OP_TAPDOWN, OP_TAPUP, OP_SHOT, OP_PACK };
 +
 +typedef struct {
 +  int width, height, spixel;
@@ -8008,6 +8032,70 @@ index 0000000..0f730ee
 +  sys_close(fd);
 +}
 +
++/* -------------------------------------------------------------- level packs
++ * bodpack.c is in libpumpkin, which libos loads after this library and not
++ * necessarily into the global namespace, so its entry points are looked up
++ * the first time a script asks, the way liblsdl2_mac.m does. */
++
++static void (*wt_pack_command)(const char *cmd);
++static const char *(*wt_pack_state)(void);
++
++static void *wt_symbol(const char *name) {
++  void *sym;
++#ifdef __APPLE__
++  static const char suffix[] = "/libpumpkin.dylib";
++  const char *image;
++  void *handle;
++  int n, m = sizeof(suffix) - 1;
++  uint32_t i;
++#endif
++
++  if ((sym = dlsym(RTLD_DEFAULT, name)) != NULL) return sym;
++#ifdef __APPLE__
++  for (i = 0; i < _dyld_image_count(); i++) {
++    image = _dyld_get_image_name(i);
++    n = image ? (int)sys_strlen(image) : 0;
++    if (n < m || sys_strcmp(image + n - m, suffix) != 0) continue;
++    if ((handle = dlopen(image, RTLD_LAZY | RTLD_NOLOAD)) != NULL) {
++      sym = dlsym(handle, name);
++      dlclose(handle);
++      if (sym) return sym;
++    }
++  }
++#endif
++
++  return NULL;
++}
++
++/* Logs the chooser's status line and the title it last saw -- the first two
++ * lines of bod_pack_state() -- and then hands it the command. */
++static void wt_pack(const char *cmd) {
++  char line[160];
++  const char *s;
++  int i, n = 0, lines = 0;
++
++  if (!wt_pack_command) wt_pack_command = wt_symbol("bod_pack_command");
++  if (!wt_pack_state) wt_pack_state = wt_symbol("bod_pack_state");
++  if (!wt_pack_command || !wt_pack_state) {
++    debug(DEBUG_ERROR, "WTEST", "pack: bod_pack_command not found");
++    return;
++  }
++
++  s = wt_pack_state();
++  for (i = 0; s[i] && n < (int)sizeof(line) - 4; i++) {
++    if (s[i] == '\n') {
++      if (++lines == 2) break;
++      line[n++] = ' '; line[n++] = '/'; line[n++] = ' ';
++    } else {
++      line[n++] = s[i];
++    }
++  }
++  line[n] = 0;
++
++  debug(DEBUG_INFO, "WTEST", "pack: status \"%s\", sending \"%s\"", line, cmd);
++  wt_pack_command(cmd);
++}
++
 +/* ------------------------------------------------------------------- script */
 +
 +static int keyname(const char *s) {
@@ -8053,6 +8141,15 @@ index 0000000..0f730ee
 +        }
 +      }
 +      else if (!sys_strcmp(w0, "shot"))    { a->op = OP_SHOT;    sys_strncpy(a->label, w1, sizeof(a->label)-1); }
++      else if (!sys_strcmp(w0, "pack")) {
++        /* the command is the rest of the line: "menu Next Level" has spaces */
++        const char *s = line;
++        while (*s == ' ' || *s == '\t') s++;
++        s += 4;
++        while (*s == ' ' || *s == '\t') s++;
++        a->op = OP_PACK;
++        sys_strncpy(a->label, s, sizeof(a->label)-1);
++      }
 +      if (a->op && window->nact < MAX_ACTIONS - 2) window->nact++;
 +    }
 +    len = 0;
@@ -8194,6 +8291,10 @@ index 0000000..0f730ee
 +      return 0;
 +    case OP_SHOT:
 +      snapshot(window, a->label);
++      window->cur++;
++      return 0;
++    case OP_PACK:
++      wt_pack(a->label);
 +      window->cur++;
 +      return 0;
 +    case OP_PEN:
