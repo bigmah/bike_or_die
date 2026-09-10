@@ -11,6 +11,7 @@
 //   k:KEY/down k:KEY/up   hold or release it
 //   m:X/Y      click at canvas-relative X,Y
 //   t:TEXT     type TEXT
+//   j:CODE     run CODE in the page (no commas: they separate actions)
 //
 // Needs a local Chrome and puppeteer-core, which tools/setup.sh installs into
 // tools/node_modules (PUPPETEER_SKIP_DOWNLOAD=1: it drives the real Chrome).
@@ -144,6 +145,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     if (op === 'd') await sleep(parseFloat(val) * 1000);
     else if (op === 'p') await shot(val);
     else if (op === 't') await page.keyboard.type(val);
+    else if (op === 'j') {
+      const r = await page.evaluate(val).catch((e) => 'failed: ' + e.message);
+      note(`[eval] ${val} -> ${typeof r === 'string' ? r : JSON.stringify(r)}`);
+    }
     else if (op === 'm') {
       const [x, y] = val.split('/').map(Number);
       const box = await canvas.boundingBox();

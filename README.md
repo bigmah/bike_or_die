@@ -315,6 +315,32 @@ that opening it does not move the screen. What it sets goes to the runtime throu
 `pumpkin_set_ride_keys` and into this browser's storage, so it takes effect at once and
 is there on the next visit.
 
+**Level pack** and the level buttons above the screen do what the game's Game menu does,
+without the menu. Restart, Previous and Next each queue the matching menu event, the way
+picking the item with the keyboard would. **Levels...** opens the game's own level list.
+**Level pack** opens a panel over the screen that lists every pack the game has, in the
+game's order, with a filter; picking one starts it. The panel is a front for the game's
+own chooser, not a replacement: the runtime walks Game -> Select Level -> More... exactly
+as a pen would, reads the names off that dialog's list -- the list draws its items through
+a callback in the game's code, so each item is drawn once into an offscreen window with
+`WinDrawChars` watched -- and, when the page hands a choice back, sets that list's
+selection, presses Select, and presses "Play this level" on the level list that comes
+back (`src/libpumpkin/bodpack.c`, driven through `bod_pack_command` and read back through
+`bod_pack_state`). The game is always the one that switches, so its results database,
+best times and everything else follow. Closing the panel presses Cancel on both dialogs.
+
+Two things in the browser stood between a click and a pack until this worked. A quick
+click delivers its press and release together, and the game's thread could pump the
+release before its own handler had finished with the press -- so the release found no
+object under it, the list drew the new row highlighted but never took the selection, and
+Select chose the old pack. A release that arrives while its press is still in flight now
+waits, the way a keyboard tap's already did, until the queue has drained past the press
+(`FrmDeferPenUp`). The second was a hang: switching to a pack for the first time creates
+its results database, and opening that reads its empty index file -- and WasmFS answers
+`poll()` for a regular file by whether it has any bytes at all, never blocking, so
+`select()` said "not ready" at once and forever, and `sys_read()` asked forever. A regular
+file is always ready; the browser build no longer asks (`sys_select`).
+
 **Pause** sits next to the cog, and there is nothing on the main thread for it to stop:
 `-sPROXY_TO_PTHREAD` put the game's loop on a worker, so the page asks the workers instead
 and whichever of them owns a main loop stops its own (`src/emscripten/bod-pre.js`).
@@ -358,6 +384,10 @@ there; Safari can be driven the same way over WebDriver with `safaridriver`, onc
 
     tools/webtest.js -u http://127.0.0.1:8080/pumpkin.html -w 30 \
         -k "d:3,m:160/295,d:8,k:ArrowUp/down,d:4,k:ArrowUp/up" -o build/shot.png
+
+`j:` runs a line of JavaScript in the page between the other actions -- `j:bodPack.open()`
+opens the pack panel, `j:bodPack.pick(1)` takes its second entry -- which is how the
+buttons are driven from a script. It cannot contain a comma.
 
 ## Licensing
 
