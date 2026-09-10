@@ -132,6 +132,40 @@ path the pen does and needs nothing from the game. Its release is left pending u
 event queue drains, which is where a lifted pen lands: a release that overtook the enter
 event it generated would leave the button drawn stuck down.
 
+## Levels and level packs
+
+The window's title bar carries the controls the browser build has above its screen:
+**Level Pack…**, **Levels…**, and Previous / Restart / Next, with the name of the pack
+the game is on between them. The same commands are in the menu bar under **Level**:
+
+| key | action |
+|---|---|
+| **⌘L** | Level Pack… |
+| **⇧⌘L** | Levels… (the game's own level list) |
+| **⌘[** / **⌘R** / **⌘]** | Previous / Restart / Next level |
+
+**Level Pack…** brings a sheet down over the screen that lists every pack the game has, in
+the game's order, with a field to find one. Return or a double-click starts the selected
+pack; typing selects the first that matches. Escape closes the sheet and the game's
+dialogs behind it. Like the browser's panel it is a front for the game's own chooser,
+driven through `bodpack.c` (see **In a browser**), so it does exactly what Game -> Select
+Level -> More... does.
+
+The controls are Cocoa, in `src/liblsdl2/liblsdl2_mac.m`, added to SDL's window when the
+display driver creates it. Two things are arranged around the game:
+
+- **What is typed into the sheet stays out of the game.** SDL reports every key the
+  application receives, whichever window has it, so a pack name typed into the search field
+  would also reach the game's pack list behind the sheet, and Return would press its
+  Select. While the sheet is up, and for any Command chord, the display driver keeps a key
+  from the game from its press until its release -- the release is what types a character
+  in PumpkinOS, so both halves have to go. A key that was already down for the game when the
+  sheet came up is still let go of there.
+- **The window stays the size it was.** The controls sit in the title bar rather than in a
+  strip under it: at the default zoom the window already fills a laptop's screen above the
+  Dock, and a strip would push the bottom of the game under it. The title, which only ever
+  said "PumpkinOS", makes way.
+
 ## Configuration
 
 The launcher reads `~/.bikeordie.env` if it exists. Useful settings:

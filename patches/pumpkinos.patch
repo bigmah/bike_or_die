@@ -1505,26 +1505,61 @@ index 069638e..f8adbda 100644
 +  launcher = app
  }
 diff --git a/src/liblsdl2/Makefile b/src/liblsdl2/Makefile
-index a8b7c26..b091717 100644
+index a8b7c26..d5ef1e9 100644
 --- a/src/liblsdl2/Makefile
 +++ b/src/liblsdl2/Makefile
-@@ -16,6 +16,11 @@ STATIC=1
+@@ -16,6 +16,15 @@ STATIC=1
  else ifeq ($(OSNAME),Emscripten)
  STATIC=2
  CUSTOMFLAGS=-s USE_SDL=2
 +else ifeq ($(OSNAME),Darwin)
 +SDL_PREFIX := $(shell sdl2-config --prefix)
 +CUSTOMFLAGS=$(MIXER_FLAGS) $(OPENGL_FLAGS) -I$(SDL_PREFIX)/include
-+LIBS=-L$(SDL_PREFIX)/lib -lSDL2 $(MIXER_LIBS) -framework OpenGL -framework Cocoa
++# The window's own level controls are Objective-C (liblsdl2_mac.m).
++MAC_OBJS=liblsdl2_mac.o
++EXTDEPS=$(MAC_OBJS)
++EXTCLEAN=$(MAC_OBJS)
++LIBS=$(MAC_OBJS) -L$(SDL_PREFIX)/lib -lSDL2 $(MIXER_LIBS) -framework OpenGL -framework Cocoa
 +
  else ifeq ($(OSNAME),Msys)
  CUSTOMFLAGS=$(MIXER_FLAGS) $(OPENGL_FLAGS)
  LIBS=-lSDL2 -lversion -limm32 -lgdi32 -lsetupapi -lwinmm -lole32 -loleaut32 $(MIXER_LIBS)
+@@ -25,3 +34,9 @@ LIBS=-lSDL2 $(MIXER_LIBS) $(OPENGL_LIBS)
+ endif
+ 
+ include ../lib.mak
++
++liblsdl2.o $(MAC_OBJS): liblsdl2_mac.h
++
++%.o: %.m
++	@echo Compiling $<
++	@$(CC) $(CPPFLAGS) -fobjc-arc -c -o $@ $<
 diff --git a/src/liblsdl2/liblsdl2.c b/src/liblsdl2/liblsdl2.c
-index b8e2f67..9592b64 100644
+index b8e2f67..ef45f55 100644
 --- a/src/liblsdl2/liblsdl2.c
 +++ b/src/liblsdl2/liblsdl2.c
-@@ -356,6 +356,23 @@ static int map_key(libsdl_window_t *window, SDL_Event *ev) {
+@@ -20,6 +20,10 @@
+ #include "average.h"
+ #include "debug.h"
+ 
++#if defined(DARWIN)
++#include "liblsdl2_mac.h"
++#endif
++
+ #define SDL_BUTTON1   1
+ #define SDL_BUTTON2   2
+ 
+@@ -65,6 +69,9 @@ typedef struct {
+ #endif
+   void (*drop_callback)(char *filename, void *data);
+   void *drop_data;
++#if defined(DARWIN)
++  uint8_t key_owner[SDL_NUM_SCANCODES];
++#endif
+ } libsdl_window_t;
+ 
+ typedef struct {
+@@ -356,6 +363,23 @@ static int map_key(libsdl_window_t *window, SDL_Event *ev) {
            case SDLK_HOME: key = WINDOW_KEY_HOME; break;
            case SDLK_END: key = WINDOW_KEY_END; break;
            case SDLK_INSERT: key = WINDOW_KEY_INS; break;
@@ -1548,10 +1583,76 @@ index b8e2f67..9592b64 100644
            case SDLK_F1: key = WINDOW_KEY_F1; break;
            case SDLK_F2: key = WINDOW_KEY_F2; break;
            case SDLK_F3: key = WINDOW_KEY_F3; break;
-@@ -780,6 +797,14 @@ static int libsdl_video_setup(libsdl_window_t *window) {
+@@ -405,6 +429,49 @@ static int map_button(libsdl_window_t *window, SDL_Event *ev) {
+   return 0;
+ }
+ 
++#if defined(DARWIN)
++#define OWNER_NONE 0
++#define OWNER_GAME 1
++#define OWNER_HOST 2
++
++void liblsdl2_log(const char *msg) {
++  debug(DEBUG_INFO, "SDL", "%s", msg);
++}
++
++/* Whether a key event is for the window's own level controls
++ * (liblsdl2_mac.m) rather than for the game. SDL reports every key the
++ * application receives, whichever window it was typed into, so a name typed
++ * into the level pack sheet's search field would otherwise reach the game's
++ * dialog behind it; and a Command chord is the menu bar's. A key belongs to
++ * whoever it was pressed for until it is released -- the release is what types
++ * a character in PumpkinOS (pumpkin_event_single_app) -- so one that was down
++ * for the game when the sheet came up is still let go of there. */
++static int libsdl_host_key(libsdl_window_t *window, SDL_Event *ev) {
++  uint8_t *owner;
++  int sc;
++
++  if (ev->type != SDL_KEYDOWN && ev->type != SDL_KEYUP) return 0;
++  sc = (int)ev->key.keysym.scancode;
++  if (sc <= 0 || sc >= SDL_NUM_SCANCODES) return 0;
++  owner = &window->key_owner[sc];
++
++  if (ev->type == SDL_KEYDOWN) {
++    if (*owner == OWNER_NONE) {
++      *owner = ((ev->key.keysym.mod & KMOD_GUI) || liblsdl2_mac_wants_keys()) ? OWNER_HOST : OWNER_GAME;
++    }
++    return *owner == OWNER_HOST;
++  }
++
++  if (*owner == OWNER_HOST) {
++    *owner = OWNER_NONE;
++    return 1;
++  }
++  *owner = OWNER_NONE;
++
++  return 0;
++}
++#endif
++
+ static int libsdl_event2(libsdl_window_t *window, int wait, int *arg1, int *arg2) {
+   SDL_Event ev;
+   int has_ev, r = 0;
+@@ -412,6 +479,9 @@ static int libsdl_event2(libsdl_window_t *window, int wait, int *arg1, int *arg2
+   has_ev = wait < 0 ? SDL_WaitEvent(&ev) : SDL_WaitEventTimeout(&ev, wait);
+ 
+   if (has_ev) {
++#if defined(DARWIN)
++    if (libsdl_host_key(window, &ev)) return 0;
++#endif
+     switch (ev.type) {
+       case SDL_KEYDOWN:
+         *arg1 = map_key(window, &ev);
+@@ -780,6 +850,20 @@ static int libsdl_video_setup(libsdl_window_t *window) {
      }
    }
  
++#if defined(DARWIN)
++  if (!window->fullscreen) {
++    liblsdl2_mac_attach(window->window);
++  }
++#endif
++
 +  {
 +    int ww = 0, wh = 0, ow = 0, oh = 0;
 +    SDL_GetWindowSize(window->window, &ww, &wh);
@@ -1563,7 +1664,7 @@ index b8e2f67..9592b64 100644
    SDL_SetRenderDrawBlendMode(window->renderer, SDL_BLENDMODE_BLEND);
  
    SDL_RenderClear(window->renderer);
-@@ -1145,6 +1170,34 @@ static int libsdl_window_draw_texture(window_t *_window, texture_t *texture, int
+@@ -1145,6 +1229,34 @@ static int libsdl_window_draw_texture(window_t *_window, texture_t *texture, int
    return r;
  }
  
@@ -1598,7 +1699,7 @@ index b8e2f67..9592b64 100644
  static void audio_destructor(void *p) {
    sdl_audio_t *audio = (sdl_audio_t *)p;
  
-@@ -1180,9 +1233,14 @@ static audio_t libsdl_audio_create(int pcm, int channels, int rate, void *data)
+@@ -1180,9 +1292,14 @@ static audio_t libsdl_audio_create(int pcm, int channels, int rate, void *data)
        audio->rate = rate;
        audio->channels = channels;
        debug(DEBUG_TRACE, "SDL", "sample size %d", audio->bsize);
@@ -1616,7 +1717,7 @@ index b8e2f67..9592b64 100644
        }
        audio->buffer = sys_calloc(1, audio->bsize * audio->channels);
        debug(DEBUG_TRACE, "SDL", "buffer size %d", audio->bsize);
-@@ -1521,6 +1579,64 @@ static void *convert_audio(sdl_audio_buffer_t *abuf, sdl_audio_t *audio, void *a
+@@ -1521,6 +1638,64 @@ static void *convert_audio(sdl_audio_buffer_t *abuf, sdl_audio_t *audio, void *a
    return buf;
  }
  
@@ -1681,7 +1782,7 @@ index b8e2f67..9592b64 100644
  static void audio_callback(void *userdata, uint8_t *stream, int len) {
    int aptr = *(int *)userdata;
    sdl_audio_buffer_t *abuf;
-@@ -1568,22 +1684,28 @@ static int audio_action(void *_arg) {
+@@ -1568,22 +1743,28 @@ static int audio_action(void *_arg) {
    int aptr;
    unsigned char *msg;
    unsigned int msglen;
@@ -1713,7 +1814,7 @@ index b8e2f67..9592b64 100644
    wait = 2000;
  
    for (; !thread_must_end();) {
-@@ -1596,9 +1718,9 @@ static int audio_action(void *_arg) {
+@@ -1596,9 +1777,9 @@ static int audio_action(void *_arg) {
      if (r == 1) {
        if (dev == 0) {
          switch (arg->pcm) {
@@ -1726,7 +1827,7 @@ index b8e2f67..9592b64 100644
          }
          desired.freq = arg->rate;          // DSP frequency -- samples per second
          desired.channels = arg->channels;  // Number of channels: 1 mono, 2 stereo
-@@ -1608,12 +1730,22 @@ static int audio_action(void *_arg) {
+@@ -1608,12 +1789,22 @@ static int audio_action(void *_arg) {
          desired.callback = audio_callback; // Callback that feeds the audio device (NULL to use SDL_QueueAudio())
          desired.userdata = &aptr;          // Userdata passed to callback (ignored for NULL callbacks)
  
@@ -1752,7 +1853,7 @@ index b8e2f67..9592b64 100644
        }
  
        if (msg) {
-@@ -1633,6 +1765,10 @@ static int audio_action(void *_arg) {
+@@ -1633,6 +1824,10 @@ static int audio_action(void *_arg) {
            }
            
            // empty the buffer
@@ -1763,7 +1864,7 @@ index b8e2f67..9592b64 100644
            if ((abuf = ptr_lock(aptr, TAG_ABUF)) != NULL) {
              if (abuf->len > 0) {
                debug(DEBUG_TRACE, "SDL", "emptying %u bytes", abuf->len);
-@@ -1643,7 +1779,10 @@ static int audio_action(void *_arg) {
+@@ -1643,7 +1838,10 @@ static int audio_action(void *_arg) {
            wait = 0;
            debug(DEBUG_TRACE, "SDL", "set wait=%u", wait);
          } else {
@@ -1774,7 +1875,7 @@ index b8e2f67..9592b64 100644
          }
          sys_free(msg);
        } else {
-@@ -1654,22 +1793,81 @@ static int audio_action(void *_arg) {
+@@ -1654,22 +1852,81 @@ static int audio_action(void *_arg) {
        wait = 2000;
        if (ptr) {
          if ((audio = ptr_lock(ptr, TAG_AUDIO)) != NULL) {
@@ -1867,7 +1968,7 @@ index b8e2f67..9592b64 100644
            }
          } else {
            debug(DEBUG_TRACE, "SDL", "ptr %d deleted", ptr);
-@@ -1687,7 +1885,7 @@ static int audio_action(void *_arg) {
+@@ -1687,7 +1944,7 @@ static int audio_action(void *_arg) {
  
    if (dev > 0) {
      debug(DEBUG_INFO, "SDL", "close device %d", dev);
@@ -1876,6 +1977,834 @@ index b8e2f67..9592b64 100644
    }
  
    if (buf) {
+diff --git a/src/liblsdl2/liblsdl2_mac.h b/src/liblsdl2/liblsdl2_mac.h
+new file mode 100644
+index 0000000..bfd9b35
+--- /dev/null
++++ b/src/liblsdl2/liblsdl2_mac.h
+@@ -0,0 +1,18 @@
++#ifndef LIBLSDL2_MAC_H
++#define LIBLSDL2_MAC_H
++
++/* Bike or Die's levels and level packs, from the macOS window itself; see
++ * liblsdl2_mac.m. Both are called on the thread that owns the window. */
++
++/* Adds the level controls to this window's title bar, the Level menu to the
++ * menu bar, and the level pack sheet. */
++void liblsdl2_mac_attach(SDL_Window *window);
++
++/* Whether a key pressed now is for those controls rather than for the game:
++ * the level pack sheet is up and its search field is being typed into. */
++int liblsdl2_mac_wants_keys(void);
++
++/* debug() for the Objective-C side, which does not include PumpkinOS. */
++void liblsdl2_log(const char *msg);
++
++#endif
+diff --git a/src/liblsdl2/liblsdl2_mac.m b/src/liblsdl2/liblsdl2_mac.m
+new file mode 100644
+index 0000000..3bc107d
+--- /dev/null
++++ b/src/liblsdl2/liblsdl2_mac.m
+@@ -0,0 +1,798 @@
++/* Bike or Die's levels and level packs, from the macOS window itself.
++ *
++ * The browser build has a row of controls above the screen -- Level pack,
++ * Levels..., Previous / Restart / Next -- that drives the game's own Game menu
++ * and level pack dialogs through bodpack.c. This is that row for the native
++ * window: controls in its title bar, the same commands in a Level menu, and
++ * a sheet over the screen that lists the packs with a field to find one. It
++ * knows nothing about the game. Every control is a command handed to
++ * bod_pack_command(), and the game's answer is the status text read back with
++ * bod_pack_state(); bodpack.c describes both.
++ *
++ * All of it runs on the main thread, which on macOS is the one that owns the
++ * window and pumps SDL's events: the controls' actions and the timer that
++ * polls the status fire from inside that pump. None of it blocks, and the only
++ * calls into PumpkinOS are bod_pack_command(), bod_pack_state() and
++ * bod_pack_seq(), none of which takes a lock.
++ */
++
++#import <Cocoa/Cocoa.h>
++
++#include <dlfcn.h>
++#include <mach-o/dyld.h>
++#include <string.h>
++#include <unistd.h>
++
++#include <SDL2/SDL.h>
++#include <SDL2/SDL_syswm.h>
++
++#include "liblsdl2_mac.h"
++
++#define TITLEBAR_BUTTONS 78.0   /* room for close, minimise and zoom */
++#define POLL_BUSY        0.08   /* seconds between looks while a command is under way */
++#define POLL_IDLE        1.5    /* and otherwise, to keep the pack's name current */
++#define COMMAND_TIMEOUT  10.0
++#define NOTICE_TIMEOUT   5.0
++
++static NSString *const kPacksNote = @"Pick one and it starts. These are the game's own packs, in its order.";
++
++static void mac_log(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
++
++static void mac_log(NSString *format, ...) {
++  NSString *text;
++  va_list args;
++
++  va_start(args, format);
++  text = [[NSString alloc] initWithFormat:format arguments:args];
++  va_end(args);
++  liblsdl2_log(text.UTF8String);
++}
++
++/* ------------------------------------------------------- reaching bodpack.c */
++
++static void (*pk_command)(const char *cmd);
++static const char *(*pk_state)(void);
++static uint32_t (*pk_seq)(void);
++
++/* libpumpkin is loaded after this library, by libos, and not necessarily into
++ * the global namespace; if the plain lookup misses, find it among the loaded
++ * images by name and ask it directly. */
++static void *pk_symbol(const char *name) {
++  static const char suffix[] = "/libpumpkin.dylib";
++  const char *image;
++  void *sym, *handle;
++  size_t n, m = sizeof(suffix) - 1;
++  uint32_t i;
++
++  if ((sym = dlsym(RTLD_DEFAULT, name)) != NULL) return sym;
++
++  for (i = 0; i < _dyld_image_count(); i++) {
++    image = _dyld_get_image_name(i);
++    n = image ? strlen(image) : 0;
++    if (n < m || strcmp(image + n - m, suffix) != 0) continue;
++    if ((handle = dlopen(image, RTLD_LAZY | RTLD_NOLOAD)) != NULL) {
++      sym = dlsym(handle, name);
++      dlclose(handle);
++      if (sym) return sym;
++    }
++  }
++
++  return NULL;
++}
++
++static BOOL pk_ready(void) {
++  if (pk_command && pk_state && pk_seq) return YES;
++  pk_command = pk_symbol("bod_pack_command");
++  pk_state = pk_symbol("bod_pack_state");
++  pk_seq = pk_symbol("bod_pack_seq");
++
++  return pk_command && pk_state && pk_seq;
++}
++
++@interface BODStatus : NSObject
++@property (nonatomic) uint32_t seq;
++@property (nonatomic, copy) NSString *state;    /* idle, busy, listed, done, error */
++@property (nonatomic, copy) NSString *error;
++@property (nonatomic, copy) NSString *title;    /* of the level list: names the pack */
++@property (nonatomic, copy) NSArray<NSString *> *names;
++@end
++
++@implementation BODStatus
++@end
++
++/* The status, taken whole. Its sequence number is odd while the game's thread
++ * is writing the text and moves on when it is done, so a copy made under a
++ * write is noticed and made again. */
++static BODStatus *pk_read(void) {
++  NSMutableArray<NSString *> *names;
++  NSArray<NSString *> *lines;
++  NSString *text = nil, *first;
++  BODStatus *status;
++  NSRange space;
++  NSUInteger i;
++  uint32_t s1 = 0;
++  int tries;
++
++  if (!pk_ready()) return nil;
++
++  for (tries = 0; tries < 50 && text == nil; tries++) {
++    s1 = pk_seq();
++    if ((s1 & 1) == 0) {
++      text = [NSString stringWithUTF8String:pk_state()];
++      if (pk_seq() != s1) text = nil;
++    }
++    if (text == nil) usleep(100);
++  }
++  if (text == nil) return nil;
++
++  status = [[BODStatus alloc] init];
++  status.seq = s1;
++  lines = [text componentsSeparatedByString:@"\n"];
++  first = lines.count ? lines[0] : @"";
++  space = [first rangeOfString:@" "];
++  status.state = first.length == 0 ? @"idle" : space.location == NSNotFound ? first : [first substringToIndex:space.location];
++  status.error = space.location == NSNotFound ? @"" : [first substringFromIndex:space.location + 1];
++  status.title = (lines.count > 1 && [lines[1] hasPrefix:@"title "]) ? [lines[1] substringFromIndex:6] : @"";
++
++  if ([status.state isEqualToString:@"listed"]) {
++    names = [NSMutableArray array];
++    for (i = 2; i < lines.count; i++) {
++      if (lines[i].length) [names addObject:lines[i]];
++    }
++    status.names = names;
++  }
++
++  return status;
++}
++
++/* ------------------------------------------------------------ the controls */
++
++@interface BODLevelControls : NSObject <NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSMenuItemValidation>
++- (void)attachTo:(NSWindow *)window;
++- (BOOL)wantsKeys;
++@end
++
++@implementation BODLevelControls {
++  __weak NSWindow *_window;
++
++  /* the row under the title bar */
++  NSButton *_packButton;
++  NSButton *_levelsButton;
++  NSSegmentedControl *_stepper;
++  NSTextField *_info;
++  NSString *_title;
++  NSString *_notice;
++  NSTimer *_noticeTimer;
++
++  /* the level pack sheet */
++  NSPanel *_sheet;
++  NSSearchField *_filter;
++  NSTableView *_table;
++  NSTextField *_note;
++  NSButton *_cancel;
++  NSButton *_play;
++  NSArray<NSString *> *_names;
++  NSMutableArray<NSNumber *> *_shown;   /* indexes into _names that pass the filter */
++  NSInteger _current;                   /* the pack the game is on, or -1 */
++  BOOL _listed;                         /* the names are in and the game's pack list is up behind */
++
++  /* the command under way */
++  NSTimer *_poll;
++  BOOL _pending;
++  BOOL _walk;
++  BOOL _sawBusy;
++  uint32_t _sentSeq;
++  NSDate *_deadline;
++  void (^_done)(BODStatus *status);
++}
++
++- (void)attachTo:(NSWindow *)window {
++  NSArray<NSArray<NSString *> *> *steps;
++  NSTitlebarAccessoryViewController *accessory;
++  NSSize before, after;
++  CGFloat titlebar, width;
++  NSStackView *stack;
++  NSImage *image;
++  NSView *row;
++  NSInteger i;
++
++  _window = window;
++  _names = @[];
++  _shown = [NSMutableArray array];
++  _current = -1;
++
++  _packButton = [NSButton buttonWithTitle:@"Level Pack…" target:self action:@selector(openPacks:)];
++  _packButton.toolTip = @"Choose a level pack";
++  _levelsButton = [NSButton buttonWithTitle:@"Levels…" target:self action:@selector(levels:)];
++  _levelsButton.toolTip = @"Choose a level in this pack";
++
++  _info = [NSTextField labelWithString:@""];
++  _info.textColor = NSColor.secondaryLabelColor;
++  _info.lineBreakMode = NSLineBreakByTruncatingTail;
++  [_info setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
++  [_info setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
++
++  _stepper = [[NSSegmentedControl alloc] init];
++  _stepper.segmentCount = 3;
++  _stepper.trackingMode = NSSegmentSwitchTrackingMomentary;
++  steps = @[ @[ @"chevron.backward",       @"◀", @"Previous level" ],
++             @[ @"arrow.counterclockwise", @"↻", @"Restart level" ],
++             @[ @"chevron.forward",        @"▶", @"Next level" ] ];
++  for (i = 0; i < 3; i++) {
++    image = [NSImage imageWithSystemSymbolName:steps[i][0] accessibilityDescription:steps[i][2]];
++    if (image) [_stepper setImage:image forSegment:i];
++    else [_stepper setLabel:steps[i][1] forSegment:i];
++    [_stepper setToolTip:steps[i][2] forSegment:i];
++    [_stepper setWidth:34 forSegment:i];
++  }
++  _stepper.target = self;
++  _stepper.action = @selector(step:);
++
++  /* The row is for the mouse. Kept out of the key view loop, a button can
++   * never be where Space or Return lands, which ride and pick. */
++  _packButton.refusesFirstResponder = YES;
++  _levelsButton.refusesFirstResponder = YES;
++  _stepper.refusesFirstResponder = YES;
++
++  /* The pack's name takes up the slack, which puts Previous / Restart / Next
++   * at the right edge, where the browser's row has them. */
++  for (NSView *view in @[ _packButton, _levelsButton, _stepper ]) {
++    [view setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
++    [view setContentCompressionResistancePriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
++  }
++  stack = [NSStackView stackViewWithViews:@[ _packButton, _levelsButton, _info, _stepper ]];
++  stack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
++  stack.distribution = NSStackViewDistributionFill;
++  stack.alignment = NSLayoutAttributeCenterY;
++  stack.spacing = 8;
++  stack.edgeInsets = NSEdgeInsetsMake(0, 4, 0, 10);
++  stack.translatesAutoresizingMaskIntoConstraints = NO;
++
++  /* In the title bar, not in a strip under it. The window is the game's
++   * screen at an exact integer scale plus its title bar, and at the default
++   * zoom that already fills a laptop's screen above the Dock: a strip would
++   * push the bottom of the game under the Dock. The title, "PumpkinOS",
++   * makes way for them. */
++  titlebar = NSHeight(window.frame) - NSHeight([window contentRectForFrameRect:window.frame]);
++  width = NSWidth(window.frame) - TITLEBAR_BUTTONS;
++  if (width < 560) {
++    for (NSControl *control in @[ _packButton, _levelsButton, _stepper ]) {
++      control.controlSize = NSControlSizeSmall;
++      control.font = [NSFont systemFontOfSize:[NSFont systemFontSizeForControlSize:NSControlSizeSmall]];
++    }
++    _info.font = [NSFont systemFontOfSize:[NSFont systemFontSizeForControlSize:NSControlSizeSmall]];
++  }
++
++  row = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, titlebar)];
++  [row addSubview:stack];
++  [NSLayoutConstraint activateConstraints:@[
++    [stack.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
++    [stack.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
++    [stack.topAnchor constraintEqualToAnchor:row.topAnchor],
++    [stack.bottomAnchor constraintEqualToAnchor:row.bottomAnchor] ]];
++
++  accessory = [[NSTitlebarAccessoryViewController alloc] init];
++  accessory.layoutAttribute = NSLayoutAttributeRight;
++  accessory.view = row;
++
++  /* A title bar accessory takes nothing from the content, which is the game's
++   * screen at an exact scale; should one ever do, give it back. */
++  before = window.contentView.frame.size;
++  window.titleVisibility = NSWindowTitleHidden;
++  [window addTitlebarAccessoryViewController:accessory];
++  after = window.contentView.frame.size;
++  if (!NSEqualSizes(before, after)) [window setContentSize:before];
++  mac_log(@"level controls: %.0fx%.0f in the title bar; content %.0fx%.0f, %.0fx%.0f with them in, now %.0fx%.0f",
++          width, titlebar, before.width, before.height, after.width, after.height,
++          window.contentView.frame.size.width, window.contentView.frame.size.height);
++
++  [self installMenu];
++  [self showInfo];
++  [self schedulePoll:POLL_IDLE];
++}
++
++- (void)addItem:(NSString *)title action:(SEL)action key:(NSString *)key
++      modifiers:(NSEventModifierFlags)modifiers to:(NSMenu *)menu {
++  NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:action keyEquivalent:key];
++
++  item.keyEquivalentModifierMask = modifiers;
++  item.target = self;
++  [menu addItem:item];
++}
++
++/* The same commands in the menu bar, where they have keys. Command chords
++ * never reach the game (liblsdl2.c), so these cannot ride or type either. */
++- (void)installMenu {
++  NSMenu *bar = NSApp.mainMenu, *menu;
++  NSMenuItem *top;
++  NSInteger at;
++
++  if (bar == nil) return;
++
++  menu = [[NSMenu alloc] initWithTitle:@"Level"];
++  [self addItem:@"Level Pack…" action:@selector(openPacks:) key:@"l" modifiers:NSEventModifierFlagCommand to:menu];
++  [self addItem:@"Levels…" action:@selector(levels:) key:@"l" modifiers:NSEventModifierFlagCommand | NSEventModifierFlagShift to:menu];
++  [menu addItem:[NSMenuItem separatorItem]];
++  [self addItem:@"Previous Level" action:@selector(previousLevel:) key:@"[" modifiers:NSEventModifierFlagCommand to:menu];
++  [self addItem:@"Restart Level" action:@selector(restartLevel:) key:@"r" modifiers:NSEventModifierFlagCommand to:menu];
++  [self addItem:@"Next Level" action:@selector(nextLevel:) key:@"]" modifiers:NSEventModifierFlagCommand to:menu];
++
++  top = [[NSMenuItem alloc] initWithTitle:@"Level" action:NULL keyEquivalent:@""];
++  top.submenu = menu;
++  at = NSApp.windowsMenu ? [bar indexOfItemWithSubmenu:NSApp.windowsMenu] : -1;
++  [bar insertItem:top atIndex:at >= 0 ? at : bar.numberOfItems];
++}
++
++- (BOOL)validateMenuItem:(NSMenuItem *)item {
++  return _sheet.sheetParent == nil;
++}
++
++- (BOOL)wantsKeys {
++  return _sheet != nil && (_sheet.sheetParent != nil || _sheet.isVisible);
++}
++
++/* ---------------------------------------------------------- the row's text */
++
++/* Normally the pack the game is on; for a few seconds after a command the
++ * game turned down, why. */
++- (void)showInfo {
++  if (_notice) {
++    _info.stringValue = _notice;
++    _info.textColor = NSColor.systemRedColor;
++  } else {
++    _info.stringValue = _title ? _title : @"";
++    _info.textColor = NSColor.secondaryLabelColor;
++  }
++  _info.toolTip = _info.stringValue.length ? _info.stringValue : nil;
++}
++
++- (void)notice:(NSString *)text {
++  if (text.length == 0) return;
++  _notice = [[[text substringToIndex:1] uppercaseString] stringByAppendingString:[text substringFromIndex:1]];
++  [self showInfo];
++  [_noticeTimer invalidate];
++  _noticeTimer = [NSTimer timerWithTimeInterval:NOTICE_TIMEOUT target:self selector:@selector(clearNotice:) userInfo:nil repeats:NO];
++  [[NSRunLoop mainRunLoop] addTimer:_noticeTimer forMode:NSRunLoopCommonModes];
++}
++
++- (void)clearNotice:(NSTimer *)timer {
++  _notice = nil;
++  _noticeTimer = nil;
++  [self showInfo];
++}
++
++- (void)setGameTitle:(NSString *)title {
++  if (title.length == 0 || [title isEqualToString:_title]) return;
++  _title = [title copy];
++  [self showInfo];
++}
++
++/* ------------------------------------------------------------ the commands */
++
++- (void)schedulePoll:(NSTimeInterval)interval {
++  if (_poll && _poll.timeInterval == interval) return;
++  [_poll invalidate];
++  _poll = [NSTimer timerWithTimeInterval:interval target:self selector:@selector(tick:) userInfo:nil repeats:YES];
++  _poll.tolerance = interval / 4;
++  [[NSRunLoop mainRunLoop] addTimer:_poll forMode:NSRunLoopCommonModes];
++}
++
++/* Hands `command` to the game and polls until it has answered. A walk through
++ * the game's dialogs (open, pick) answers "busy" first; a "done" or "idle"
++ * before that is not its answer but a status left over from before, published
++ * again for a new title. */
++- (void)send:(NSString *)command walk:(BOOL)walk done:(void (^)(BODStatus *status))done {
++  BODStatus *before = pk_read();
++
++  if (before == nil) {
++    [self notice:@"the game is still starting"];
++    if (done) done(nil);
++    return;
++  }
++
++  _pending = YES;
++  _walk = walk;
++  _sawBusy = NO;
++  _sentSeq = before.seq;
++  _deadline = [NSDate dateWithTimeIntervalSinceNow:COMMAND_TIMEOUT];
++  _done = [done copy];
++  pk_command(command.UTF8String);
++  [self schedulePoll:POLL_BUSY];
++}
++
++- (void)endCommand {
++  _pending = NO;
++  _done = nil;
++  [self schedulePoll:POLL_IDLE];
++}
++
++- (void)tick:(NSTimer *)timer {
++  void (^done)(BODStatus *status);
++  BODStatus *status = pk_read();
++  BOOL finished = NO;
++
++  if (status == nil) return;
++  [self setGameTitle:status.title];
++
++  if (!_pending) {
++    /* The game's pack list can close under the sheet: a dialog of its own. */
++    if (_listed && ![status.state isEqualToString:@"listed"]) [self closeSheet];
++    return;
++  }
++
++  if (status.seq != _sentSeq) {
++    if ([status.state isEqualToString:@"busy"]) {
++      _sawBusy = YES;
++    } else if ([status.state isEqualToString:@"error"] || [status.state isEqualToString:@"listed"]) {
++      finished = YES;
++    } else {
++      finished = !_walk || _sawBusy;
++    }
++  }
++
++  if (!finished && _deadline.timeIntervalSinceNow < 0) {
++    status.state = @"error";
++    status.error = @"the game did not answer";
++    finished = YES;
++  }
++  if (!finished) return;
++
++  done = _done;
++  [self endCommand];
++  if ([status.state isEqualToString:@"error"]) [self notice:status.error];
++  if (done) done(status);
++}
++
++/* An item of the game's Game menu, for the game itself. */
++- (void)gameMenu:(NSString *)label {
++  if (_sheet.sheetParent != nil) return;
++  [self send:[@"menu " stringByAppendingString:label] walk:NO done:nil];
++}
++
++- (IBAction)levels:(id)sender        { [self gameMenu:@"Select Level"]; }
++- (IBAction)previousLevel:(id)sender { [self gameMenu:@"Previous Level"]; }
++- (IBAction)restartLevel:(id)sender  { [self gameMenu:@"Restart Level"]; }
++- (IBAction)nextLevel:(id)sender     { [self gameMenu:@"Next Level"]; }
++
++- (IBAction)step:(NSSegmentedControl *)sender {
++  switch (sender.selectedSegment) {
++    case 0: [self previousLevel:sender]; break;
++    case 1: [self restartLevel:sender]; break;
++    case 2: [self nextLevel:sender]; break;
++  }
++}
++
++/* ------------------------------------------------------- the level packs */
++
++- (void)buildSheet {
++  NSStackView *content, *buttons;
++  NSTableColumn *column;
++  NSTextField *heading;
++  NSScrollView *scroll;
++
++  if (_sheet) return;
++
++  _sheet = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 480, 560)
++                                      styleMask:NSWindowStyleMaskTitled
++                                        backing:NSBackingStoreBuffered
++                                          defer:YES];
++  _sheet.releasedWhenClosed = NO;
++
++  heading = [NSTextField labelWithString:@"Level Packs"];
++  heading.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize + 2];
++
++  _filter = [[NSSearchField alloc] init];
++  _filter.placeholderString = @"Find a pack";
++  _filter.delegate = self;
++  _filter.target = self;
++  _filter.action = @selector(filterChanged:);
++  _filter.sendsSearchStringImmediately = YES;
++
++  column = [[NSTableColumn alloc] initWithIdentifier:@"pack"];
++  column.resizingMask = NSTableColumnAutoresizingMask;
++  _table = [[NSTableView alloc] initWithFrame:NSZeroRect];
++  [_table addTableColumn:column];
++  _table.headerView = nil;
++  _table.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingStyle;
++  _table.style = NSTableViewStyleFullWidth;
++  _table.rowHeight = 22;
++  _table.allowsEmptySelection = YES;
++  _table.dataSource = self;
++  _table.delegate = self;
++  _table.target = self;
++  _table.doubleAction = @selector(play:);
++
++  scroll = [[NSScrollView alloc] init];
++  scroll.documentView = _table;
++  scroll.hasVerticalScroller = YES;
++  scroll.autohidesScrollers = YES;
++  scroll.borderType = NSBezelBorder;
++  [scroll setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
++  [scroll setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
++
++  _note = [NSTextField wrappingLabelWithString:kPacksNote];
++  _note.textColor = NSColor.secondaryLabelColor;
++
++  _cancel = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancelPacks:)];
++  _cancel.keyEquivalent = @"\033";
++  _play = [NSButton buttonWithTitle:@"Play" target:self action:@selector(play:)];
++  _play.keyEquivalent = @"\r";
++
++  buttons = [[NSStackView alloc] init];
++  buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
++  [buttons addView:_cancel inGravity:NSStackViewGravityTrailing];
++  [buttons addView:_play inGravity:NSStackViewGravityTrailing];
++
++  content = [NSStackView stackViewWithViews:@[ heading, _filter, scroll, _note, buttons ]];
++  content.orientation = NSUserInterfaceLayoutOrientationVertical;
++  content.alignment = NSLayoutAttributeLeading;
++  content.spacing = 10;
++  content.edgeInsets = NSEdgeInsetsMake(18, 20, 18, 20);
++  _sheet.contentView = content;
++
++  for (NSView *view in @[ _filter, scroll, _note, buttons ]) {
++    [view.widthAnchor constraintEqualToAnchor:content.widthAnchor constant:-40].active = YES;
++  }
++}
++
++/* Over the screen, and never bigger than it. */
++- (void)sizeSheet {
++  NSSize content = _window.contentView.frame.size;
++  CGFloat width = MAX(300, MIN(520, content.width - 48));
++  CGFloat height = MAX(280, MIN(640, content.height - 48));
++
++  [_sheet setContentSize:NSMakeSize(width, height)];
++  _note.preferredMaxLayoutWidth = width - 40;
++}
++
++- (IBAction)openPacks:(id)sender {
++  __weak BODLevelControls *weakSelf = self;
++  NSWindow *window = _window;
++
++  if (window == nil || _sheet.sheetParent != nil) return;
++
++  [self buildSheet];
++  _names = @[];
++  _current = -1;
++  _listed = NO;
++  [_shown removeAllObjects];
++  [_table reloadData];
++  _table.enabled = YES;
++  _filter.stringValue = @"";
++  _filter.enabled = NO;
++  _play.enabled = NO;
++  _cancel.enabled = YES;
++  _note.stringValue = @"Asking the game for its packs…";
++  [self sizeSheet];
++  [window beginSheet:_sheet completionHandler:nil];
++
++  [self send:@"open" walk:YES done:^(BODStatus *status) {
++    [weakSelf packsListed:status];
++  }];
++}
++
++/* A walk that ends without a list -- an error, now on the row, or a dialog of
++ * the game's own that came up on the way -- leaves the screen to the game. */
++- (void)packsListed:(BODStatus *)status {
++  if (_sheet.sheetParent == nil) return;
++
++  if (status == nil || ![status.state isEqualToString:@"listed"]) {
++    [self closeSheet];
++    return;
++  }
++
++  _names = status.names ? status.names : @[];
++  _current = [self currentIndex];
++  _listed = YES;
++  _filter.enabled = YES;
++  [self filter];
++  [_sheet makeFirstResponder:_filter];
++}
++
++/* Which of the names is the pack the game is on: the level list's title ends
++ * with it, except for the built-in pack, which it calls something else. The
++ * browser's panel works it out the same way. */
++- (NSInteger)currentIndex {
++  NSString *title = _title ? _title.lowercaseString : @"", *name;
++  NSUInteger i, length = 0;
++  NSInteger best = -1;
++
++  if ([title hasPrefix:@"built-in"]) title = @"standard";
++  for (i = 0; i < _names.count; i++) {
++    name = [_names[i] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet].lowercaseString;
++    if (name.length && name.length > length && [title hasSuffix:name]) {
++      best = (NSInteger)i;
++      length = name.length;
++    }
++  }
++
++  return best;
++}
++
++- (IBAction)filterChanged:(id)sender {
++  [self filter];
++}
++
++- (void)filter {
++  NSString *query = [_filter.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
++  NSInteger select = -1;
++  NSUInteger i;
++
++  [_shown removeAllObjects];
++  for (i = 0; i < _names.count; i++) {
++    if (query.length && [_names[i] rangeOfString:query options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch].location == NSNotFound) continue;
++    if ((NSInteger)i == _current) select = (NSInteger)_shown.count;
++    [_shown addObject:@(i)];
++  }
++  [_table reloadData];
++
++  /* With nothing typed, the pack the game is on; typing picks out the first
++   * pack that matches, so that Return starts it. */
++  if (query.length || select < 0) select = _shown.count ? 0 : -1;
++  if (select >= 0) {
++    [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)select] byExtendingSelection:NO];
++    [_table scrollRowToVisible:select];
++  } else {
++    [_table deselectAll:nil];
++  }
++
++  _note.stringValue = _names.count == 0 ? @"The game listed no packs." :
++                      _shown.count == 0 ? @"No pack by that name." : kPacksNote;
++  _play.enabled = _listed && _table.selectedRow >= 0;
++}
++
++- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
++  return (NSInteger)_shown.count;
++}
++
++- (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
++  NSTableCellView *cell = [tableView makeViewWithIdentifier:@"pack" owner:self];
++  NSTextField *label;
++  NSInteger index;
++  NSString *name;
++
++  if (cell == nil) {
++    cell = [[NSTableCellView alloc] initWithFrame:NSMakeRect(0, 0, 100, 22)];
++    cell.identifier = @"pack";
++    label = [NSTextField labelWithString:@""];
++    label.lineBreakMode = NSLineBreakByTruncatingTail;
++    label.translatesAutoresizingMaskIntoConstraints = NO;
++    [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
++    [cell addSubview:label];
++    cell.textField = label;
++    [NSLayoutConstraint activateConstraints:@[
++      [label.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:6],
++      [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-6],
++      [label.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor] ]];
++  }
++
++  if (row < 0 || row >= (NSInteger)_shown.count) return cell;
++  index = _shown[(NSUInteger)row].integerValue;
++  name = [_names[(NSUInteger)index] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
++  if (index == _current) {
++    cell.textField.stringValue = [name stringByAppendingString:@"  ✓"];
++    cell.textField.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize];
++  } else {
++    cell.textField.stringValue = name;
++    cell.textField.font = [NSFont systemFontOfSize:NSFont.systemFontSize];
++  }
++
++  return cell;
++}
++
++- (void)tableViewSelectionDidChange:(NSNotification *)notification {
++  _play.enabled = _listed && _table.selectedRow >= 0;
++}
++
++- (void)controlTextDidChange:(NSNotification *)notification {
++  if (notification.object == _filter) [self filter];
++}
++
++/* The search field keeps the keyboard, and the arrows, Return and Escape do
++ * what they would in the list. */
++- (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)command {
++  NSInteger row;
++
++  if (control != _filter) return NO;
++
++  if (command == @selector(moveDown:) || command == @selector(moveUp:)) {
++    row = _table.selectedRow + (command == @selector(moveDown:) ? 1 : -1);
++    if (row >= 0 && row < (NSInteger)_shown.count) {
++      [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
++      [_table scrollRowToVisible:row];
++    }
++    return YES;
++  }
++
++  if (command == @selector(insertNewline:)) {
++    [self play:control];
++    return YES;
++  }
++
++  if (command == @selector(cancelOperation:)) {
++    if (_filter.stringValue.length) {
++      _filter.stringValue = @"";
++      [self filter];
++    } else {
++      [self cancelPacks:control];
++    }
++    return YES;
++  }
++
++  return NO;
++}
++
++/* Hands the choice back to the game's own pack list, which switches and
++ * starts the pack's level; the sheet comes down when it has. */
++- (IBAction)play:(id)sender {
++  __weak BODLevelControls *weakSelf = self;
++  NSInteger row = _table.selectedRow, index;
++  NSString *name;
++
++  if (sender == _table && _table.clickedRow < 0) return;
++  if (!_listed || _pending || row < 0 || row >= (NSInteger)_shown.count) return;
++
++  index = _shown[(NSUInteger)row].integerValue;
++  name = [_names[(NSUInteger)index] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
++
++  _listed = NO;
++  _filter.enabled = NO;
++  _table.enabled = NO;
++  _play.enabled = NO;
++  _cancel.enabled = NO;
++  _note.stringValue = [NSString stringWithFormat:@"Starting %@…", name];
++
++  [self send:[NSString stringWithFormat:@"pick %ld", (long)index] walk:YES done:^(BODStatus *status) {
++    [weakSelf closeSheet];
++  }];
++}
++
++/* Closing without a choice closes the game's dialogs too. */
++- (IBAction)cancelPacks:(id)sender {
++  if (_sheet.sheetParent == nil) return;
++  if (_pending) [self endCommand];
++  [self closeSheet];
++  if (pk_ready()) pk_command("cancel");
++}
++
++- (void)closeSheet {
++  NSWindow *parent = _sheet.sheetParent;
++
++  _listed = NO;
++  if (parent) [parent endSheet:_sheet];
++  [_sheet orderOut:nil];
++}
++
++@end
++
++/* ------------------------------------------------------------ the C side */
++
++static BODLevelControls *controls;
++
++void liblsdl2_mac_attach(SDL_Window *window) {
++  SDL_SysWMinfo info;
++  NSWindow *nswindow;
++
++  if (controls != nil || window == NULL) return;
++
++  if (![NSThread isMainThread]) {
++    mac_log(@"level controls: the window is not on the main thread; none added");
++    return;
++  }
++
++  SDL_VERSION(&info.version);
++  if (!SDL_GetWindowWMInfo(window, &info) || info.subsystem != SDL_SYSWM_COCOA || info.info.cocoa.window == nil) {
++    mac_log(@"level controls: no Cocoa window (%s)", SDL_GetError());
++    return;
++  }
++  nswindow = info.info.cocoa.window;
++
++  @autoreleasepool {
++    controls = [[BODLevelControls alloc] init];
++    [controls attachTo:nswindow];
++  }
++}
++
++int liblsdl2_mac_wants_keys(void) {
++  return controls != nil && [controls wantsKeys];
++}
 diff --git a/src/libos/libos.c b/src/libos/libos.c
 index 3490278..669c353 100644
 --- a/src/libos/libos.c
@@ -4665,10 +5594,10 @@ index e595948..f1e0fe7 100644
              // If we don't adjust the palette of the activeWindow, the eReader app will whow a pink background on startup.
 diff --git a/src/libpumpkin/bodpack.c b/src/libpumpkin/bodpack.c
 new file mode 100644
-index 0000000..5ab56aa
+index 0000000..73d0a64
 --- /dev/null
 +++ b/src/libpumpkin/bodpack.c
-@@ -0,0 +1,465 @@
+@@ -0,0 +1,469 @@
 +#include <PalmOS.h>
 +
 +#include "sys.h"
@@ -4742,7 +5671,8 @@ index 0000000..5ab56aa
 +/* Shared with the host's thread. A command is a string and a sequence
 + * number; the host writes the string and then bumps the number, this side
 + * sees the number and then reads the string. The status goes the other way
-+ * with a number of its own, so a torn read can be noticed and repeated. */
++ * with a number of its own, which is odd while the text is being written and
++ * moves on when it is done, so a torn read can be noticed and repeated. */
 +static char pk_cmd[PK_CMD_LEN];
 +static volatile uint32_t pk_cmd_seq;
 +static uint32_t pk_cmd_seen;
@@ -4812,6 +5742,9 @@ index 0000000..5ab56aa
 +    case PK_ERROR:  word = "error";  break;
 +    default:        word = "busy";   break;
 +  }
++
++  /* Odd from here until the text is complete. */
++  __atomic_add_fetch(&pk_status_seq, 1, __ATOMIC_RELEASE);
 +
 +  n += sys_snprintf(pk_status + n, sizeof(pk_status) - n, "%s%s%s\ntitle ", word,
 +                    pk_state == PK_ERROR ? " " : "", pk_state == PK_ERROR ? pk_error : "");
