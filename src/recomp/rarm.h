@@ -33,18 +33,31 @@ void rarm_trace(rarm_state *S);
 #define ACHKR(a, n)    ((void)0)
 #endif
 
+/* BOD_MEMWATCH builds report which heap chunks the ARM code writes, and when.
+ * The runtime switch is BOD_MEMWATCH=1; a plain build has no hook at all. */
+#ifdef BOD_MEMWATCH
+extern int rarm_memwatch_on;
+void rarm_memwatch(uint32_t a, uint32_t n);
+void rarm_memwatch_read(uint32_t a, uint32_t n);
+#define MW(a, n) do { if (rarm_memwatch_on) rarm_memwatch((a), (n)); } while (0)
+#define MWR(a, n) do { if (rarm_memwatch_on) rarm_memwatch_read((a), (n)); } while (0)
+#else
+#define MW(a, n) ((void)0)
+#define MWR(a, n) ((void)0)
+#endif
+
 /* ---- little-endian memory access ---- */
-static inline uint32_t ard8 (uint32_t a) { ACHKR(a, 1); return rarm_ram[a]; }
-static inline uint32_t ard16(uint32_t a) { ACHKR(a, 2); return rarm_ram[a] | ((uint32_t)rarm_ram[a+1] << 8); }
+static inline uint32_t ard8 (uint32_t a) { ACHKR(a, 1); MWR(a, 1); return rarm_ram[a]; }
+static inline uint32_t ard16(uint32_t a) { ACHKR(a, 2); MWR(a, 2); return rarm_ram[a] | ((uint32_t)rarm_ram[a+1] << 8); }
 static inline uint32_t ard32(uint32_t a) {
-  ACHKR(a, 4);
+  ACHKR(a, 4); MWR(a, 4);
   return rarm_ram[a] | ((uint32_t)rarm_ram[a+1] << 8) |
          ((uint32_t)rarm_ram[a+2] << 16) | ((uint32_t)rarm_ram[a+3] << 24);
 }
-static inline void awr8 (uint32_t a, uint32_t v) { ACHK(a, 1, 1); rarm_ram[a] = (uint8_t)v; }
-static inline void awr16(uint32_t a, uint32_t v) { ACHK(a, 2, 1); rarm_ram[a]=(uint8_t)v; rarm_ram[a+1]=(uint8_t)(v>>8); }
+static inline void awr8 (uint32_t a, uint32_t v) { ACHK(a, 1, 1); MW(a, 1); rarm_ram[a] = (uint8_t)v; }
+static inline void awr16(uint32_t a, uint32_t v) { ACHK(a, 2, 1); MW(a, 2); rarm_ram[a]=(uint8_t)v; rarm_ram[a+1]=(uint8_t)(v>>8); }
 static inline void awr32(uint32_t a, uint32_t v) {
-  ACHK(a, 4, 1);
+  ACHK(a, 4, 1); MW(a, 4);
   rarm_ram[a]=(uint8_t)v; rarm_ram[a+1]=(uint8_t)(v>>8);
   rarm_ram[a+2]=(uint8_t)(v>>16); rarm_ram[a+3]=(uint8_t)(v>>24);
 }

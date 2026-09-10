@@ -350,6 +350,14 @@ there; Safari can be driven the same way over WebDriver with `safaridriver`, onc
     tools/webtest.js -u http://127.0.0.1:8080/pumpkin.html -w 30 \
         -k "d:3,m:160/295,d:8,k:ArrowUp/down,d:4,k:ArrowUp/up" -o build/shot.png
 
+## On a Game Boy Advance
+
+`make -C gba` produces `build/gba/bod.gba`: the same recompiled 68000 code, the game's
+original ARM code running natively on the ARM7TDMI, and PumpkinOS trimmed to 256 KB.
+Textures are served from ROM and tinted at render time, the renderer's edge table is
+packed, and its hot loops are relocated into IWRAM; it loads a level in about 7 seconds
+and plays at 12-14 frames per second, without sound. See `docs/GBA.md`.
+
 ## Licensing
 
 PumpkinOS is GPLv3; this port and the recompiler tooling inherit that. The game itself is

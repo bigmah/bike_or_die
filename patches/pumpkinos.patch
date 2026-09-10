@@ -1611,6 +1611,23 @@ index bccd047..4099569 100644
  	@$(ARCMD) $(PROGRAM) $(OBJS)
  
  else
+diff --git a/src/libpit/debug.h b/src/libpit/debug.h
+index e2beec3..00e6b72 100644
+--- a/src/libpit/debug.h
++++ b/src/libpit/debug.h
+@@ -53,7 +53,12 @@ void debug_bytes_offset_full(const char *file, const char *func, int line, int l
+ 
+ #define debug_errno(sys, fmt, args...)    debug_errno_full(__FILE__, __FUNCTION__, __LINE__, sys, fmt, ##args)
+ #define debugva(level, sys, fmt, args...) debugva_full(__FILE__, __FUNCTION__, __LINE__, level, sys, fmt, ##args)
++#ifdef BOD_GBA
++extern int bod_trace_any;   /* the arguments of trace messages (WinGetDescr(...)) cost more than the check */
++#define debug(level, sys, fmt, args...)   do { if ((level) < DEBUG_TRACE || bod_trace_any) debug_full(__FILE__, __FUNCTION__, __LINE__, level, sys, fmt, ##args); } while (0)
++#else
+ #define debug(level, sys, fmt, args...)   debug_full(__FILE__, __FUNCTION__, __LINE__, level, sys, fmt, ##args)
++#endif
+ #define debug_bytes(level, sys, buf, len) debug_bytes_full(__FILE__, __FUNCTION__, __LINE__, level, sys, buf, len);
+ #define debug_bytes_offset(level, sys, buf, len, offset) debug_bytes_offset_full(__FILE__, __FUNCTION__, __LINE__, level, sys, buf, len, offset);
+ 
 diff --git a/src/libpit/mutex.c b/src/libpit/mutex.c
 index fe20037..f7433f3 100644
 --- a/src/libpit/mutex.c
@@ -1723,6 +1740,219 @@ index e862f4d..97ff9a7 100644
  }
  
  static int thread_create(void *(*action)(void *), void *arg) {
+diff --git a/src/libpumpkin/Bitmap.c b/src/libpumpkin/Bitmap.c
+index 5d53c76..bacd3d8 100644
+--- a/src/libpumpkin/Bitmap.c
++++ b/src/libpumpkin/Bitmap.c
+@@ -15,8 +15,43 @@
+ #include "storage.h"
+ #include "pumpkin.h"
+ #include "debug.h"
++#ifdef BOD_GBA
++#include "bodvram.h"
++#endif
+ #include "xalloc.h"
+ 
++#ifdef BOD_GBA
++/* Decoding a bitmap header field means walking a version-dependent layout
++ * in the bitmap's byte order; the drawing code asks for the same few fields
++ * of the same few bitmaps thousands of times per frame. Remember them. */
++typedef struct { const BitmapType *bmp; Coord w, h; UInt16 rowBytes; UInt8 depth; UInt8 valid; void *bits; } bod_bmp_entry;
++static bod_bmp_entry bod_bmp_cache[4];
++static int bod_bmp_next;
++void bod_bmp_cache_flush(void) { int i; for (i = 0; i < 4; i++) bod_bmp_cache[i].bmp = NULL; }
++static bod_bmp_entry *bod_bmp_lookup(const BitmapType *bmp) {
++  int i;
++  for (i = 0; i < 4; i++) if (bod_bmp_cache[i].bmp == bmp) return &bod_bmp_cache[i];
++  return NULL;
++}
++static bod_bmp_entry *bod_bmp_add(const BitmapType *bmp) {
++  bod_bmp_entry *e = &bod_bmp_cache[bod_bmp_next];
++  bod_bmp_next = (bod_bmp_next + 1) & 3;
++  e->bmp = bmp; e->valid = 0;
++  return e;
++}
++#define BOD_FLUSH() bod_bmp_cache_flush()
++#else
++#define BOD_FLUSH()
++#endif
++
++#ifdef BOD_GBA
++static int bod_decompress_count;
++uint32_t bod_count[8];   /* [0] BmpGetBits [1] BmpGetColortable [2] BmpSetBit8p [3] BmpGetBit [4] BmpCreate3 [5] BmpGetDimensions [6] BmpGetVersion [7] BmpGetBitDepth */
++#define BOD_COUNT(i) bod_count[i]++
++#else
++#define BOD_COUNT(i)
++#endif
++
+ typedef enum {
+   BitmapFlagCompressed,
+   BitmapFlagHasColorTable,
+@@ -150,6 +185,8 @@ BitmapType *BmpSkipEmptySlot(BitmapType *bitmapP) {
+ }
+ 
+ UInt8 BmpGetVersion(const BitmapType *bitmapP) {
++  BOD_COUNT(6);
++
+   UInt8 version = 0;
+   BitmapType *bmp;
+ 
+@@ -284,6 +321,7 @@ Boolean BmpGetLittleEndianBits(const BitmapType *bitmapP) {
+ }
+ 
+ void BmpSetLittleEndianBits(const BitmapType *bitmapP, Boolean le) {
++  BOD_FLUSH();
+   BmpSetCommonFlag((BitmapType *)bitmapP, BitmapFlagLittleEndian, le);
+ }
+ 
+@@ -681,6 +719,7 @@ BitmapTypeV3 *BmpCreateBitmapV3(const BitmapType *bitmapP, UInt16 density, const
+ 
+ // This function creates an uncompressed, non-transparent Version Two bitmap with the width, height, and depth that you specify.
+ BitmapType *BmpCreate(Coord width, Coord height, UInt8 depth, ColorTableType *colorTableP, UInt16 *error) {
++  BOD_FLUSH();
+   BitmapType *bitmapP;
+   UInt16 numEntries, rowBytes, v16, i;
+   UInt32 newSize, index, v32, bitsOffset;
+@@ -757,6 +796,8 @@ BitmapType *BmpCreate(Coord width, Coord height, UInt8 depth, ColorTableType *co
+ }
+ 
+ BitmapType *BmpCreate3(Coord width, Coord height, UInt16 rowBytes, UInt16 density, UInt8 depth, Boolean hasTransparency, UInt32 transparentValue, ColorTableType *colorTableP, UInt16 *error) {
++  BOD_FLUSH();
++  BOD_COUNT(4);
+   BitmapType *bitmapP;
+   UInt16 numEntries, v16, i;
+   UInt32 newSize, index, v32;
+@@ -1067,6 +1108,7 @@ surface_t *BmpCreateSurface(UInt16 id) {
+ }
+ 
+ Err BmpDelete(BitmapType *bitmapP) {
++  BOD_FLUSH();
+   if (bitmapP) {
+     debug(DEBUG_TRACE, "Bitmap", "MemChunkFree %p", bitmapP);
+     MemChunkFree(bitmapP); // caused a fault in BookWorm once
+@@ -1075,7 +1117,25 @@ Err BmpDelete(BitmapType *bitmapP) {
+   return errNone;
+ }
+ 
++#ifdef BOD_GBA
++static void BmpGetDimensions1(const BitmapType *bitmapP, Coord *widthP, Coord *heightP, UInt16 *rowBytesP);
++void BmpGetDimensions(const BitmapType *bitmapP, Coord *widthP, Coord *heightP, UInt16 *rowBytesP) {
++  bod_bmp_entry *e;
++  if (!bitmapP) return;
++  if ((e = bod_bmp_lookup(bitmapP)) == NULL || !(e->valid & 1)) {
++    if (!e) e = bod_bmp_add(bitmapP);
++    BmpGetDimensions1(bitmapP, &e->w, &e->h, &e->rowBytes);
++    e->valid |= 1;
++  }
++  if (widthP) *widthP = e->w;
++  if (heightP) *heightP = e->h;
++  if (rowBytesP) *rowBytesP = e->rowBytes;
++}
++static void BmpGetDimensions1(const BitmapType *bitmapP, Coord *widthP, Coord *heightP, UInt16 *rowBytesP) {
++#else
+ void BmpGetDimensions(const BitmapType *bitmapP, Coord *widthP, Coord *heightP, UInt16 *rowBytesP) {
++#endif
++  BOD_COUNT(5);
+   BitmapType *bmp;
+ 
+   if (bitmapP) {
+@@ -1220,7 +1280,23 @@ Err BmpCompress(BitmapType *bitmapP, BitmapCompressionType compType) {
+   return sysErrParamErr;
+ }
+ 
++#ifdef BOD_GBA
++static void *BmpGetBits1(BitmapType *bitmapP);
+ void *BmpGetBits(BitmapType *bitmapP) {
++  bod_bmp_entry *e;
++  if (!bitmapP) return NULL;
++  if ((e = bod_bmp_lookup(bitmapP)) == NULL || !(e->valid & 2)) {
++    if (!e) e = bod_bmp_add(bitmapP);
++    e->bits = BmpGetBits1(bitmapP);
++    e->valid |= 2;
++  }
++  return e->bits;
++}
++static void *BmpGetBits1(BitmapType *bitmapP) {
++#else
++void *BmpGetBits(BitmapType *bitmapP) {
++#endif
++  BOD_COUNT(0);
+   UInt32 headerSize, addr;
+   void *bits = NULL;
+   Boolean le;
+@@ -1271,6 +1347,7 @@ void *BmpGetBits(BitmapType *bitmapP) {
+ }
+ 
+ ColorTableType *BmpGetColortable(BitmapType *bitmapP) {
++  BOD_COUNT(1);
+   ColorTableType *colorTable = NULL;
+   UInt32 addr;
+   Boolean le;
+@@ -1394,7 +1471,23 @@ UInt16 BmpColortableSize(const BitmapType *bitmapP) {
+   return size;
+ }
+ 
++#ifdef BOD_GBA
++static UInt8 BmpGetBitDepth1(const BitmapType *bitmapP);
++UInt8 BmpGetBitDepth(const BitmapType *bitmapP) {
++  bod_bmp_entry *e;
++  if (!bitmapP) return 0;
++  if ((e = bod_bmp_lookup(bitmapP)) == NULL || !(e->valid & 4)) {
++    if (!e) e = bod_bmp_add(bitmapP);
++    e->depth = BmpGetBitDepth1(bitmapP);
++    e->valid |= 4;
++  }
++  return e->depth;
++}
++static UInt8 BmpGetBitDepth1(const BitmapType *bitmapP) {
++#else
+ UInt8 BmpGetBitDepth(const BitmapType *bitmapP) {
++#endif
++  BOD_COUNT(7);
+   UInt8 version, depth = 0;
+ 
+   if (bitmapP) {
+@@ -1406,6 +1499,7 @@ UInt8 BmpGetBitDepth(const BitmapType *bitmapP) {
+ }
+ 
+ Err BmpSetBitDepth(BitmapType *bitmapP, UInt8 depth) {
++  BOD_FLUSH();
+   Coord width, height;
+   Err err = sysErrParamErr;
+ 
+@@ -1519,6 +1613,7 @@ UInt16 BmpGetDensity(const BitmapType *bitmapP) {
+ }
+ 
+ Err BmpSetDensity(BitmapType *bitmapP, UInt16 density) {
++  BOD_FLUSH();
+   Err err = sysErrParamErr;
+ 
+   if (bitmapP) {
+@@ -2407,7 +2502,12 @@ static void BmpCopyBit4(UInt8 b, Boolean transp, BitmapType *dst, Coord dx, Coor
+   }
+ }
+ 
++#ifdef BOD_GBA
++/* The display lives in VRAM, which ignores byte writes. */
++#define BmpSetBit8p(offset, dataSize, b) if (offset < dataSize) bod_put8(bits, offset, b)
++#else
+ #define BmpSetBit8p(offset, dataSize, b) if (offset < dataSize) bits[offset] = b
++#endif
+ 
+ #define BmpSetBit8(offset, dataSize, b, dbl) \
+   BmpSetBit8p(offset, dataSize, b); \
+@@ -3266,7 +3366,11 @@ static int BmpDecompress(UInt16 version, BitmapCompressionType compression, UInt
+   return error;
+ }
+ 
++
+ BitmapType *BmpDecompressBitmap(BitmapType *bitmapP) {
++#ifdef BOD_GBA
++  if ((++bod_decompress_count & 63) == 1) debug(DEBUG_INFO, "Bitmap", "decompress #%d: %p %dx%d", bod_decompress_count, bitmapP, BmpGetCommonField(bitmapP, BitmapFieldWidth), BmpGetCommonField(bitmapP, BitmapFieldHeight));
++#endif
+   BitmapCompressionType compression;
+   Coord width, height;
+   UInt32 transparentValue;
 diff --git a/src/libpumpkin/Control.c b/src/libpumpkin/Control.c
 index 5fafa62..c36d79b 100644
 --- a/src/libpumpkin/Control.c
@@ -1770,10 +2000,10 @@ index a2b5b1f..07adc57 100644
    if (logLenP) *logLenP = 0;
  
 diff --git a/src/libpumpkin/Event.c b/src/libpumpkin/Event.c
-index fd1eb40..694b725 100644
+index fd1eb40..ef5738b 100644
 --- a/src/libpumpkin/Event.c
 +++ b/src/libpumpkin/Event.c
-@@ -6,6 +6,7 @@
+@@ -6,10 +6,15 @@
  #include "vfs.h"
  #include "pumpkin.h"
  #include "navigator.h"
@@ -1781,7 +2011,15 @@ index fd1eb40..694b725 100644
  #include "xalloc.h"
  #include "debug.h"
  
-@@ -26,6 +27,7 @@ typedef struct {
++#ifdef BOD_GBA
++#define MAX_EVENTS 16
++#else
+ #define MAX_EVENTS 64
++#endif
+ 
+ #define PALMOS_MODULE "Event"
+ 
+@@ -26,6 +31,7 @@ typedef struct {
    Int32 needNullTickCount;
    Int32 lastPenMove;
    Boolean insideRepeatingButtonCtl;
@@ -1789,7 +2027,7 @@ index fd1eb40..694b725 100644
    UInt32 repeatingButtonTime;
    UInt16 repeatingButtonID;
    void *repeatingButtonP;
-@@ -239,6 +241,55 @@ static void adjustCoords(Coord *x, Coord *y) {
+@@ -239,6 +245,55 @@ static void adjustCoords(Coord *x, Coord *y) {
     }
  }
  
@@ -1845,7 +2083,7 @@ index fd1eb40..694b725 100644
  static int sendKeyDown(UInt16 eType, UInt16 chr, UInt16 keyCode, UInt16 modifiers) {
    EventType event;
  
-@@ -441,10 +492,14 @@ int EvtPumpEvents(Int32 timeoutUs) {
+@@ -441,10 +496,14 @@ int EvtPumpEvents(Int32 timeoutUs) {
            event.data.keyDown.modifiers |= commandKeyMask;
            break;
          case WINDOW_KEY_UP:
@@ -1860,7 +2098,7 @@ index fd1eb40..694b725 100644
            break;
          case WINDOW_KEY_INS:
            event.data.keyDown.chr = vchrNativeInsert;
-@@ -802,6 +857,12 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
+@@ -802,6 +861,12 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
    MemSet(event, sizeof(EventType), 0);
    EvtPumpEvents(0);
  
@@ -1873,7 +2111,7 @@ index fd1eb40..694b725 100644
    if (module->numEvents == 0) {
      if (EvtPumpEvents(timeoutUs) == -1) {
        debug(DEBUG_INFO, PALMOS_MODULE, "EvtGetEvent appStopEvent (event failed)");
-@@ -830,6 +891,28 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
+@@ -830,6 +895,28 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
      xmemcpy(event, &module->events[module->idxOut++], sizeof(EventType));
      if (module->idxOut == MAX_EVENTS) module->idxOut = 0;
      module->numEvents--;
@@ -1902,8 +2140,83 @@ index fd1eb40..694b725 100644
      EvtPrintEvent("Get", event);
      return;
    }
+diff --git a/src/libpumpkin/FeatureMgr.c b/src/libpumpkin/FeatureMgr.c
+index 025474a..d61ef8b 100644
+--- a/src/libpumpkin/FeatureMgr.c
++++ b/src/libpumpkin/FeatureMgr.c
+@@ -6,7 +6,11 @@
+ #include "bytes.h"
+ #include "debug.h"
+ 
++#ifdef BOD_GBA
++#define MAX_FEATURES 32
++#else
+ #define MAX_FEATURES 1024
++#endif
+ 
+ #define sysFtrNumUIHardwareFlags        27           // Additional User Input Hardware (PalmOS 5.x)
+ #define sysFtrNumDmAutoBackup           31           // Is Data Manager Auto Backup supported?
+diff --git a/src/libpumpkin/Font.c b/src/libpumpkin/Font.c
+index 149052f..7db930f 100644
+--- a/src/libpumpkin/Font.c
++++ b/src/libpumpkin/Font.c
+@@ -38,7 +38,12 @@ int FntInitModule(UInt16 density) {
+   // map all system fonts
+   for (i = 0; i < 128; i++) {
+     if (density == kDensityLow) {
++#ifdef BOD_GBA
++      /* System fonts are never freed, so one copy per font is enough. */
++      module->fonts[i] = pumpkin_get_font(i, kDensityLow);
++#else
+       module->fonts[i] = FntCopyFont(pumpkin_get_font(i, kDensityLow));
++#endif
+     } else {
+       module->fontsv2[i] = (FontTypeV2 *)FntCopyFont(pumpkin_get_font(i, kDensityDouble));
+     }
+@@ -89,7 +94,11 @@ FontID FntSetFont(FontID font) {
+     if (module->fonts[font] || module->fontsv2[font]) {
+       module->currentFont = font;
+     } else {
++#ifdef BOD_GBA
++      { static UInt8 warned[256]; if (!warned[font]) { warned[font] = 1; debug(DEBUG_ERROR, "Font", "font %d not installed", font); } }
++#else
+       debug(DEBUG_ERROR, "Font", "font %d not installed", font);
++#endif
+     }
+   }
+   return prev;
+@@ -524,8 +533,13 @@ FontType *pumpkin_create_font(void *h, uint8_t *p, uint32_t size, uint32_t *dsiz
+ 
+     font->pitch = font->rowWords * 2;
+     glyph_len = font->pitch * font->fRectHeight;
++#ifdef BOD_GBA
++    /* The resource is in ROM and never goes away: use its glyph rows in place. */
++    font->data = &p[i];
++#else
+     font->data = sys_calloc(1, glyph_len);
+     sys_memcpy(font->data, &p[i], glyph_len);
++#endif
+     i += glyph_len;
+     debug(DEBUG_TRACE, "Font", "length %d, pitch %d", glyph_len, font->pitch);
+ 
+@@ -551,8 +565,15 @@ FontType *pumpkin_create_font(void *h, uint8_t *p, uint32_t size, uint32_t *dsiz
+     }
+     debug(DEBUG_TRACE, "Font", "totalWidth %d", font->totalWidth);
+ 
++#ifdef BOD_GBA
++    { extern BitmapType *bod_indirect_bitmap(Coord width, Coord height, UInt16 rowBytes, UInt8 depth, Boolean transparent, void *bits);
++      font->bmp = bod_indirect_bitmap(font->pitch*8, font->fRectHeight, font->pitch, 1, true, font->data); }
++    bits = NULL;
++    if (0)
++#else
+     font->bmp = BmpCreate3(font->pitch*8, font->fRectHeight, 0, kDensityLow, 1, true, 0, NULL, &err);
+     bits = BmpGetBits(font->bmp);
++#endif
+     sys_memcpy(bits, font->data, font->fRectHeight * font->pitch);
+   }
+ 
 diff --git a/src/libpumpkin/Form.c b/src/libpumpkin/Form.c
-index 1e9cef5..69e097b 100644
+index 1e9cef5..54fa7d0 100644
 --- a/src/libpumpkin/Form.c
 +++ b/src/libpumpkin/Form.c
 @@ -11,6 +11,7 @@
@@ -1937,7 +2250,36 @@ index 1e9cef5..69e097b 100644
  static const char *frmObjType[] = {
    "frmFieldObj",
    "frmControlObj",
-@@ -196,6 +211,7 @@ static Err FrmInitFormInternal(FormType *formP) {
+@@ -175,7 +190,12 @@ static Err FrmInitFormInternal(FormType *formP) {
+ 
+   w = width = formP->window.windowBounds.extent.x;
+   h = height = formP->window.windowBounds.extent.y;
++#ifdef BOD_GBA
++  /* A full-screen form has nothing behind it worth 25 KB of a 256 KB machine. */
++  formP->bitsBehindForm = (formP->window.windowFlags.modal && width * height < 20000) ? WinCreateOffscreenWindow(width + 2*xmargin, height + 2*ymargin, nativeFormat, &err) : NULL;
++#else
+   formP->bitsBehindForm = WinCreateOffscreenWindow(width + 2*xmargin, height + 2*ymargin, nativeFormat, &err);
++#endif
+   WinAdjustCoords(&w, &h);
+ 
+   wh = WinGetDisplayWindow();
+@@ -184,7 +204,15 @@ static Err FrmInitFormInternal(FormType *formP) {
+   WinScreenGetAttribute(winScreenDensity, &density);
+   WinScreenMode(winScreenModeGet, NULL, NULL, &depth, NULL);
+   colorTable = WinGetColorTable(depth);
++#ifdef BOD_GBA
++  {
++    extern BitmapType *bod_vram_bitmap(Coord x, Coord y, Coord w, Coord h);
++    formP->window.bitmapP = bod_vram_bitmap(formP->window.windowBounds.topLeft.x, formP->window.windowBounds.topLeft.y, w, h);
++    if (formP->window.bitmapP == NULL) formP->window.bitmapP = BmpCreate3(w, h, 0, density, depth, false, 0, colorTable, &err);
++  }
++#else
+   formP->window.bitmapP = BmpCreate3(w, h, 0, density, depth, false, 0, colorTable, &err);
++#endif
+   formP->window.density = density;
+   BmpSetLittleEndianBits(formP->window.bitmapP, littleEndian);
+ 
+@@ -196,6 +224,7 @@ static Err FrmInitFormInternal(FormType *formP) {
    formP->selectedObject = -1;
    formP->activeList = -1;
    formP->activeField = -1;
@@ -1945,7 +2287,7 @@ index 1e9cef5..69e097b 100644
    formP->mbar = formP->menuRscId ? MenuInit(formP->menuRscId) : NULL;
    formP->diaPolicy = frmDIAPolicyStayOpen;
  
-@@ -349,6 +365,7 @@ void FrmEraseObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+@@ -349,6 +378,7 @@ void FrmEraseObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
  
    if (formP && objIndex < formP->numObjects) {
      pumpkin_dirty_region_mode(dirtyRegionBegin);
@@ -1953,7 +2295,7 @@ index 1e9cef5..69e097b 100644
  
      obj = formP->objects[objIndex].object;
  
-@@ -456,6 +473,7 @@ void FrmEraseObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+@@ -456,6 +486,7 @@ void FrmEraseObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
        WinSetBackColor(oldb);
      }
  
@@ -1961,7 +2303,7 @@ index 1e9cef5..69e097b 100644
      pumpkin_dirty_region_mode(dirtyRegionEnd);
    }
  }
-@@ -474,6 +492,7 @@ void FrmDrawObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+@@ -474,6 +505,7 @@ void FrmDrawObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
  
    if (formP && objIndex < formP->numObjects) {
      pumpkin_dirty_region_mode(dirtyRegionBegin);
@@ -1969,7 +2311,7 @@ index 1e9cef5..69e097b 100644
  
      obj = formP->objects[objIndex].object;
      formTitle = UIColorGetTableEntryIndex(UIObjectSelectedForeground);
-@@ -642,6 +661,7 @@ void FrmDrawObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+@@ -642,6 +674,7 @@ void FrmDrawObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
          break;
      }
  
@@ -1977,7 +2319,7 @@ index 1e9cef5..69e097b 100644
      pumpkin_dirty_region_mode(dirtyRegionEnd);
    }
  }
-@@ -822,6 +842,554 @@ Boolean FrmTrackPenUp(UInt32 x, UInt32 y) {
+@@ -822,6 +855,554 @@ Boolean FrmTrackPenUp(UInt32 x, UInt32 y) {
    return handled;
  }
  
@@ -2532,7 +2874,7 @@ index 1e9cef5..69e097b 100644
  // Handle the event that has occurred in the form.
  // Never call this function directly. Call FrmDispatchEvent instead.
  // FrmDispatchEvent passes events to a form’s custom event
-@@ -1127,6 +1695,7 @@ static void FrmDeleteFormInternal(FormType *formP) {
+@@ -1127,6 +1708,7 @@ static void FrmDeleteFormInternal(FormType *formP) {
    frm_module_t *module = (frm_module_t *)pumpkin_get_local_storage(frm_key);
  
    debug(DEBUG_TRACE, "Form", "FrmDeleteFormInternal form %d", formP->formId);
@@ -2540,7 +2882,7 @@ index 1e9cef5..69e097b 100644
  
    if (formP == module->currentForm) {
      WinSetActiveWindow(NULL);
-@@ -1210,6 +1779,116 @@ void FrmDrawEmptyDialog(FormType *formP, RectangleType *rect, Int16 margin, WinH
+@@ -1210,6 +1792,116 @@ void FrmDrawEmptyDialog(FormType *formP, RectangleType *rect, Int16 margin, WinH
    WinSetBackColor(old);
  }
  
@@ -2657,7 +2999,7 @@ index 1e9cef5..69e097b 100644
  void FrmDrawForm(FormType *formP) {
    WinHandle oldd, olda;
    RGBColorType rgb;
-@@ -1232,6 +1911,10 @@ void FrmDrawForm(FormType *formP) {
+@@ -1232,8 +1924,12 @@ void FrmDrawForm(FormType *formP) {
  
      margin = WinGetBorderRect(&formP->window, &rect);
  
@@ -2666,9 +3008,12 @@ index 1e9cef5..69e097b 100644
 +    formP->navDrawn = 0;
 +
      if (!formP->attr.visible) {
-       WinSaveRectangle(formP->bitsBehindForm, &rect);
+-      WinSaveRectangle(formP->bitsBehindForm, &rect);
++      if (formP->bitsBehindForm) WinSaveRectangle(formP->bitsBehindForm, &rect);
      }
-@@ -1258,6 +1941,9 @@ void FrmDrawForm(FormType *formP) {
+ 
+     olda = WinGetActiveWindow();
+@@ -1258,6 +1954,9 @@ void FrmDrawForm(FormType *formP) {
      WinSetDrawWindow(oldd);
      WinSetActiveWindow(olda);
  
@@ -2678,15 +3023,19 @@ index 1e9cef5..69e097b 100644
      pumpkin_dirty_region_mode(dirtyRegionEnd);
    }
  }
-@@ -1280,6 +1966,7 @@ void FrmEraseForm(FormType *formP) {
-     WinRestoreRectangle(formP->bitsBehindForm, &rect);
+@@ -1277,9 +1976,10 @@ void FrmEraseForm(FormType *formP) {
+       rect.extent.x += 4;
+       rect.extent.y += 4;
+     }
+-    WinRestoreRectangle(formP->bitsBehindForm, &rect);
++    if (formP->bitsBehindForm) WinRestoreRectangle(formP->bitsBehindForm, &rect);
  
      formP->attr.visible = 0;
 +    formP->navDrawn = 0;
    }
  }
  
-@@ -3699,6 +4386,7 @@ void pumpkin_destroy_form(FormType *formP) {
+@@ -3699,6 +4399,7 @@ void pumpkin_destroy_form(FormType *formP) {
      if (formP->rsrc) {
        pumpkin_heap_free(formP->rsrc, "form_rsrc");
      }
@@ -2756,7 +3105,7 @@ index f60f65d..4c04855 100644
  
  emulation/systrap.o: emulation/systrap.c emulation/switch.c
 diff --git a/src/libpumpkin/Menu.c b/src/libpumpkin/Menu.c
-index c40407c..ff26806 100644
+index c40407c..fc71568 100644
 --- a/src/libpumpkin/Menu.c
 +++ b/src/libpumpkin/Menu.c
 @@ -9,10 +9,12 @@
@@ -2772,11 +3121,105 @@ index c40407c..ff26806 100644
  } menu_module_t;
  
  int MenuInitModule(void) {
-@@ -272,6 +274,144 @@ static void menu_hide_pd(MenuBarType *menu, MenuPullDownType *pd) {
+@@ -68,15 +70,27 @@ MenuBarType *MenuInit(UInt16 resourceId) {
+     WinScreenMode(winScreenModeGet, &swidth, NULL, NULL, NULL);
+     w = swidth;
+     h = height;
++#ifdef BOD_GBA
++    /* the windows are made when the menu opens and freed when it closes */
++    mbar->barWin = NULL;
++    mbar->bitsBehind = NULL;
++#else
+     mbar->barWin = WinCreateOffscreenWindow(w, h, nativeFormat, &err);
+     mbar->bitsBehind = WinCreateOffscreenWindow(w, h, nativeFormat, &err);
++#endif
+     FntSetFont(old);
+ 
+     for (i = 0; i < mbar->numMenus; i++) {
+       pd = &mbar->menus[i];
+       w = pd->bounds.extent.x;
+       h = pd->bounds.extent.y;
++#ifdef BOD_GBA
++      pd->menuWin = NULL;
++      pd->bitsBehind = NULL;
++      if (0) {
++#else
+       if (w && h) {
++#endif
+         pd->menuWin = WinCreateOffscreenWindow(w, h, nativeFormat, &err);
+         pd->menuWin->windowBounds.topLeft.x = pd->bounds.topLeft.x;
+         pd->menuWin->windowBounds.topLeft.y = pd->bounds.topLeft.y;
+@@ -225,10 +239,16 @@ static void menu_show_pd(MenuBarType *menu, MenuPullDownType *pd) {
+   int j, y;
+ 
+   oldw = WinGetActiveWindow();
++#ifdef BOD_GBA
++  if (!pd->menuWin) return;
++#endif
+   WinSetActiveWindow(pd->menuWin);
+   WinSetDrawWindow(pd->menuWin);
+ 
+   // save pulldown box
++#ifdef BOD_GBA
++  if (pd->bitsBehind)
++#endif
+   WinSaveRectangle(pd->bitsBehind, &pd->bounds);
+ 
+   mFrame = UIColorGetTableEntryIndex(UIMenuFrame);
+@@ -269,9 +289,200 @@ static void menu_show_pd(MenuBarType *menu, MenuPullDownType *pd) {
+ }
+ 
+ static void menu_hide_pd(MenuBarType *menu, MenuPullDownType *pd) {
++#ifdef BOD_GBA
++  if (!pd->bitsBehind) return;
++#endif
    WinRestoreRectangle(pd->bitsBehind, &pd->bounds);
  }
  
 +// Take the whole menu off the screen and give the form back its window.
++
++#ifdef BOD_GBA
++static void menu_windows(MenuBarType *menuP, Boolean create) {
++  MenuPullDownType *pd;
++  UInt32 swidth;
++  Err err;
++  int i;
++  if (create) {
++    extern WinHandle bod_vram_window(Coord x, Coord y, Coord w, Coord h);
++    FontID old = FntSetFont(boldFont);
++    Coord barH = FntCharHeight() + 4;
++    FntSetFont(old);
++    WinScreenMode(winScreenModeGet, &swidth, NULL, NULL, NULL);
++    if (!menuP->barWin) menuP->barWin = bod_vram_window(0, 0, swidth, barH);
++    menuP->bitsBehind = NULL;
++  } else {
++    if (menuP->barWin) { WinDeleteWindow(menuP->barWin, false); menuP->barWin = NULL; }
++    if (menuP->bitsBehind) { WinDeleteWindow(menuP->bitsBehind, false); menuP->bitsBehind = NULL; }
++  }
++  for (i = 0; i < menuP->numMenus; i++) {
++    pd = &menuP->menus[i];
++    if (create) {
++      extern WinHandle bod_vram_window(Coord x, Coord y, Coord w, Coord h);
++      if (!pd->menuWin && pd->bounds.extent.x && pd->bounds.extent.y)
++        pd->menuWin = bod_vram_window(pd->bounds.topLeft.x, pd->bounds.topLeft.y, pd->bounds.extent.x, pd->bounds.extent.y);
++      pd->bitsBehind = NULL;
++    } else {
++      if (pd->menuWin) { WinDeleteWindow(pd->menuWin, false); pd->menuWin = NULL; }
++      if (pd->bitsBehind) { WinDeleteWindow(pd->bitsBehind, false); pd->bitsBehind = NULL; }
++    }
++  }
++}
++#endif
++
++#ifdef BOD_GBA
++/* The game keeps drawing its frames under an open menu; the menu lives in
++ * the screen itself here, so the window code asks before overwriting it. */
++Boolean bod_menu_visible(void) {
++  menu_module_t *module = (menu_module_t *)pumpkin_get_local_storage(menu_key);
++  MenuBarType *m = module ? module->currentMenu : NULL;
++  return m && m->attr.visible;
++}
++#endif
 +
 +static void menu_close(MenuBarType *menuP) {
 +  MenuPullDownType *pd = &menuP->menus[menuP->curMenu];
@@ -2787,8 +3230,15 @@ index c40407c..ff26806 100644
 +  pd->selectedItem = -1;
 +  WinSetActiveWindow(menuP->savedActiveWin);
 +  WinSetDrawWindow(menuP->savedActiveWin);
++#ifdef BOD_GBA
++  if (menuP->bitsBehind)
++#endif
 +  WinRestoreRectangle(menuP->bitsBehind, &menuP->barWin->windowBounds);
 +  menuP->attr.visible = 0;
++#ifdef BOD_GBA
++  menu_windows(menuP, false);
++  FrmUpdateForm(FrmGetActiveFormID(), frmRedrawUpdateCode);
++#endif
 +}
 +
 +/* ------------------------------------------------------------ five-way nav
@@ -2917,7 +3367,7 @@ index c40407c..ff26806 100644
  Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
    EventType ev;
    MenuPullDownType *pd, *prev;
-@@ -313,13 +453,7 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
+@@ -313,13 +524,7 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
              }
              if (!handled) {
                debug(DEBUG_TRACE, "Menu", "MenuHandleEvent penDown hide pullDown %d", menuP->curMenu);
@@ -2932,7 +3382,23 @@ index c40407c..ff26806 100644
                handled = true;
              }
            }
-@@ -395,16 +529,8 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
+@@ -374,8 +579,15 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
+                 pd->hidden = 0;
+                 WinSetActiveWindow(menuP->savedActiveWin);
+                 WinSetDrawWindow(menuP->savedActiveWin);
++#ifdef BOD_GBA
++                if (menuP->bitsBehind)
++#endif
+                 WinRestoreRectangle(menuP->bitsBehind, &menuP->barWin->windowBounds);
+                 menuP->attr.visible = 0;
++#ifdef BOD_GBA
++                menu_windows(menuP, false);
++                FrmUpdateForm(FrmGetActiveFormID(), frmRedrawUpdateCode);
++#endif
+ 
+                 debug(DEBUG_TRACE, "Menu", "MenuHandleEvent menuEvent item %d", pd->items[pd->selectedItem].id);
+                 MemSet(&ev, sizeof(EventType), 0);
+@@ -395,16 +607,8 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
          if (event->data.keyDown.chr == vchrMenu) {
            debug(DEBUG_TRACE, "Menu", "MenuHandleEvent keyDown vchrMenu");
            if (menuP->attr.visible) {
@@ -2950,16 +3416,34 @@ index c40407c..ff26806 100644
            } else {
              debug(DEBUG_TRACE, "Menu", "MenuHandleEvent keyDown show menu");
              MenuDrawMenu(menuP);
-@@ -431,6 +557,7 @@ void MenuDrawMenu(MenuBarType *menuP) {
+@@ -431,8 +635,13 @@ void MenuDrawMenu(MenuBarType *menuP) {
    pumpkin_dirty_region_mode(dirtyRegionBegin);
  
    debug(DEBUG_TRACE, "Menu", "MenuDrawMenu");
 +  ((menu_module_t *)pumpkin_get_local_storage(menu_key))->navArmed = false;
    menuP->savedActiveWin = WinGetActiveWindow();
- 
+-
++#ifdef BOD_GBA
++  menu_windows(menuP, true);
++  if (!menuP->barWin) return;
++  if (menuP->bitsBehind)
++#endif
    // save menu box
+   WinSaveRectangle(menuP->bitsBehind, &menuP->barWin->windowBounds);
+ 
+@@ -527,6 +736,10 @@ Err MenuAddItem(UInt16 positionId, UInt16 id, Char cmd, const Char *textP) {
+               // adjust window size
+               mbar->menus[i].bounds.extent.y += FntCharHeight();
+               WinDeleteWindow(mbar->menus[i].menuWin, false);
++#ifdef BOD_GBA
++              mbar->menus[i].menuWin = NULL;
++              if (0)
++#endif
+               mbar->menus[i].menuWin = WinCreateOffscreenWindow(mbar->menus[i].bounds.extent.x, mbar->menus[i].bounds.extent.y, nativeFormat, &err);
+               mbar->menus[i].menuWin->windowBounds.topLeft.x = mbar->menus[i].bounds.topLeft.x;
+               mbar->menus[i].menuWin->windowBounds.topLeft.y = mbar->menus[i].bounds.topLeft.y;
 diff --git a/src/libpumpkin/Preferences.c b/src/libpumpkin/Preferences.c
-index dfebfea..31c0697 100644
+index dfebfea..5296dc2 100644
 --- a/src/libpumpkin/Preferences.c
 +++ b/src/libpumpkin/Preferences.c
 @@ -94,9 +94,11 @@ static void initPrefs(SystemPreferencesType *prefs) {
@@ -2977,7 +3461,21 @@ index dfebfea..31c0697 100644
    prefs->beamReceive = false;                     // False turns off IR sniffing, sends still work.
    prefs->calibrateDigitizerAtReset = false;       // True makes the user calibrate at soft reset time
    prefs->systemKeyboardID = 0;                    // XXX ID of the preferred keyboard resource
-@@ -245,6 +247,19 @@ int PrefInitModule(void) {
+@@ -229,10 +231,13 @@ int PrefInitModule(void) {
+   size = sizeof(SystemPreferencesType);
+   MemSet(&prefs, size, 0);
+ 
++#ifndef BOD_GBA
++  /* Hundreds of tiny strings a handheld with 256 KB never shows. */
+   countryCodes = SysStringArray(15000, &numCountries);
+   countryNames = SysStringArray(16000, &numCountries);
+   languageCodes = SysStringArray(17000, &numLanguages);
+   languageNames = SysStringArray(18000, &numLanguages);
++#endif
+ 
+   if (pumpkin_get_preference(BOOT_CREATOR, PALMOS_PREFS_ID, &prefs, size, true) == 0) {
+     debug(DEBUG_INFO, PALMOS_MODULE, "initializing system preferences");
+@@ -245,6 +250,19 @@ int PrefInitModule(void) {
      OmSetSystemLocale(&systemLocale);
    }
  
@@ -3057,6 +3555,600 @@ index 099878a..2d0ccb3 100644
    return r;
  }
  
+diff --git a/src/libpumpkin/SystemMgr.c b/src/libpumpkin/SystemMgr.c
+index 6715831..92552f5 100644
+--- a/src/libpumpkin/SystemMgr.c
++++ b/src/libpumpkin/SystemMgr.c
+@@ -16,7 +16,12 @@
+ #define PALMOS_MODULE "System"
+ 
+ typedef struct {
++#ifdef BOD_GBA
++  /* application switching is not possible here; keep only what is read */
++  struct { char name[dmDBNameLength]; UInt16 code; Boolean hasParam; UInt8 param[4]; } request;
++#else
+   launch_request_t request;
++#endif
+   char *serialNumber;
+   uint64_t t0;
+   UInt32 last;
+@@ -137,12 +142,14 @@ Err SysUIAppSwitch(UInt16 cardNo, LocalID dbID, UInt16 cmd, MemPtr cmdPBP) {
+     }
+ 
+     debug(DEBUG_INFO, PALMOS_MODULE, "SysUIAppSwitch registering switch to \"%s\" cmd %d param %p", name, cmd, cmdPBP);
+-    MemSet(&module->request, sizeof(launch_request_t), 0);
++    MemSet(&module->request, sizeof(module->request), 0);
+     StrNCopy(module->request.name, name, dmDBNameLength);
+     module->request.code = cmd;
+     if (cmdPBP) {
+       module->request.hasParam = true;
++#ifndef BOD_GBA
+       MemMove(&module->request.param, cmdPBP, sizeof(launch_union_t));
++#endif
+     }
+   }
+ 
+@@ -158,8 +165,10 @@ int SysUIAppSwitchCont(launch_request_t *request) {
+   int r = 0;
+ 
+   if (module->request.name[0]) {
++#ifndef BOD_GBA
+     if (request) MemMove(request, &module->request, sizeof(launch_request_t));
+-    MemSet(&module->request, sizeof(launch_request_t), 0);
++#endif
++    MemSet(&module->request, sizeof(module->request), 0);
+     r = 1;
+   }
+ 
+diff --git a/src/libpumpkin/Window.c b/src/libpumpkin/Window.c
+index e595948..a312640 100644
+--- a/src/libpumpkin/Window.c
++++ b/src/libpumpkin/Window.c
+@@ -15,6 +15,11 @@
+ #include "language.h"
+ #include "sys.h"
+ #include "debug.h"
++#ifdef BOD_GBA
++#include "bodvram.h"
++#else
++#define bod_put8(bits, offset, b) (bits)[offset] = (b)
++#endif
+ #include "xalloc.h"
+ 
+ #define LEGACY_SCREEN_SIZE 160 * 160
+@@ -629,7 +634,15 @@ void WinSetBounds(WinHandle winHandle, const RectangleType *rP) {
+     WinScreenGetAttribute(winScreenDensity, &density);
+     WinScreenMode(winScreenModeGetDefaults, NULL, NULL, &depth, NULL);
+     old = winHandle->bitmapP;
++#ifdef BOD_GBA
++    {
++      extern BitmapType *bod_vram_bitmap(Coord x, Coord y, Coord w, Coord h);
++      bmp = (((UInt32)BmpGetBits(old) >> 24) == 0x06) ? bod_vram_bitmap(winHandle->windowBounds.topLeft.x, winHandle->windowBounds.topLeft.y, width, height) : NULL;
++      if (!bmp) bmp = BmpCreate3(width, height, 0, density, depth, false, 0, BmpGetColortable(old), &err);
++    }
++#else
+     bmp = BmpCreate3(width, height, 0, density, depth, false, 0, BmpGetColortable(old), &err);
++#endif
+     if (bmp) {
+       BmpSetLittleEndianBits(bmp, module->littleEndian);
+       winHandle->bitmapP = bmp;
+@@ -1002,6 +1015,134 @@ static UInt32 getPattern(win_module_t *module, WinHandle wh, Coord x, Coord y, P
+   return c;
+ }
+ 
++/* A solid run on an 8-bit window at low density is one MemSet, and on a slow
++ * machine that matters: the per-pixel path below decodes the bitmap header
++ * for every pixel. Everything else still goes through it. */
++static Boolean hline_fast(win_module_t *module, Coord x1, Coord x2, Coord y, PatternType pattern) {
++  WinHandle wh = module->drawWindow;
++  BitmapType *bmp;
++  UInt8 *bits, c, pat[8], buf[256];
++  UInt16 rowBytes;
++  Coord w, h, cx1, cx2, x;
++  Boolean display, solid;
++  int k, n, m;
++
++  if (wh == NULL || module->displayWindow == NULL) return false;
++  if (module->drawState.transferMode != winPaint || module->drawState.coordinateSystem != kCoordinatesStandard) return false;
++  if (wh->density != kDensityLow || module->displayWindow->density != kDensityLow) return false;
++  bmp = WinGetBitmap(wh);
++  if (bmp == NULL || BmpGetBitDepth(bmp) != 8 || BmpGetCompressionType(bmp) != BitmapCompressionTypeNone) return false;
++
++  if (y < wh->clippingBounds.top || y > wh->clippingBounds.bottom) return true;
++  cx1 = x1 < wh->clippingBounds.left ? wh->clippingBounds.left : x1;
++  cx2 = x2 > wh->clippingBounds.right ? wh->clippingBounds.right : x2;
++  BmpGetDimensions(bmp, &w, &h, &rowBytes);
++  if (y < 0 || y >= h) return true;
++  if (cx1 < 0) cx1 = 0;
++  if (cx2 >= w) cx2 = w - 1;
++  if (cx1 > cx2) return true;
++
++  solid = pattern == blackPattern || pattern == whitePattern;
++  bits = BmpGetBits(bmp) + y * rowBytes;
++  if (solid) {
++    c = (UInt8)getColor(module, 8, pattern == blackPattern ? module->swapColors : !module->swapColors);
++    MemSet(bits + cx1, cx2 - cx1 + 1, c);
++  } else {
++    /* every pattern repeats every 8 pixels: look it up once per column phase, then copy rows */
++    for (k = 0; k < 8; k++) pat[k] = (UInt8)getPattern(module, wh, k, y, pattern);
++    for (x = cx1, n = cx2 - cx1 + 1; n > 0; x += m, n -= m) {
++      m = n > (int)sizeof(buf) ? (int)sizeof(buf) : n;
++      for (k = 0; k < m; k++) buf[k] = pat[(x + k) & 7];
++      MemMove(bits + x, buf, m);
++    }
++  }
++
++  display = wh == module->displayWindow || wh->bitmapP == module->displayWindow->bitmapP;
++#ifdef BOD_GBA
++  if (((UInt32)BmpGetBits(bmp) >> 24) == 0x06) display = true;
++#endif
++  if (wh == module->activeWindow && !display) {
++    BitmapType *dbmp = module->displayWindow->bitmapP;
++    Coord dw, dh, dx1, dx2, dy;
++    UInt16 drow;
++    if (dbmp && BmpGetBitDepth(dbmp) == 8) {
++      BmpGetDimensions(dbmp, &dw, &dh, &drow);
++      dy = wh->windowBounds.topLeft.y + y;
++      dx1 = wh->windowBounds.topLeft.x + cx1;
++      dx2 = wh->windowBounds.topLeft.x + cx2;
++      if (dx1 < 0) dx1 = 0;
++      if (dx2 >= dw) dx2 = dw - 1;
++      if (dy >= 0 && dy < dh && dx1 <= dx2) {
++        UInt8 *dbits = (UInt8 *)BmpGetBits(dbmp) + dy * drow;
++        if (solid) MemSet(dbits + dx1, dx2 - dx1 + 1, c);
++        else MemMove(dbits + dx1, bits + cx1 + (dx1 - (wh->windowBounds.topLeft.x + cx1)), dx2 - dx1 + 1);
++      }
++    }
++  }
++  if (wh == module->activeWindow || display) {
++    WinDirtyRegion(wh, cx1, y, cx2, y);
++  }
++
++  return true;
++}
++
++/* Vertical lines the same way: one pattern lookup per row phase, byte writes. */
++static Boolean vline_fast(win_module_t *module, Coord x, Coord y1, Coord y2, PatternType pattern) {
++  WinHandle wh = module->drawWindow;
++  BitmapType *bmp;
++  UInt8 *bits, pat[8];
++  UInt16 rowBytes;
++  Coord w, h, cy1, cy2, y;
++  Boolean display;
++  int k;
++
++  if (wh == NULL || module->displayWindow == NULL) return false;
++  if (module->drawState.transferMode != winPaint || module->drawState.coordinateSystem != kCoordinatesStandard) return false;
++  if (wh->density != kDensityLow || module->displayWindow->density != kDensityLow) return false;
++  bmp = WinGetBitmap(wh);
++  if (bmp == NULL || BmpGetBitDepth(bmp) != 8 || BmpGetCompressionType(bmp) != BitmapCompressionTypeNone) return false;
++
++  if (x < wh->clippingBounds.left || x > wh->clippingBounds.right) return true;
++  cy1 = y1 < wh->clippingBounds.top ? wh->clippingBounds.top : y1;
++  cy2 = y2 > wh->clippingBounds.bottom ? wh->clippingBounds.bottom : y2;
++  BmpGetDimensions(bmp, &w, &h, &rowBytes);
++  if (x < 0 || x >= w) return true;
++  if (cy1 < 0) cy1 = 0;
++  if (cy2 >= h) cy2 = h - 1;
++  if (cy1 > cy2) return true;
++
++  for (k = 0; k < 8; k++) pat[k] = (UInt8)getPattern(module, wh, x, k, pattern);
++  bits = BmpGetBits(bmp) + x;
++  for (y = cy1; y <= cy2; y++) bod_put8(bits + y * rowBytes, 0, pat[y & 7]);
++
++  display = wh == module->displayWindow || wh->bitmapP == module->displayWindow->bitmapP;
++#ifdef BOD_GBA
++  if (((UInt32)BmpGetBits(bmp) >> 24) == 0x06) display = true;
++#endif
++  if (wh == module->activeWindow && !display) {
++    BitmapType *dbmp = module->displayWindow->bitmapP;
++    Coord dw, dh, dx, dy1, dy2, dy;
++    UInt16 drow;
++    if (dbmp && BmpGetBitDepth(dbmp) == 8) {
++      BmpGetDimensions(dbmp, &dw, &dh, &drow);
++      dx = wh->windowBounds.topLeft.x + x;
++      dy1 = wh->windowBounds.topLeft.y + cy1;
++      dy2 = wh->windowBounds.topLeft.y + cy2;
++      if (dy1 < 0) dy1 = 0;
++      if (dy2 >= dh) dy2 = dh - 1;
++      if (dx >= 0 && dx < dw && dy1 <= dy2) {
++        UInt8 *dbits = (UInt8 *)BmpGetBits(dbmp) + dx;
++        for (dy = dy1; dy <= dy2; dy++) bod_put8(dbits + dy * drow, 0, pat[(dy - wh->windowBounds.topLeft.y) & 7]);
++      }
++    }
++  }
++  if (wh == module->activeWindow || display) {
++    WinDirtyRegion(wh, x, cy1, x, cy2);
++  }
++
++  return true;
++}
++
+ static void draw_hline(win_module_t *module, Coord x1, Coord x2, Coord y, PatternType pattern) {
+   Coord x, aux;
+   UInt32 c, d;
+@@ -1012,6 +1153,8 @@ static void draw_hline(win_module_t *module, Coord x1, Coord x2, Coord y, Patter
+     x2 = aux;
+   }
+ 
++  if (hline_fast(module, x1, x2, y, pattern)) return;
++
+   for (x = x1; x <= x2; x++) {
+     c = getPattern(module, module->drawWindow, x, y, pattern);
+     d = getPattern(module, module->displayWindow, x, y, pattern);
+@@ -1029,6 +1172,8 @@ static void draw_vline(win_module_t *module, Coord x, Coord y1, Coord y2, Patter
+     y2 = aux;
+   }
+ 
++  if (vline_fast(module, x, y1, y2, pattern)) return;
++
+   for (y = y1; y <= y2; y++) {
+     c = getPattern(module, module->drawWindow, x, y, pattern);
+     d = getPattern(module, module->displayWindow, x, y, pattern);
+@@ -1215,7 +1360,123 @@ void WinInvertLine(Coord x1, Coord y1, Coord x2, Coord y2) {
+ 
+ // fill=true : draw filled retangle inside rP (including limits)
+ // fill=false: draw retangle border around rP (ouside limits)
++static void WinPaintRectangleF2(const RectangleType *rP, Int16 width, Int16 cornerDiam, Boolean fill, Boolean gray);
+ static void WinPaintRectangleF(const RectangleType *rP, Int16 width, Int16 cornerDiam, Boolean fill, Boolean gray) {
++#ifdef BOD_GBA
++  extern int64_t sys_get_clock(void);
++  win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
++  int64_t t0 = sys_get_clock();
++  UInt32 dt;
++  WinPaintRectangleF2(rP, width, cornerDiam, fill, gray);
++  dt = (UInt32)(sys_get_clock() - t0);
++  if (dt > 30000 && rP)
++    debug(DEBUG_INFO, "Window", "slow PaintRectangleF %u ms: %dx%d at %d,%d width %d corner %d fill %d gray %d pattern %d mode %d win %p clip %d,%d-%d,%d",
++          dt / 1000, rP->extent.x, rP->extent.y, rP->topLeft.x, rP->topLeft.y, width, cornerDiam, fill, gray, module->drawState.pattern, module->drawState.transferMode,
++          module->drawWindow, module->drawWindow ? module->drawWindow->clippingBounds.left : -1, module->drawWindow ? module->drawWindow->clippingBounds.top : -1,
++          module->drawWindow ? module->drawWindow->clippingBounds.right : -1, module->drawWindow ? module->drawWindow->clippingBounds.bottom : -1);
++}
++/* A filled rectangle on an 8-bit window in one go: the bitmap is decoded
++ * once, rows are set or copied, the screen is told once. */
++static Boolean rect_fast(win_module_t *module, const RectangleType *rP, PatternType pattern) {
++  WinHandle wh = module->drawWindow;
++  BitmapType *bmp;
++  UInt8 *bits, c = 0, pat[8][8], buf[256];
++  UInt16 rowBytes;
++  Coord w, h, x1, y1, x2, y2, x, y;
++  Boolean display, solid;
++  int k, n, m;
++
++  WinDrawOperation mode = module->drawState.transferMode;
++  UInt8 lut[256];
++
++  if (wh == NULL || module->displayWindow == NULL) return false;
++  if (mode == winErase) return true;   /* a pattern has no transparent pixels: nothing to write */
++  if (mode != winPaint && mode != winOverlay && mode != winMask && mode != winSwap && mode != winInvert && mode != winPaintInverse) return false;
++  if (module->drawState.coordinateSystem != kCoordinatesStandard) return false;
++  if (wh->density != kDensityLow || module->displayWindow->density != kDensityLow) return false;
++  bmp = WinGetBitmap(wh);
++  if (bmp == NULL || BmpGetBitDepth(bmp) != 8 || BmpGetCompressionType(bmp) != BitmapCompressionTypeNone) return false;
++  BmpGetDimensions(bmp, &w, &h, &rowBytes);
++  x1 = rP->topLeft.x; y1 = rP->topLeft.y; x2 = x1 + rP->extent.x - 1; y2 = y1 + rP->extent.y - 1;
++  if (x1 < wh->clippingBounds.left) x1 = wh->clippingBounds.left;
++  if (y1 < wh->clippingBounds.top) y1 = wh->clippingBounds.top;
++  if (x2 > wh->clippingBounds.right) x2 = wh->clippingBounds.right;
++  if (y2 > wh->clippingBounds.bottom) y2 = wh->clippingBounds.bottom;
++  if (x1 < 0) x1 = 0;
++  if (y1 < 0) y1 = 0;
++  if (x2 >= w) x2 = w - 1;
++  if (y2 >= h) y2 = h - 1;
++  if (x1 > x2 || y1 > y2) return true;
++
++  solid = pattern == blackPattern || pattern == whitePattern;
++  if (solid) c = (UInt8)getColor(module, 8, pattern == blackPattern ? module->swapColors : !module->swapColors);
++  else for (y = 0; y < 8; y++) for (k = 0; k < 8; k++) pat[y][k] = (UInt8)getPattern(module, wh, k, y, pattern);
++  bits = BmpGetBits(bmp);
++  if (mode == winMask) { solid = true; c = (UInt8)getColor(module, 8, true); }
++  if (mode == winPaintInverse) {
++    ColorTableType *ct = BmpGetColortable(bmp);
++    UInt8 r, g, b;
++    if (solid) { BmpIndexToRGB(c, &r, &g, &b, ct); c = BmpRGBToIndex(r ^ 0xff, g ^ 0xff, b ^ 0xff, ct); }
++    else for (y = 0; y < 8; y++) for (k = 0; k < 8; k++) { BmpIndexToRGB(pat[y][k], &r, &g, &b, ct); pat[y][k] = BmpRGBToIndex(r ^ 0xff, g ^ 0xff, b ^ 0xff, ct); }
++  }
++  if (mode == winSwap || mode == winInvert) {
++    /* both depend on what is there: a table from old to new index */
++    ColorTableType *ct = BmpGetColortable(bmp);
++    UInt8 fg = WinGetForeColor(), bg = WinGetBackColor(), r1, g1, b1, r2 = 0, g2 = 0, b2 = 0;
++    if (mode == winInvert && solid) BmpIndexToRGB(c, &r2, &g2, &b2, ct);
++    if (mode == winInvert && !solid) return false;   /* per-texel xor: leave it to the slow path */
++    for (k = 0; k < 256; k++) {
++      if (mode == winSwap) lut[k] = k == bg ? fg : k == fg ? bg : k;
++      else { BmpIndexToRGB((UInt8)k, &r1, &g1, &b1, ct); lut[k] = BmpRGBToIndex(r1 ^ r2, g1 ^ g2, b1 ^ b2, ct); }
++    }
++  }
++  for (y = y1; y <= y2; y++) {
++    UInt8 *row = bits + y * rowBytes;
++    if (mode == winSwap || mode == winInvert) {
++      for (x = x1, n = x2 - x1 + 1; n > 0; x += m, n -= m) {
++        m = n > (int)sizeof(buf) ? (int)sizeof(buf) : n;
++        for (k = 0; k < m; k++) buf[k] = lut[row[x + k]];
++        MemMove(row + x, buf, m);
++      }
++      continue;
++    }
++    if (solid) { MemSet(row + x1, x2 - x1 + 1, c); continue; }
++    for (x = x1, n = x2 - x1 + 1; n > 0; x += m, n -= m) {
++      m = n > (int)sizeof(buf) ? (int)sizeof(buf) : n;
++      for (k = 0; k < m; k++) buf[k] = pat[y & 7][(x + k) & 7];
++      MemMove(row + x, buf, m);
++    }
++  }
++
++  display = wh == module->displayWindow || wh->bitmapP == module->displayWindow->bitmapP;
++  if (((UInt32)bits >> 24) == 0x06) display = true;
++  if (wh == module->activeWindow && !display) {
++    BitmapType *dbmp = module->displayWindow->bitmapP;
++    Coord dw, dh, dx1, dx2, dy;
++    UInt16 drow;
++    if (dbmp && BmpGetBitDepth(dbmp) == 8) {
++      BmpGetDimensions(dbmp, &dw, &dh, &drow);
++      for (y = y1; y <= y2; y++) {
++        dy = wh->windowBounds.topLeft.y + y;
++        dx1 = wh->windowBounds.topLeft.x + x1;
++        dx2 = wh->windowBounds.topLeft.x + x2;
++        if (dx1 < 0) dx1 = 0;
++        if (dx2 >= dw) dx2 = dw - 1;
++        if (dy >= 0 && dy < dh && dx1 <= dx2)
++          MemMove((UInt8 *)BmpGetBits(dbmp) + dy * drow + dx1, bits + y * rowBytes + x1 + (dx1 - (wh->windowBounds.topLeft.x + x1)), dx2 - dx1 + 1);
++      }
++    }
++  }
++  if (wh == module->activeWindow || display) WinDirtyRegion(wh, x1, y1, x2, y2);
++  return true;
++}
++
++static void WinPaintRectangleF2(const RectangleType *rP, Int16 width, Int16 cornerDiam, Boolean fill, Boolean gray) {
++  if (fill && cornerDiam == 0 && !gray && rP) {
++    win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
++    if (rect_fast(module, rP, module->drawState.pattern)) return;
++  }
++#endif
+   Coord x1, y1, x2, y2, y, d, aux;
+   Int16 i;
+ 
+@@ -1724,6 +1985,135 @@ void WinCopyWindow(WinHandle src, WinHandle dst, RectangleType *srcRect, Coord d
+   }
+ }
+ 
++/* The blit the game and its dialogs actually do, done a row at a time: a 1,
++ * 8 or 16-bit bitmap onto an 8-bit low-density window in the four common
++ * transfer modes. The generic loop below reads the bitmap header back for
++ * every pixel, which is fine on a workstation and hopeless on a 16 MHz ARM7.
++ * Everything this does not cover still goes through that loop. */
++static UInt8 *rgb444_map;
++
++static UInt8 index_from_565(UInt16 c, ColorTableType *colorTable) {
++  UInt32 key = ((c >> 12) << 8) | (((c >> 7) & 0x0F) << 4) | ((c >> 1) & 0x0F);
++  if (rgb444_map == NULL) {
++    rgb444_map = pumpkin_heap_alloc(4096, "rgb444");
++    if (rgb444_map == NULL) return BmpRGBToIndex(r565(c), g565(c), b565(c), colorTable);
++    sys_memset(rgb444_map, 0xFF, 4096);
++  }
++  if (rgb444_map[key] == 0xFF) {
++    UInt8 r = (key >> 8) & 0x0F, g = (key >> 4) & 0x0F, b = key & 0x0F;
++    rgb444_map[key] = BmpRGBToIndex(r * 17, g * 17, b * 17, colorTable);
++  }
++  return rgb444_map[key];
++}
++
++static Boolean WinBlitBitmap8(win_module_t *module, BitmapType *bitmapP, WinHandle wh, RectangleType *srcRect, Coord wx, Coord wy,
++                              WinDrawOperation mode, Boolean text, UInt32 tc, UInt32 bc, Boolean blitDisplay, Coord x0, Coord y0) {
++  BitmapType *winBmp = WinGetBitmap(wh), *dispBmp = module->displayWindow->bitmapP;
++  ColorTableType *srcColorTable, *dstColorTable;
++  UInt8 *srcBits, *dstBits, *dispBits, map[256], *map8 = NULL;
++  UInt16 srcRow, dstRow, dispRow;
++  Coord sw, sh, dw, dh, dispW, dispH, i, j, sx, sy, dx, dy, cx1, cx2, cy1, cy2, minx, maxx, miny, maxy;
++  UInt32 tv = 0, depth, bg = 0;
++  Boolean transp, display, dirty;
++
++  if (mode != winPaint && mode != winOverlay && mode != winErase && mode != winMask && !(mode == winSwap && text)) return false;
++  depth = BmpGetBitDepth(bitmapP);
++  if (depth != 1 && depth != 8 && depth != 16) return false;
++  if (BmpGetCompressionType(bitmapP) != BitmapCompressionTypeNone) return false;
++  if (winBmp == NULL || dispBmp == NULL || BmpGetBitDepth(winBmp) != 8) return false;
++
++  dstColorTable = BmpGetColortable(winBmp);
++  if (dstColorTable && !CtbCompare(dstColorTable, WinGetColorTable(8))) return false;
++  dstColorTable = WinGetColorTable(8);
++
++  if (depth == 8) {
++    srcColorTable = BmpGetColortable(bitmapP);
++    if (srcColorTable && !CtbCompare(srcColorTable, dstColorTable)) {
++      RGBColorType rgb;
++      UInt16 n = CtbGetNumEntries(srcColorTable);
++      for (i = 0; i < 256; i++) {
++        if (i < n) { CtbGetEntry(srcColorTable, i, &rgb); map[i] = BmpRGBToIndex(rgb.r, rgb.g, rgb.b, dstColorTable); }
++        else map[i] = i;
++      }
++      map8 = map;
++    }
++  }
++
++  transp = BmpGetTransparentValue(bitmapP, &tv);
++  if (!transp && (mode == winMask || mode == winOverlay)) transp = true;
++  if (text && mode == winPaint) transp = false;
++  if (mode == winErase || mode == winMask) bg = WinGetBackColor();
++
++  srcBits = BmpGetBits(bitmapP);
++  dstBits = BmpGetBits(winBmp);
++  dispBits = BmpGetBits(dispBmp);
++  BmpGetDimensions(bitmapP, &sw, &sh, &srcRow);
++  BmpGetDimensions(winBmp, &dw, &dh, &dstRow);
++  BmpGetDimensions(dispBmp, &dispW, &dispH, &dispRow);
++  if (srcBits == NULL || dstBits == NULL) return false;
++
++  cx1 = wh->clippingBounds.left; cx2 = wh->clippingBounds.right;
++  cy1 = wh->clippingBounds.top;  cy2 = wh->clippingBounds.bottom;
++  if (cx1 < 0) cx1 = 0;
++  if (cy1 < 0) cy1 = 0;
++  if (cx2 >= dw) cx2 = dw - 1;
++  if (cy2 >= dh) cy2 = dh - 1;
++
++  display = wh == module->displayWindow || wh->bitmapP == dispBmp;
++#ifdef BOD_GBA
++  if (((UInt32)BmpGetBits(wh->bitmapP) >> 24) == 0x06) display = true;   /* drawn straight into VRAM */
++#endif
++  dirty = wh == module->activeWindow || display;
++  if (display) blitDisplay = false;
++  minx = miny = 0x7FFF; maxx = maxy = -1;
++
++  for (i = 0; i < srcRect->extent.y; i++) {
++    UInt8 *drow, *prow = NULL;
++    sy = srcRect->topLeft.y + i;
++    dy = wy + i;
++    if (sy < 0 || sy >= sh || dy < cy1 || dy > cy2) continue;
++    drow = dstBits + dy * dstRow;
++    if (blitDisplay && y0 + dy >= 0 && y0 + dy < dispH) prow = dispBits + (y0 + dy) * dispRow;
++    for (j = 0; j < srcRect->extent.x; j++) {
++      UInt32 sp, dp;
++      Boolean skip;
++      sx = srcRect->topLeft.x + j;
++      dx = wx + j;
++      if (sx < 0 || sx >= sw || dx < cx1 || dx > cx2) continue;
++      switch (depth) {
++        case 1:
++          sp = (srcBits[sy * srcRow + (sx >> 3)] >> (7 - (sx & 7))) & 1;
++          dp = sp ? tc : bc;
++          break;
++        case 8:
++          sp = srcBits[sy * srcRow + sx];
++          dp = map8 ? map8[sp] : sp;
++          break;
++        default:
++          sp = srcBits[sy * srcRow + sx * 2] | (srcBits[sy * srcRow + sx * 2 + 1] << 8);
++          if (!BmpGetLittleEndianBits(bitmapP)) sp = ((sp & 0xFF) << 8) | (sp >> 8);
++          dp = index_from_565((UInt16)sp, dstColorTable);
++          break;
++      }
++      skip = transp && sp == tv;
++      switch (mode) {
++        case winErase: if (!skip) continue; dp = bg; break;
++        case winMask:  if (skip) continue; dp = bg; break;
++        default:       if (skip) continue; break;
++      }
++      bod_put8(drow, dx, (UInt8)dp);
++      if (prow && x0 + dx >= 0 && x0 + dx < dispW) bod_put8(prow, x0 + dx, (UInt8)dp);
++      if (dx < minx) minx = dx;
++      if (dx > maxx) maxx = dx;
++      if (dy < miny) miny = dy;
++      if (dy > maxy) maxy = dy;
++    }
++  }
++
++  if (dirty && maxx >= minx && maxy >= miny) WinDirtyRegion(wh, minx, miny, maxx, maxy);
++  return true;
++}
++
+ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect, Coord x, Coord y, WinDrawOperation mode, Boolean text) {
+   win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
+   BitmapType *windowBitmap, *displayBitmap;
+@@ -1747,6 +2137,9 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
+     displayDensity = BmpGetDensity(displayBitmap);
+     displayEndianness = BmpGetLittleEndianBits(displayBitmap);
+     blitDisplay = wh == module->activeWindow && wh != module->displayWindow;
++#ifdef BOD_GBA
++    if (((UInt32)BmpGetBits(windowBitmap) >> 24) == 0x06) blitDisplay = false;   /* the window already is the screen */
++#endif
+ 
+     scaleBitmapOff = (module->drawState.scalingMode & kBitmapScalingOff) != 0;
+ 
+@@ -1754,8 +2147,24 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
+     delete = false;
+ 
+     if (compression != BitmapCompressionTypeNone) {
++#ifdef BOD_GBA
++      /* the engine draws sprites from one compressed sheet many times over: keep the last one decoded */
++      {
++        static BitmapType *bod_src, *bod_decoded;
++        if (bitmapP == bod_src && bod_decoded) {
++          bitmapP = bod_decoded;
++        } else {
++          if (bod_decoded) BmpDelete(bod_decoded);
++          bod_src = bitmapP;
++          bod_decoded = bitmapP = BmpDecompressBitmap(bitmapP);
++        }
++      }
++      if (0)
++#endif
+       bitmapP = BmpDecompressBitmap(bitmapP);
++#ifndef BOD_GBA
+       delete = true;
++#endif
+     }
+ 
+     bitmapDensity = BmpGetDensity(bitmapP);
+@@ -1836,6 +2245,24 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
+       return;
+     }
+ 
++    if (windowDepth == 8 && displayDepth == 8 && windowDensity == kDensityLow && displayDensity == kDensityLow &&
++        bitmapDensity == kDensityLow && module->drawState.coordinateSystem == kCoordinatesStandard) {
++      if (WinBlitBitmap8(module, bitmapP, wh, &srcRect, wx, wy, mode, text,
++                         text ? module->drawState.textColor : module->drawState.foreColor, module->drawState.backColor,
++                         blitDisplay, x0, y0)) {
++        if (delete) BmpDelete(bitmapP);
++        return;
++      }
++    }
++
++#ifdef BOD_GBA
++    {
++      static int n;
++      if ((++n & 255) == 1)
++        debug(DEBUG_INFO, "Window", "slow blit #%d: %dx%d depth %d density %d compression %d -> window depth %d density %d coord %d text %d mode %d",
++              n, srcRect.extent.x, srcRect.extent.y, bitmapDepth, bitmapDensity, compression, windowDepth, windowDensity, module->drawState.coordinateSystem, text, mode);
++    }
++#endif
+     x1 = wh->clippingBounds.left;
+     x2 = wh->clippingBounds.right;
+     y1 = wh->clippingBounds.top;
+@@ -1964,6 +2391,22 @@ void WinConvertToDisplay(WinHandle wh, Coord *x, Coord *y) {
+ }
+ 
+ void WinCopyRectangle(WinHandle srcWin, WinHandle dstWin, const RectangleType *srcRect, Coord dstX, Coord dstY, WinDrawOperation mode) {
++#ifdef BOD_GBA
++  /* The engine writes the colours it allocates for a level straight into its
++   * render window's colour table; the screen's palette has to follow when
++   * that window is copied to the screen. */
++  {
++    extern void bod_palette_follow(ColorTableType *ct);
++    extern Boolean bod_menu_visible(void);
++    win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
++    WinHandle d = dstWin ? dstWin : module->displayWindow;
++    if (bod_menu_visible() && d && ((UInt32)BmpGetBits(WinGetBitmap(d)) >> 24) == 0x06) return;   /* the frame would wipe the menu */
++    if (srcWin && d && ((UInt32)BmpGetBits(WinGetBitmap(d)) >> 24) == 0x06) {
++      ColorTableType *ct = BmpGetColortable(WinGetBitmap(srcWin));
++      if (ct) bod_palette_follow(ct);
++    }
++  }
++#endif
+   win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
+   char sbuf[64], dbuf[64];
+ 
+@@ -3075,6 +3518,10 @@ Err WinPalette(UInt8 operation, Int16 startIndex, UInt16 paletteEntries, RGBColo
+   if (wh) {
+     debug(DEBUG_TRACE, "Window", "WinPalette drawWindow %s", WinGetDescr(wh, buf, sizeof(buf)));
+     colorTable = BmpGetColortable(WinGetBitmap(wh));
++#ifdef BOD_GBA
++    /* windows drawing straight into VRAM carry no colour table: the screen's is the one that counts */
++    if (colorTable == NULL && module->displayWindow) colorTable = BmpGetColortable(WinGetBitmap(module->displayWindow));
++#endif
+     if (colorTable == NULL) {
+       debug(DEBUG_ERROR, "Window", "WinPalette drawWindow colorTable is NULL");
+       return winErrPalette;
+@@ -3131,6 +3578,9 @@ Err WinPalette(UInt8 operation, Int16 startIndex, UInt16 paletteEntries, RGBColo
+             //broadcastDisplayChange(module->depth, module->depth);
+             pumpkin_dirty_region_mode(dirtyRegionReset);
+             WinDirtyRegion(module->displayWindow, 0, 0, module->width-1, module->height-1);
++#ifdef BOD_GBA
++            { extern void bod_palette_changed(ColorTableType *ct); bod_palette_changed(colorTable); }
++#endif
+ 
+             // XXX weird, but if you call WinPalette() on displayWindow, it seems that the activeWindow is also affected.
+             // If we don't adjust the palette of the activeWindow, the eReader app will whow a pink background on startup.
 diff --git a/src/libpumpkin/emulation/KeySysTrap.c b/src/libpumpkin/emulation/KeySysTrap.c
 index c84d362..e978d0d 100644
 --- a/src/libpumpkin/emulation/KeySysTrap.c
@@ -3089,6 +4181,58 @@ index c84d362..e978d0d 100644
      }
      break;
      case sysTrapKeyRates: {
+diff --git a/src/libpumpkin/emulation/MemSysTrap.c b/src/libpumpkin/emulation/MemSysTrap.c
+index 9d70b82..c6139f6 100644
+--- a/src/libpumpkin/emulation/MemSysTrap.c
++++ b/src/libpumpkin/emulation/MemSysTrap.c
+@@ -1,3 +1,4 @@
++#include <stdlib.h>
+ #include <PalmOS.h>
+ #include <VFSMgr.h>
+ #include <DLServer.h>
+@@ -41,6 +42,7 @@ void palmos_MemSysTrap(uint32_t sp, uint16_t idx, uint32_t trap) {
+       } else {
+         if (emupalmos_check_address(dstP, numBytes, 0)) {
+           err = MemSet(emupalmos_trap_in(dstP, trap, 0), numBytes, value);
++          { void mw_move(uint32_t, uint32_t, int); mw_move(dstP, numBytes, 1); }
+         } else {
+           err = dmErrInvalidParam;
+         }
+@@ -72,6 +74,7 @@ void palmos_MemSysTrap(uint32_t sp, uint16_t idx, uint32_t trap) {
+       } else {
+         if (emupalmos_check_address(dstP, numBytes, 0) && emupalmos_check_address(sP, numBytes, 1)) {
+           err = MemMove(emupalmos_trap_in(dstP, trap, 0), emupalmos_trap_in(sP, trap, 1), numBytes);
++          { void mw_move(uint32_t, uint32_t, int); mw_move(dstP, numBytes, 1); }
+         } else {
+           err = dmErrInvalidParam;
+         }
+@@ -187,6 +190,7 @@ void palmos_MemSysTrap(uint32_t sp, uint16_t idx, uint32_t trap) {
+       uint32_t maxP = ARG32;
+       UInt32 l_maxP = 0;
+       Err res = MemHeapFreeBytes(heapID, freeP ? &l_freeP : NULL, maxP ? &l_maxP : NULL);
++      { const char *ff = getenv("BOD_FAKE_FREE"); if (ff) { l_freeP = atoi(ff); l_maxP = l_freeP * 3 / 4; } }
+       if (freeP) m68k_write_memory_32(freeP, l_freeP);
+       if (maxP) m68k_write_memory_32(maxP, l_maxP);
+       m68k_set_reg(M68K_REG_D0, res);
+diff --git a/src/libpumpkin/emulation/WinSysTrap.c b/src/libpumpkin/emulation/WinSysTrap.c
+index 6ba1466..9bfb457 100644
+--- a/src/libpumpkin/emulation/WinSysTrap.c
++++ b/src/libpumpkin/emulation/WinSysTrap.c
+@@ -133,6 +133,14 @@ void palmos_WinSysTrap(uint32_t sp, uint16_t idx, uint32_t trap) {
+       emupalmos_trap_in(errorP, trap, 3);
+       UInt16 error = 0;
+       WinHandle wh = WinCreateOffscreenWindow(width, height, format, errorP ? &error : NULL);
++      if (wh) {
++        /* memwatch: how the ARM renderer writes its frame */
++        extern void mw_alloc_tag(uint32_t a, uint32_t size, const char *tag);
++        BitmapType *bmp = WinGetBitmap(wh);
++        Coord bw, bh; UInt16 rb;
++        BmpGetDimensions(bmp, &bw, &bh, &rb);
++        mw_alloc_tag((uint32_t)((uint8_t *)BmpGetBits(bmp) - (uint8_t *)pumpkin_heap_base()), rb * bh, "window");
++      }
+       if (errorP) m68k_write_memory_16(errorP, error);
+       uint32_t w = emupalmos_trap_out(wh);
+       debug(DEBUG_TRACE, "EmuPalmOS", "WinCreateOffscreenWindow(%d, %d, %d, 0x%08X [%d]): 0x%08X", width, height, format, errorP, error, w);
 diff --git a/src/libpumpkin/emulation/arm/armemu.c b/src/libpumpkin/emulation/arm/armemu.c
 index 2f178be..a220624 100644
 --- a/src/libpumpkin/emulation/arm/armemu.c
@@ -3130,10 +4274,15 @@ index 2f178be..a220624 100644
      }
    }
 diff --git a/src/libpumpkin/emulation/armsyscall.c b/src/libpumpkin/emulation/armsyscall.c
-index a39ed7a..04926dc 100644
+index a39ed7a..127fa47 100644
 --- a/src/libpumpkin/emulation/armsyscall.c
 +++ b/src/libpumpkin/emulation/armsyscall.c
-@@ -41,6 +41,10 @@ typedef struct {
+@@ -1,3 +1,4 @@
++#include <stdlib.h>
+ #include <PalmOS.h>
+ #include <VFSMgr.h>
+ #include <DLServer.h>
+@@ -41,6 +42,16 @@ typedef struct {
    UInt16 reserved;
  } SysModuleDescriptorType;
  
@@ -3141,10 +4290,103 @@ index a39ed7a..04926dc 100644
 + * two runs diverge, so freeze it while diffing. */
 +int rarm_deterministic_time;
 +
++/* Memory-write profiling of ARM-allocated chunks (BOD_MEMWATCH=1). */
++void mw_alloc(uint32_t a, uint32_t size);
++void mw_free(uint32_t a);
++void mw_move(uint32_t a, uint32_t n, int host);
++void mw_note_lock(MemHandle h, uint32_t ptr);
++
  uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3, uint32_t sp) {
    uint8_t *ram = pumpkin_heap_base();
    char st[8], st2[8];
-@@ -634,13 +638,13 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+@@ -243,6 +254,15 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+             put4l(value, ram, r2);
+           }
+           break;
++        case 0x434: {
++          // Err FtrGet(UInt32 creator, UInt16 featureNum, UInt32 *valueP)
++          UInt32 value = 0;
++          err = FtrGet(r0, r1, &value);
++          if (r2) put4l(value, ram, r2);
++          debug(DEBUG_TRACE, "ARM", "arm syscall FtrGet(0x%08X, %d): 0x%08X, %d", r0, r1, value, err);
++          r0 = err;
++          }
++          break;
+         case 0x43C:
+           // Err FtrSet(UInt32 creator, UInt16 featureNum, UInt32 newValue)
+           pumpkin_id2s(r0, st);
+@@ -260,6 +280,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+         case 0x4B8: {
+           // Err MemChunkFree(MemPtr chunkDataP)
+           void *p = r0 ? ram + r0 : NULL;
++          mw_free(r0);
+           err = MemChunkFree(p);
+           debug(DEBUG_TRACE, "ARM", "arm syscall MemChunkFree(0x%04X): %d", r0, err);
+           r0 = err;
+@@ -269,6 +290,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+           // MemPtr MemChunkNew(UInt16 heapID, UInt32 size, UInt16 attr)
+           MemPtr p = MemChunkNew(r0, r1, r2);
+           r = p ? (uint8_t *)p - ram : 0;
++          mw_alloc(r, r1);
+           debug(DEBUG_TRACE, "ARM", "arm syscall MemChunkNew(%u, %u, 0x%04X): 0x%08X", r0, r1, r2, r);
+           r0 = r;
+           break;
+@@ -284,6 +306,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+           MemHandle h = r0 ? (MemHandle)(ram + r0) : NULL;
+           uint8_t *p = MemHandleLock(h);
+           r = p ? p - ram : 0;
++          mw_note_lock(h, r);
+           debug(DEBUG_TRACE, "ARM", "arm syscall MemHandleLock(0x%08X): 0x%08X", r0, r);
+           r0 = r;
+           }
+@@ -305,6 +328,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+           UInt32 *freeP = r1 ? (UInt32 *)(ram + r1) : NULL;
+           UInt32 *maxP = r2 ? (UInt32 *)(ram + r2) : NULL;
+           err = MemHeapFreeBytes(r0, freeP, maxP);
++          { const char *ff = getenv("BOD_FAKE_FREE"); if (ff) { if (freeP) *freeP = atoi(ff); if (maxP) *maxP = atoi(ff) * 3 / 4; } }
+           debug(DEBUG_TRACE, "ARM", "arm syscall MemHeapFreeBytes(%u, 0x%08X, 0x%08X): %d", r0, r1, r2, err);
+           r0 = err;
+           }
+@@ -314,6 +338,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+           void *dstP = r0 ? ram + r0 : NULL;
+           void *sP = r1 ? ram + r1 : NULL;
+           err = MemMove(dstP, sP, r2);
++          mw_move(r0, r2, 0);
+           debug(DEBUG_TRACE, "ARM", "arm syscall MemMove(0x%08X, 0x%08X, %d): %d", r0, r1, r2, err);
+           r0 = err;
+           }
+@@ -331,6 +356,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+           void *p = MemPtrNew(r0);
+           r = p ? (uint8_t *)p - ram : 0;
+           debug(DEBUG_TRACE, "ARM", "arm syscall MemPtrNew(%u): 0x%08X", r0, r);
++          mw_alloc(r, r0);
+           r0 = r;
+           }
+           break;
+@@ -343,6 +369,14 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+           r0 = r;
+           }
+           break;
++        case 0x59C: {
++          // UInt32 MemPtrSize(MemPtr p)
++          void *p = r0 ? ram + r0 : NULL;
++          r = MemPtrSize(p);
++          debug(DEBUG_TRACE, "ARM", "arm syscall MemPtrSize(0x%08X): %u", r0, r);
++          r0 = r;
++          }
++          break;
+         case 0x5A4: {
+           // Err MemPtrUnlock(MemPtr p)
+           void *p = r0 ? ram + r0 : NULL;
+@@ -355,6 +389,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+           // Err MemSet(void *dstP, Int32 numBytes, UInt8 value)
+           void *dstP = r0 ? ram + r0 : NULL;
+           err = MemSet(dstP, r1, r2);
++          mw_move(r0, r1, 0);
+           debug(DEBUG_TRACE, "ARM", "arm syscall MemSet(0x%08X, %d, %u): %d", r0, r1, r2, err);
+           r0 = err;
+           }
+@@ -634,13 +669,13 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
            break;
          case 0x924:
            // UInt32 TimGetSeconds(void)
@@ -3160,8 +4402,31 @@ index a39ed7a..04926dc 100644
            debug(DEBUG_TRACE, "ARM", "arm syscall TimGetTicks(): %u", r0);
            break;
          case 0xAF8: {
+@@ -730,6 +765,7 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+           ColorTableType *colorTableP = r3 ? (ColorTableType *)(ram + r3) : NULL;
+           BitmapTypeV3 *bmp1 = BmpCreateBitmapV3(bmp, r1, bitsP, colorTableP);
+           r = bmp1 ? (uint8_t *)bmp1 - ram : 0;
++          mw_move(r2, 1, 2);   /* bits handed to the host drawing code */
+           debug(DEBUG_TRACE, "ARM", "arm syscall BmpCreateBitmapV3(0x%08X, %u, 0x%08X, 0x%08X): 0x%08X", r0, r1, r2, r3, r);
+           r0 = r;
+           }
+@@ -784,7 +820,14 @@ uint32_t emupalmos_arm_syscall(uint32_t group, uint32_t function, uint32_t r0, u
+           }
+           break;
+         default:
++#ifdef BOD_GBA
++          /* The desktop build answers these with 0 too, and the game is happy. */
++          if (function != 0xB78 && function != 0xBEC && function != 0xC70 && function != 0xC80 && function != 0xC98 && function != 0x15C) {
++            extern uint32_t arm_syscall_lr; debug(DEBUG_ERROR, "ARM", "unmapped arm syscall 0x%04X in BOOT (r0=0x%08X r1=0x%08X r2=0x%08X r3=0x%08X lr=0x%08X)", function, r0, r1, r2, r3, arm_syscall_lr);
++          }
++#else
+           debug(DEBUG_ERROR, "ARM", "unmapped arm syscall 0x%04X in BOOT", function);
++#endif
+           break;
+       }
+       break;
 diff --git a/src/libpumpkin/emulation/emupalmos.c b/src/libpumpkin/emulation/emupalmos.c
-index 3a41fc5..1218aba 100644
+index 3a41fc5..7998b7c 100644
 --- a/src/libpumpkin/emulation/emupalmos.c
 +++ b/src/libpumpkin/emulation/emupalmos.c
 @@ -28,6 +28,11 @@
@@ -3279,7 +4544,7 @@ index 3a41fc5..1218aba 100644
          }
          logtrap_deinstall(state);
        }
-@@ -2414,6 +2467,629 @@ uint32_t emupalmos_main(uint16_t launchCode, void *param, uint16_t flags) {
+@@ -2414,6 +2467,823 @@ uint32_t emupalmos_main(uint16_t launchCode, void *param, uint16_t flags) {
    return r;
  }
  
@@ -3442,6 +4707,198 @@ index 3a41fc5..1218aba 100644
 +  debug(DEBUG_INFO, "EmuPalmOS", "recomp: starting at 0x%08X a5=0x%08X a7=0x%08X", pc, a5, a7);
 +  r68k_run(&S);
 +  debug(DEBUG_INFO, "EmuPalmOS", "recomp: finished at 0x%08X", S.pc);
++}
++
++/* ------------------------------------------------------------- memwatch
++ * BOD_MEMWATCH=1: profile which of the chunks the ARM code allocates are
++ * written, and when, relative to the PceNativeCall count ("frames"). Written
++ * for the GBA port, which has to know what can live in ROM: a chunk that is
++ * filled once from a resource and never touched again can be precomputed.
++ */
++int rarm_memwatch_on = -1;
++typedef struct {
++  uint32_t start, size, alloc_frame, first_w, last_w, nwrites, wbytes;
++  uint32_t nmoves, first_m, last_m, nhost, first_h, last_h;
++  int live, bmp, dumped;
++  uint32_t res_type, res_id, seq, lr2;
++  const char *tag;
++} mw_chunk;
++
++/* Resources the ARM code has locked, so an allocation can be tied to the
++ * resource a register points into (the texture being decoded, say). */
++typedef struct { uint32_t ptr, size, type, id; } mw_res;
++static mw_res mw_resources[128];
++static int mw_nres;
++rarm_state *mw_regs;
++static uint32_t mw_seq;
++
++void mw_note_lock(MemHandle h, uint32_t ptr) {
++  DmResType type = 0; DmResID id = 0;
++  int i;
++  if (!h || !ptr) return;
++  if (DmResourceType(h, &type, &id) != errNone || !type) return;
++  for (i = 0; i < mw_nres; i++) if (mw_resources[i].ptr == ptr) return;
++  if (mw_nres < 128) { mw_resources[mw_nres].ptr = ptr; mw_resources[mw_nres].size = MemHandleSize(h); mw_resources[mw_nres].type = type; mw_resources[mw_nres].id = id; mw_nres++; }
++}
++
++static mw_res *mw_res_of(uint32_t p) {
++  int i;
++  for (i = 0; i < mw_nres; i++) if (p >= mw_resources[i].ptr && p < mw_resources[i].ptr + mw_resources[i].size) return &mw_resources[i];
++  return NULL;
++}
++#define MW_MAX 512
++static mw_chunk mw[MW_MAX];
++static int mw_n;
++static uint32_t mw_frame;
++static uint32_t mw_pages[4096];   /* 1 bit per 4 KB page of the heap, 512 MB */
++
++static int mw_enabled(void) {
++  if (rarm_memwatch_on < 0) {
++    char *e = sys_getenv("BOD_MEMWATCH");
++    rarm_memwatch_on = (e && e[0] && e[0] != '0') ? 1 : 0;
++  }
++  return rarm_memwatch_on;
++}
++static void mw_report_chunk(mw_chunk *c, const char *why) {
++  char st[8];
++  pumpkin_id2s(c->res_type, st);
++  debug(DEBUG_ERROR, "MW", "%-5s 0x%08X size %6u alloc@%-5u arm-writes %8u (%u bytes) [%u..%u] moves %5u [%u..%u] host %u [%u..%u]%s res %s %u seq %u %s now %u",
++        why, c->start, c->size, c->alloc_frame, c->nwrites, c->wbytes, c->first_w, c->last_w,
++        c->nmoves, c->first_m, c->last_m, c->nhost, c->first_h, c->last_h, c->bmp ? " BMP" : "",
++        c->res_type ? st : "-", c->res_id, c->seq, c->tag ? c->tag : "", mw_frame);
++}
++
++/* Write a chunk that has settled to /tmp/bod_dump, named by what it is. */
++static void mw_dump_chunk(mw_chunk *c) {
++  char path[256], st[8];
++  uint8_t *ram = pumpkin_heap_base();
++  int fd;
++  pumpkin_id2s(c->res_type, st);
++  sys_snprintf(path, sizeof(path)-1, "/tmp/bod_dump/%u_%s_%u_seq%u.bin", c->size, c->res_type ? st : "none", c->res_id, c->seq);
++  if ((fd = sys_create(path, SYS_WRITE | SYS_TRUNC, 0644)) >= 0) {
++    sys_write(fd, ram + c->start, c->size);
++    sys_close(fd);
++    c->dumped = 1;
++    debug(DEBUG_ERROR, "MW", "dumped %s", path);
++  }
++}
++static void mw_pages_set(uint32_t a, uint32_t size) {
++  uint32_t p;
++  for (p = a >> 12; p <= (a + size - 1) >> 12; p++) if (p < 4096*32) mw_pages[p >> 5] |= 1u << (p & 31);
++}
++static mw_chunk *mw_find(uint32_t a) {
++  int i;
++  uint32_t p = a >> 12;
++  if (p >= 4096*32 || !(mw_pages[p >> 5] & (1u << (p & 31)))) return NULL;
++  for (i = 0; i < mw_n; i++)
++    if (mw[i].live && a >= mw[i].start && a < mw[i].start + mw[i].size) return &mw[i];
++  return NULL;
++}
++void mw_alloc_tag(uint32_t a, uint32_t size, const char *tag) {
++  int i, r;
++  mw_res *res = NULL;
++  char st[8];
++  if (!mw_enabled() || !a || size < 1024) return;
++  for (i = 0; i < mw_n; i++) if (!mw[i].live) break;
++  if (i == MW_MAX) return;
++  if (i == mw_n) mw_n++;
++  sys_memset(&mw[i], 0, sizeof(mw_chunk));
++  mw[i].start = a; mw[i].size = size; mw[i].alloc_frame = mw_frame; mw[i].live = 1; mw[i].seq = ++mw_seq; mw[i].tag = tag;
++  mw_pages_set(a, size);
++  if (mw_regs) {
++    uint8_t *ram = pumpkin_heap_base();
++    char matches[256];
++    int n = 0;
++    matches[0] = 0;
++    for (r = 0; r < 13; r++) {
++      mw_res *m = mw_res_of(mw_regs->r[r]);
++      if (m) { char t[8]; pumpkin_id2s(m->type, t); n += sys_snprintf(matches + n, sizeof(matches) - 1 - n, " r%d=%s:%u", r, t, m->id); if (!res) res = m; }
++    }
++    for (r = 0; r < 24; r++) {
++      uint32_t v; mw_res *m;
++      get4l(&v, ram, mw_regs->r[13] + r * 4);
++      if ((m = mw_res_of(v)) != NULL) { char t[8]; pumpkin_id2s(m->type, t); n += sys_snprintf(matches + n, sizeof(matches) - 1 - n, " sp%d=%s:%u", r, t, m->id); if (!res) res = m; }
++    }
++    if (res) { mw[i].res_type = res->type; mw[i].res_id = res->id; }
++    pumpkin_id2s(mw[i].res_type, st);
++    {
++      uint32_t lr2 = 0, fp = mw_regs->r[11];
++      if (fp > 8 && fp < pumpkin_heap_size()) get4l(&lr2, ram, fp - 4);
++      mw[i].lr2 = lr2;
++      debug(DEBUG_ERROR, "MW", "alloc 0x%08X size %6u @%u seq %u lr 0x%08X lr2 0x%08X r0-3 %08X %08X %08X %08X%s %s", a, size, mw_frame, mw[i].seq, mw_regs->r[14], lr2,
++            mw_regs->r[0], mw_regs->r[1], mw_regs->r[2], mw_regs->r[3], matches, tag ? tag : "");
++      if (size >= 8192 && mw_regs->r[1] > 0x1000 && mw_regs->r[1] < pumpkin_heap_size() - 64) {
++        char hex[200]; int k;
++        for (k = 0; k < 64; k++) sys_snprintf(hex + k * 3, 4, "%02X ", ram[mw_regs->r[1] + k]);
++        debug(DEBUG_ERROR, "MW", "  r1 -> %s", hex);
++      }
++    }
++    return;
++  }
++  pumpkin_id2s(mw[i].res_type, st);
++  debug(DEBUG_ERROR, "MW", "alloc 0x%08X size %6u @%u seq %u res %s %u %s", a, size, mw_frame, mw[i].seq, mw[i].res_type ? st : "-", mw[i].res_id, tag ? tag : "");
++}
++void mw_alloc(uint32_t a, uint32_t size) { mw_alloc_tag(a, size, NULL); }
++void mw_free(uint32_t a) {
++  mw_chunk *c;
++  if (!mw_enabled()) return;
++  if ((c = mw_find(a)) != NULL && c->start == a) { mw_report_chunk(c, "free"); c->live = 0; }
++}
++void rarm_memwatch(uint32_t a, uint32_t n) {
++  mw_chunk *c = mw_find(a);
++  if (c) { if (!c->nwrites) c->first_w = mw_frame; c->last_w = mw_frame; c->nwrites++; c->wbytes += n; }
++}
++
++/* Which instructions read the big buffers: a histogram of program counters
++ * per buffer size class, printed with the periodic report. */
++typedef struct { uint32_t pc, size, lr2; uint32_t count[8]; } mw_rd;
++#define MW_RD 512
++static mw_rd mw_reads[MW_RD];
++static int mw_nreads;
++static const uint32_t mw_rd_sizes[8] = { 65536, 21849, 183714, 39240, 16384, 5465, 4096, 1369 };
++static uint32_t mw_rd_calls, mw_rd_hits;
++void rarm_memwatch_read(uint32_t a, uint32_t n) {
++  mw_chunk *c = mw_find(a);
++  int i, k;
++  (void)n;
++  mw_rd_calls++;
++  if (!c) return;
++  mw_rd_hits++;
++  for (k = 0; k < 8; k++) if (c->size == mw_rd_sizes[k]) break;
++  if (k == 8) return;
++  for (i = 0; i < mw_nreads; i++) if (mw_reads[i].pc == rarm_cur_pc && mw_reads[i].lr2 == c->lr2) { mw_reads[i].count[k]++; return; }
++  if (mw_nreads < MW_RD) { mw_reads[mw_nreads].pc = rarm_cur_pc; mw_reads[mw_nreads].lr2 = c->lr2; mw_reads[mw_nreads].count[k] = 1; mw_nreads++; }
++}
++static void mw_report_reads(void) {
++  int i;
++  debug(DEBUG_ERROR, "MW", "read hook: %u calls, %u in watched chunks, %u sites", mw_rd_calls, mw_rd_hits, mw_nreads);
++  for (i = 0; i < mw_nreads; i++)
++    debug(DEBUG_ERROR, "MW", "reads pc 0x%08X alloc-lr2 0x%08X: tex %u mip %u edge %u edge2 %u s16k %u s5465 %u s4096 %u s1369 %u", mw_reads[i].pc, mw_reads[i].lr2, mw_reads[i].count[0], mw_reads[i].count[1], mw_reads[i].count[2], mw_reads[i].count[3], mw_reads[i].count[4], mw_reads[i].count[5], mw_reads[i].count[6], mw_reads[i].count[7]);
++}
++/* host: 0 = ARM MemMove/MemSet syscall, 1 = 68k MemMove/MemSet trap, 2 = bits of a bitmap window */
++void mw_move(uint32_t a, uint32_t n, int host) {
++  mw_chunk *c;
++  if (!mw_enabled() || !a) return;
++  c = mw_find(a);
++  if (!c && n > 1) c = mw_find(a + n - 1);
++  if (!c) return;
++  if (host == 2) { c->bmp = 1; return; }
++  if (host == 1) { if (!c->nhost) c->first_h = mw_frame; c->last_h = mw_frame; c->nhost++; return; }
++  if (!c->nmoves) c->first_m = mw_frame; c->last_m = mw_frame; c->nmoves++;
++}
++void mw_frame_tick(void) {
++  int i;
++  if (!mw_enabled()) return;
++  mw_frame++;
++  if ((mw_frame % 500) == 0) {
++    debug(DEBUG_ERROR, "MW", "---- report at frame %u", mw_frame);
++    mw_report_reads();
++    for (i = 0; i < mw_n; i++) if (mw[i].live) {
++      mw_report_chunk(&mw[i], "live");
++      if (!mw[i].dumped && mw[i].size >= 1024 && (mw[i].nwrites || mw[i].nmoves) &&
++          mw_frame - mw[i].last_w > 300 && mw_frame - mw[i].last_m > 300 && mw_frame - mw[i].alloc_frame > 300) mw_dump_chunk(&mw[i]);
++    }
++  }
 +}
 +
 +/* ------------------------------------------------------------- rarm glue
@@ -3713,6 +5170,7 @@ index 3a41fc5..1218aba 100644
 +}
 +
 +int rarm_escape(rarm_state *S, uint32_t target) {
++  mw_regs = S;
 +  if (target >= 0x04000000) {
 +    /* PACE syscall: the address encodes the group and function number. */
 +    uint32_t group = (target & 0x00F00000) >> 20;
@@ -3833,6 +5291,7 @@ index 3a41fc5..1218aba 100644
 +  S.r[1]  = userData;
 +  S.r[2]  = rarm_call_addr;
 +
++  mw_frame_tick();
 +  rarm_run(&S);
 +  return S.r[0];
 +}
