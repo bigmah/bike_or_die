@@ -273,10 +273,10 @@ index d9caea2..b0424e8 100644
  C99=-std=c99
  endif
 diff --git a/src/emscripten/Makefile b/src/emscripten/Makefile
-index 4114db6..02a2f83 100644
+index 4114db6..1226c38 100644
 --- a/src/emscripten/Makefile
 +++ b/src/emscripten/Makefile
-@@ -4,16 +4,63 @@ include ../common.mak
+@@ -4,16 +4,72 @@ include ../common.mak
  
  PROGRAM=pumpkin
  
@@ -318,7 +318,16 @@ index 4114db6..02a2f83 100644
 +# writable half from. WasmFS keeps the filesystem inside the wasm module, so a thread
 +# opening a file does not have to go through the browser's main thread, and it
 +# is what provides the OPFS backend the writable half is kept in.
-+PRELOAD=--preload-file vfs@/boot --preload-file $(PUMPKINOS)/vfs@/pristine
++# /pristine is named a tree at a time rather than wholesale. PumpkinOS's vfs
++# also holds app_install, the inbox a native `make install` drops its .prc
++# files into, and packaging the directory whole meant the game shipped with
++# whatever a native build had last left there -- 1.5 MB of stock Palm
++# applications that main.c never reads, since it fills /vfs from these two and
++# app_registry alone. What is in the download should not depend on which build
++# ran last.
++PRELOAD=--preload-file vfs@/boot \
++  --preload-file $(PUMPKINOS)/vfs/app_storage@/pristine/app_storage \
++  --preload-file $(PUMPKINOS)/vfs/app_card@/pristine/app_card
 +
  $(PROGRAM).zip: $(PROGRAM).html coi-serviceworker.js
  	zip $(PROGRAM).zip $(PROGRAM).wasm $(PROGRAM).data $(PROGRAM).html $(PROGRAM).js coi-serviceworker.js
@@ -344,10 +353,10 @@ index 4114db6..02a2f83 100644
  	rm -f $(OBJS) $(PROGRAM).zip $(PROGRAM).wasm $(PROGRAM).data $(PROGRAM).html $(PROGRAM).js
 diff --git a/src/emscripten/bod-pre.js b/src/emscripten/bod-pre.js
 new file mode 100644
-index 0000000..7be454e
+index 0000000..6e61bb7
 --- /dev/null
 +++ b/src/emscripten/bod-pre.js
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,102 @@
 +// Browser-side setup for the Bike or Die 2 WebAssembly build: the environment
 +// that tools/make_app.sh exports around the native one, and the page's half of
 +// the saved data.
@@ -401,6 +410,55 @@ index 0000000..7be454e
 +  }
 +  window.location.reload();
 +}
++
++// ---------------------------------------------------------------- pausing --
++//
++// There is nothing on the main thread to pause: -sPROXY_TO_PTHREAD puts main()
++// on a worker, so the game's loop is that worker's and Module.pauseMainLoop
++// would stop a loop that is not the game's. Ask the workers instead and let
++// whichever of them owns a main loop stop its own; the rest have none and do
++// nothing.
++//
++// MainLoop.pause() is not quite what is wanted either. It also drops the
++// keepalive reference the loop holds, which is what lets a loop that is really
++// finished exit the runtime -- and a paused game is not a finished one. So the
++// count is left where it is, and the matching push that MainLoop.resume() does
++// when it rebuilds the scheduler is popped back off instead.
++//
++// The message deliberately carries no `cmd`: the generated worker handler
++// complains about a cmd it does not recognise, and says nothing at all about a
++// message without one.
++
++if (typeof ENVIRONMENT_IS_PTHREAD !== 'undefined' && ENVIRONMENT_IS_PTHREAD) {
++  self.addEventListener('message', function (e) {
++    var what = e.data && e.data.bod;
++    if (what === 'pause') {
++      if (MainLoop.func && MainLoop.scheduler) {
++        MainLoop.scheduler = null;
++        // Signals the loop already in flight that it has become old and must return.
++        MainLoop.currentlyRunningMainloop++;
++        self.bodMainLoopPaused = true;
++      }
++    } else if (what === 'resume') {
++      // A short-lived helper loop can finish while it is paused; only restart
++      // one that is still alive. The game's own outlives the pause.
++      if (self.bodMainLoopPaused && MainLoop.func) {
++        MainLoop.resume();
++        runtimeKeepalivePop();
++      }
++      self.bodMainLoopPaused = false;
++    }
++  });
++}
++
++function bodTellThreads(what) {
++  Object.values(PThread.pthreads).forEach(function (worker) {
++    worker.postMessage({ bod: what });
++  });
++}
++
++Module['pauseBikeOrDie'] = function () { bodTellThreads('pause'); };
++Module['resumeBikeOrDie'] = function () { bodTellThreads('resume'); };
 diff --git a/src/emscripten/main.c b/src/emscripten/main.c
 index ea74bb2..6fe5735 100644
 --- a/src/emscripten/main.c
@@ -714,10 +772,10 @@ index ea74bb2..6fe5735 100644
    return 0;
  }
 diff --git a/src/emscripten/template.html b/src/emscripten/template.html
-index 216dea4..a05c90a 100644
+index 216dea4..7c5e08f 100644
 --- a/src/emscripten/template.html
 +++ b/src/emscripten/template.html
-@@ -2,37 +2,376 @@
+@@ -2,37 +2,410 @@
  <html>
  <head>
    <meta charset="utf-8">
@@ -750,6 +808,7 @@ index 216dea4..a05c90a 100644
 +    .bar, .screen { width: 640px; max-width: 100%; }
 +    @media (max-width: 700px) { .bar, .screen { width: 320px; } }
 +    .bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
++    .bar__actions { display: flex; align-items: center; gap: 6px; }
 +    .screen { position: relative; line-height: 0; }
 +    #cog {
 +      display: flex; padding: 5px; border-radius: 6px; color: #7d8593; line-height: 0;
@@ -789,26 +848,30 @@ index 216dea4..a05c90a 100644
 +      font: inherit; color: #c9ced6; background: #20242b;
 +      border: 1px solid #333941; border-radius: 5px; padding: 4px 10px; cursor: pointer;
 +    }
-+    button:hover { background: #262b33; }
++    button:hover:not(:disabled) { background: #262b33; }
++    button:disabled { color: #6f7885; cursor: wait; }
 +  </style>
  </head>
  
  <body>
 +  <div class="bar">
 +    <h1>Bike or Die 2 <span>&mdash; ToySpring, 2008, recompiled to WebAssembly</span></h1>
-+    <button id="cog" title="Controls" aria-label="Controls" aria-expanded="false">
-+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-+           stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-+        <circle cx="12" cy="12" r="3.2"/>
-+        <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3
-+                 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1
-+                 a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1
-+                 a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3
-+                 H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1
-+                 a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1
-+                 a1.6 1.6 0 0 0-1.5 1z"/>
-+      </svg>
-+    </button>
++    <div class="bar__actions">
++      <button id="pause" type="button" title="Pause game" aria-pressed="false" disabled>Pause</button>
++      <button id="cog" title="Controls" aria-label="Controls" aria-expanded="false">
++        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
++             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
++          <circle cx="12" cy="12" r="3.2"/>
++          <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3
++                   1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1
++                   a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1
++                   a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3
++                   H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1
++                   a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1
++                   a1.6 1.6 0 0 0-1.5 1z"/>
++        </svg>
++      </button>
++    </div>
 +  </div>
 +
 +  <div class="screen">
@@ -836,7 +899,6 @@ index 216dea4..a05c90a 100644
 +      <span><kbd>F9</kbd> menu</span>
 +      <span><kbd>F1</kbd>&ndash;<kbd>F4</kbd> Palm buttons</span>
 +      <span><kbd>Esc</kbd> back</span>
-+      <button onclick="bodReset()">reset saved data</button>
 +    </div>
 +    <p>Progress, settings and level packs are kept in this browser.
 +       Drop a <code>.prc</code> on the screen to install it.</p>
@@ -847,6 +909,23 @@ index 216dea4..a05c90a 100644
 -      ev.preventDefault();
 +    var canvas = document.getElementById('canvas');
 +    var statusEl = document.getElementById('status');
++    var pauseButton = document.getElementById('pause');
++    var bodPaused = false;
++
++    function bodSetPaused(paused) {
++      if (!window.Module || !Module.pauseBikeOrDie || !Module.resumeBikeOrDie) return;
++      bodPaused = paused;
++      if (paused) {
++        Module.pauseBikeOrDie();
++      } else {
++        Module.resumeBikeOrDie();
++        canvas.focus();
++      }
++      bodSyncAudio();
++      pauseButton.textContent = paused ? 'Resume' : 'Pause';
++      pauseButton.title = paused ? 'Resume game' : 'Pause game';
++      pauseButton.setAttribute('aria-pressed', paused ? 'true' : 'false');
+     }
 +
 +    // ---------------------------------------------------------- the controls
 +    //
@@ -891,7 +970,7 @@ index 216dea4..a05c90a 100644
 +    function bodPrinted(name) {
 +      if (!name) return '\u2014';
 +      return BOD_PRINTED[name] || name.toUpperCase();
-     }
++    }
 +
 +    function bodParseKeys(spec) {
 +      var map = {};
@@ -988,7 +1067,15 @@ index 216dea4..a05c90a 100644
 +
 +    var Module = {
 +      canvas: canvas,
-+      onRuntimeInitialized: function () { if (window.bodPendingKeys) bodSendKeys(); },
++      onRuntimeInitialized: function () {
++        if (window.bodPendingKeys) bodSendKeys();
++        var pauseReady = setInterval(function () {
++          if (window.PThread && Object.keys(PThread.pthreads).length) {
++            clearInterval(pauseReady);
++            pauseButton.disabled = false;
++          }
++        }, 100);
++      },
 +      // The OS runs on a worker, which cannot see the page's URL. Handing the
 +      // workers a script URL that carries the query string lets the options
 +      // in it reach the code that reads them.
@@ -1044,24 +1131,29 @@ index 216dea4..a05c90a 100644
 +    }, { capture: true });
 +
 +    canvas.addEventListener('mousedown', function () { canvas.focus(); });
++    pauseButton.addEventListener('click', function () { bodSetPaused(!bodPaused); });
 +
 +    // Safari parks an AudioContext in "interrupted" -- not the "suspended"
 +    // that SDL's own autoplay recovery looks for, so neither its resume-on-
 +    // gesture handler nor its silence fallback ever fires, and the game plays
-+    // to a device that is not listening. Resume it from any gesture, and keep
-+    // the listeners: the audio session goes away again whenever another
-+    // application wants it, or the tab is hidden.
-+    function bodResumeAudio() {
++    // to a device that is not listening. Keep it synchronized from gestures
++    // and state changes, without letting that recovery undo an explicit game
++    // pause. The audio session can go away again whenever another application
++    // wants it, or the tab is hidden.
++    function bodSyncAudio() {
 +      var sdl = window.Module && Module.SDL2, ctx = sdl && sdl.audioContext;
-+      if (ctx && ctx.state !== 'running' && ctx.resume) {
++      if (!ctx || ctx.state === 'closed') return;
++      if (bodPaused && ctx.state !== 'suspended' && ctx.suspend) {
++        ctx.suspend().catch(function () { /* the next state change will retry */ });
++      } else if (!bodPaused && ctx.state !== 'running' && ctx.resume) {
 +        ctx.resume().catch(function () { /* not in a gesture; the next one will */ });
 +      }
 +    }
 +    ['pointerdown', 'mousedown', 'keydown', 'touchstart'].forEach(function (type) {
-+      window.addEventListener(type, bodResumeAudio, { capture: true });
++      window.addEventListener(type, bodSyncAudio, { capture: true });
 +    });
 +    document.addEventListener('visibilitychange', function () {
-+      if (!document.hidden) bodResumeAudio();
++      if (!document.hidden) bodSyncAudio();
 +    });
 +    // The context does not exist until the game opens the device, a second or
 +    // two after the page loads; watch for it, then let it say when it stops.
@@ -1069,8 +1161,8 @@ index 216dea4..a05c90a 100644
 +      var sdl = window.Module && Module.SDL2;
 +      if (!sdl || !sdl.audioContext) return;
 +      clearInterval(bodAudioWatch);
-+      sdl.audioContext.onstatechange = bodResumeAudio;
-+      bodResumeAudio();
++      sdl.audioContext.onstatechange = bodSyncAudio;
++      bodSyncAudio();
 +    }, 500);
 +
      function dropHandler(ev) {

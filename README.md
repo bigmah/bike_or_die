@@ -309,11 +309,20 @@ the bundled `coi-serviceworker.js`, which installs a service worker that adds th
 Everything the native build does, this does: the recompiled 68k and ARM cores, the
 level packs, the keyboard (including the five-way navigation through menus and dialogs),
 and sound. Progress, settings and best times are kept in the browser's origin private
-filesystem and restored on the next visit; the page has a button that throws them away.
+filesystem and restored on the next visit; `bodReset()` from the console throws them away.
 The cog above the screen binds the riding keys, over the game rather than beside it so
 that opening it does not move the screen. What it sets goes to the runtime through
 `pumpkin_set_ride_keys` and into this browser's storage, so it takes effect at once and
 is there on the next visit.
+
+**Pause** sits next to the cog, and there is nothing on the main thread for it to stop:
+`-sPROXY_TO_PTHREAD` put the game's loop on a worker, so the page asks the workers instead
+and whichever of them owns a main loop stops its own (`src/emscripten/bod-pre.js`).
+Emscripten's own `MainLoop.pause()` is not quite it either, because it also drops the
+keepalive reference the loop holds -- which is how a loop that has really finished lets
+the runtime exit, and a paused game has not finished. So the count is left where it is and
+the push that `resume()` does on the way back is popped off instead. The audio context is
+suspended alongside, which is what stops a tab left paused from holding the audio session.
 
 Two things are arranged differently from the native build, both forced by the browser:
 
