@@ -145,9 +145,9 @@ void pumpkin_load_fonts(void) {
 /* ---- input: the console's buttons, as a keyboard and as a navigator ---- */
 #define KEYQ 16
 static struct { int ev, key; } keyq[KEYQ];
-static int keyq_in, keyq_out;
+static volatile int keyq_in, keyq_out;
 static u16 keys_last;
-static u32 palm_keymask;
+static volatile u32 palm_keymask;
 
 static const struct { u16 gba; int win; u32 mask; } keymap[] = {
   { KEY_UP,     WINDOW_KEY_UP,    keyBitPageUp },
@@ -168,6 +168,8 @@ static void keyq_push(int ev, int key) {
   keyq[keyq_in].ev = ev; keyq[keyq_in].key = key; keyq_in = n;
 }
 
+/* Called from the vblank interrupt (gba/crt0.s irq_hook): a press shorter
+ * than one of the engine's frames would otherwise go unseen. */
 void input_poll(void) {
   u16 now = (u16)KEYS_HELD(), diff = now ^ keys_last;
   unsigned i;
@@ -192,12 +194,11 @@ int pumpkin_event(int *key, int *mods, int *buttons, uint8_t *data, uint32_t *n,
   int ev;
   (void)data;
   *mods = 0; *buttons = 0; *n = 0; *key = 0;
-  input_poll();
   if (keyq_in == keyq_out) {
     /* A Palm would sleep here for the timeout; the engine itself takes longer
      * than a frame, so give the time straight back to it. Only an idle wait
      * (a long timeout while nothing is drawn) yields a frame. */
-    if (usec >= 100000) { vsync(); input_poll(); }
+    if (usec >= 100000) vsync();
     if (keyq_in == keyq_out) return 0;
   }
   ev = keyq[keyq_out].ev; *key = keyq[keyq_out].key;
@@ -206,7 +207,6 @@ int pumpkin_event(int *key, int *mods, int *buttons, uint8_t *data, uint32_t *n,
 }
 
 void pumpkin_status(int *x, int *y, uint32_t *keyMask, uint32_t *modMask, uint32_t *buttonMask, uint64_t *extKeyMask) {
-  input_poll();
   if (x) *x = 0;
   if (y) *y = 0;
   if (keyMask) *keyMask = palm_keymask;

@@ -76,7 +76,8 @@ static void display_init(void) {
   for (i = 0; i < 256; i++) PALRAM[i] = 0;
   PALRAM[0] = RGB15(31, 31, 31);
   memset((void *)VRAM_PAGE0, 0, 240 * 160);
-  REG_DISPSTAT = 0x0008;          /* vblank interrupt: the handler in crt0.s counts frames */
+  { extern void (*irq_hook)(uint32_t flags); extern void input_poll(void); irq_hook = (void (*)(uint32_t))input_poll; }
+  REG_DISPSTAT = 0x0008;          /* vblank interrupt: the handler in crt0.s counts frames and samples the buttons */
   REG_IE = IRQ_VBLANK;
   REG_IME = 1;
 }

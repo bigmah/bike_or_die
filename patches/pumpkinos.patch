@@ -3105,7 +3105,7 @@ index f60f65d..4c04855 100644
  
  emulation/systrap.o: emulation/systrap.c emulation/switch.c
 diff --git a/src/libpumpkin/Menu.c b/src/libpumpkin/Menu.c
-index c40407c..fc71568 100644
+index c40407c..3c6aaea 100644
 --- a/src/libpumpkin/Menu.c
 +++ b/src/libpumpkin/Menu.c
 @@ -9,10 +9,12 @@
@@ -3166,7 +3166,7 @@ index c40407c..fc71568 100644
    WinSaveRectangle(pd->bitsBehind, &pd->bounds);
  
    mFrame = UIColorGetTableEntryIndex(UIMenuFrame);
-@@ -269,9 +289,200 @@ static void menu_show_pd(MenuBarType *menu, MenuPullDownType *pd) {
+@@ -269,9 +289,203 @@ static void menu_show_pd(MenuBarType *menu, MenuPullDownType *pd) {
  }
  
  static void menu_hide_pd(MenuBarType *menu, MenuPullDownType *pd) {
@@ -3202,7 +3202,10 @@ index c40407c..fc71568 100644
 +      extern WinHandle bod_vram_window(Coord x, Coord y, Coord w, Coord h);
 +      if (!pd->menuWin && pd->bounds.extent.x && pd->bounds.extent.y)
 +        pd->menuWin = bod_vram_window(pd->bounds.topLeft.x, pd->bounds.topLeft.y, pd->bounds.extent.x, pd->bounds.extent.y);
-+      pd->bitsBehind = NULL;
++      /* what a pull-down covers is kept, so that switching pull-downs can put it back;
++       * without the memory for it the old one just stays on the screen until the menu closes */
++      if (!pd->bitsBehind && pd->bounds.extent.x && pd->bounds.extent.y)
++        pd->bitsBehind = WinCreateOffscreenWindow(pd->bounds.extent.x, pd->bounds.extent.y, nativeFormat, &err);
 +    } else {
 +      if (pd->menuWin) { WinDeleteWindow(pd->menuWin, false); pd->menuWin = NULL; }
 +      if (pd->bitsBehind) { WinDeleteWindow(pd->bitsBehind, false); pd->bitsBehind = NULL; }
@@ -3367,7 +3370,7 @@ index c40407c..fc71568 100644
  Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
    EventType ev;
    MenuPullDownType *pd, *prev;
-@@ -313,13 +524,7 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
+@@ -313,13 +527,7 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
              }
              if (!handled) {
                debug(DEBUG_TRACE, "Menu", "MenuHandleEvent penDown hide pullDown %d", menuP->curMenu);
@@ -3382,7 +3385,7 @@ index c40407c..fc71568 100644
                handled = true;
              }
            }
-@@ -374,8 +579,15 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
+@@ -374,8 +582,15 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
                  pd->hidden = 0;
                  WinSetActiveWindow(menuP->savedActiveWin);
                  WinSetDrawWindow(menuP->savedActiveWin);
@@ -3398,7 +3401,7 @@ index c40407c..fc71568 100644
  
                  debug(DEBUG_TRACE, "Menu", "MenuHandleEvent menuEvent item %d", pd->items[pd->selectedItem].id);
                  MemSet(&ev, sizeof(EventType), 0);
-@@ -395,16 +607,8 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
+@@ -395,16 +610,8 @@ Boolean MenuHandleEvent(MenuBarType *menuP, EventType *event, UInt16 *error) {
          if (event->data.keyDown.chr == vchrMenu) {
            debug(DEBUG_TRACE, "Menu", "MenuHandleEvent keyDown vchrMenu");
            if (menuP->attr.visible) {
@@ -3416,7 +3419,7 @@ index c40407c..fc71568 100644
            } else {
              debug(DEBUG_TRACE, "Menu", "MenuHandleEvent keyDown show menu");
              MenuDrawMenu(menuP);
-@@ -431,8 +635,13 @@ void MenuDrawMenu(MenuBarType *menuP) {
+@@ -431,8 +638,13 @@ void MenuDrawMenu(MenuBarType *menuP) {
    pumpkin_dirty_region_mode(dirtyRegionBegin);
  
    debug(DEBUG_TRACE, "Menu", "MenuDrawMenu");
@@ -3431,7 +3434,7 @@ index c40407c..fc71568 100644
    // save menu box
    WinSaveRectangle(menuP->bitsBehind, &menuP->barWin->windowBounds);
  
-@@ -527,6 +736,10 @@ Err MenuAddItem(UInt16 positionId, UInt16 id, Char cmd, const Char *textP) {
+@@ -527,6 +739,10 @@ Err MenuAddItem(UInt16 positionId, UInt16 id, Char cmd, const Char *textP) {
                // adjust window size
                mbar->menus[i].bounds.extent.y += FntCharHeight();
                WinDeleteWindow(mbar->menus[i].menuWin, false);
@@ -3601,7 +3604,7 @@ index 6715831..92552f5 100644
    }
  
 diff --git a/src/libpumpkin/Window.c b/src/libpumpkin/Window.c
-index e595948..205a467 100644
+index e595948..4123ac4 100644
 --- a/src/libpumpkin/Window.c
 +++ b/src/libpumpkin/Window.c
 @@ -15,7 +15,18 @@
@@ -4122,7 +4125,7 @@ index e595948..205a467 100644
      x1 = wh->clippingBounds.left;
      x2 = wh->clippingBounds.right;
      y1 = wh->clippingBounds.top;
-@@ -1964,6 +2400,33 @@ void WinConvertToDisplay(WinHandle wh, Coord *x, Coord *y) {
+@@ -1964,6 +2400,35 @@ void WinConvertToDisplay(WinHandle wh, Coord *x, Coord *y) {
  }
  
  void WinCopyRectangle(WinHandle srcWin, WinHandle dstWin, const RectangleType *srcRect, Coord dstX, Coord dstY, WinDrawOperation mode) {
@@ -4135,7 +4138,9 @@ index e595948..205a467 100644
 +    extern Boolean bod_menu_visible(void);
 +    win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
 +    WinHandle d = dstWin ? dstWin : module->displayWindow;
-+    if (bod_menu_visible() && d && ((UInt32)BmpGetBits(WinGetBitmap(d)) >> 24) == 0x06) return;   /* the frame would wipe the menu */
++    /* the game's frame copies would wipe an open menu; its own small copies (restoring what a pull-down covered) go through */
++    if (bod_menu_visible() && d && ((UInt32)BmpGetBits(WinGetBitmap(d)) >> 24) == 0x06 &&
++        (srcWin == bod_half_win || (srcRect && srcRect->extent.x >= 200 && srcRect->extent.y >= 120))) return;
 +    if (srcWin && srcWin == bod_half_win && d && ((UInt32)BmpGetBits(WinGetBitmap(d)) >> 24) == 0x06) {
 +      extern void bod_copy_doubled(const UInt8 *src, UInt16 srcRow, UInt8 *dst, UInt16 dstRow, int w, int h);
 +      BitmapType *sb = WinGetBitmap(srcWin), *db = WinGetBitmap(d);
@@ -4156,7 +4161,7 @@ index e595948..205a467 100644
    win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
    char sbuf[64], dbuf[64];
  
-@@ -2972,8 +3435,15 @@ WinHandle WinCreateOffscreenWindow(Coord width, Coord height, WindowFormatType f
+@@ -2972,8 +3437,15 @@ WinHandle WinCreateOffscreenWindow(Coord width, Coord height, WindowFormatType f
    WinHandle wh = NULL;
    char buf[64];
    Err err = sysErrNoFreeResource;
@@ -4172,7 +4177,7 @@ index e595948..205a467 100644
      RctSetRectangle(&wh->windowBounds, 0, 0, width, height);
  
      switch (format) {
-@@ -3075,6 +3545,10 @@ Err WinPalette(UInt8 operation, Int16 startIndex, UInt16 paletteEntries, RGBColo
+@@ -3075,6 +3547,10 @@ Err WinPalette(UInt8 operation, Int16 startIndex, UInt16 paletteEntries, RGBColo
    if (wh) {
      debug(DEBUG_TRACE, "Window", "WinPalette drawWindow %s", WinGetDescr(wh, buf, sizeof(buf)));
      colorTable = BmpGetColortable(WinGetBitmap(wh));
@@ -4183,7 +4188,7 @@ index e595948..205a467 100644
      if (colorTable == NULL) {
        debug(DEBUG_ERROR, "Window", "WinPalette drawWindow colorTable is NULL");
        return winErrPalette;
-@@ -3131,6 +3605,9 @@ Err WinPalette(UInt8 operation, Int16 startIndex, UInt16 paletteEntries, RGBColo
+@@ -3131,6 +3607,9 @@ Err WinPalette(UInt8 operation, Int16 startIndex, UInt16 paletteEntries, RGBColo
              //broadcastDisplayChange(module->depth, module->depth);
              pumpkin_dirty_region_mode(dirtyRegionReset);
              WinDirtyRegion(module->displayWindow, 0, 0, module->width-1, module->height-1);
