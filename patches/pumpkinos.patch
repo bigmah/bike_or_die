@@ -273,7 +273,7 @@ index d9caea2..b0424e8 100644
  C99=-std=c99
  endif
 diff --git a/src/emscripten/Makefile b/src/emscripten/Makefile
-index 4114db6..cdb662b 100644
+index 4114db6..263fa9f 100644
 --- a/src/emscripten/Makefile
 +++ b/src/emscripten/Makefile
 @@ -4,16 +4,72 @@ include ../common.mak
@@ -303,7 +303,7 @@ index 4114db6..cdb662b 100644
 +  -s INITIAL_MEMORY=402653184 \
 +  -s STACK_SIZE=8388608 -s DEFAULT_PTHREAD_STACK_SIZE=8388608 \
 +  -s PROXY_TO_PTHREAD=1 -s PTHREAD_POOL_SIZE=8 \
-+  -s EXPORTED_FUNCTIONS=_main,_cexit,_pumpkin_send_deploy,_bod_reset_saves,_pumpkin_set_ride_keys,_pumpkin_get_ride_keys,_bod_pack_command,_bod_pack_state,_bod_pack_seq \
++  -s EXPORTED_FUNCTIONS=_main,_cexit,_pumpkin_send_deploy,_bod_reset_saves,_pumpkin_set_ride_keys,_pumpkin_get_ride_keys,_bod_pack_command,_bod_pack_state,_bod_pack_seq,_bod_canvas_info \
 +  -s EXPORTED_RUNTIME_METHODS=ccall,stringToNewUTF8,FS \
 +  -s INCOMING_MODULE_JS_API=canvas,print,printErr,setStatus,preRun,postRun,onRuntimeInitialized,locateFile,mainScriptUrlOrBlob \
 +  -s EXIT_RUNTIME \
@@ -353,10 +353,10 @@ index 4114db6..cdb662b 100644
  	rm -f $(OBJS) $(PROGRAM).zip $(PROGRAM).wasm $(PROGRAM).data $(PROGRAM).html $(PROGRAM).js
 diff --git a/src/emscripten/bod-pre.js b/src/emscripten/bod-pre.js
 new file mode 100644
-index 0000000..ad81d10
+index 0000000..054be7c
 --- /dev/null
 +++ b/src/emscripten/bod-pre.js
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,209 @@
 +// Browser-side setup for the Bike or Die 2 WebAssembly build: the environment
 +// that tools/make_app.sh exports around the native one, and the page's half of
 +// the saved data.
@@ -460,6 +460,112 @@ index 0000000..ad81d10
 +
 +Module['pauseBikeOrDie'] = function () { bodTellThreads('pause'); };
 +Module['resumeBikeOrDie'] = function () { bodTellThreads('resume'); };
++
++// ------------------------------------------------------------ presenting --
++//
++// The page draws the frame; the game never waits for it to.
++//
++// SDL's software renderer presents with MAIN_THREAD_EM_ASM -- the thread
++// holding the frame stops while the browser's main thread converts 102,400
++// pixels in JavaScript and calls putImageData -- and that hop is what held the
++// game to thirty-seven frames a second arriving two display refreshes apart.
++// So the wasm side converts the frame where it already is and leaves it in the
++// shared heap (liblsdl2_web.c); this reads it from there in its own
++// requestAnimationFrame. Neither side ever blocks on the other.
++//
++// The same loop paces the game. Each turn bumps `vsync`, and the game draws at
++// most one frame per refresh it has not answered yet, so a frame is drawn just
++// after a refresh and shown on the next one -- evenly spaced, instead of a
++// clock of the game's own beating against the display's. A tab in the
++// background stops calling requestAnimationFrame, the counter stops, and the
++// game falls back to its own timer after a quarter of a second.
++//
++// `seq` counts published frames, and is read either side of the copy: a frame
++// published while this one was being copied is copied again rather than torn
++// into the one before it.
++
++if (typeof ENVIRONMENT_IS_PTHREAD === 'undefined' || !ENVIRONMENT_IS_PTHREAD) (function () {
++  // The order of the fields is the interface; see web_canvas_t.
++  var F_MAGIC = 0, F_WIDTH = 1, F_HEIGHT = 2, F_PIXELS = 3, F_SEQ = 4, F_VSYNC = 5,
++      F_TICK = 6, F_PRESENTED = 7, F_STALE = 8;
++  var MAGIC = 0x424F4443;
++
++  var base = 0, ctx = null, img = null, out = null, pixels = 0, words = 0, last = -1;
++
++  // Zero until the wasm side has a frame buffer to show, which is when the
++  // window is created -- a second or so into the boot. Asked again every time
++  // the buffer goes, so a window that comes back is picked up again.
++  function ready() {
++    var p, w, h, el;
++
++    if (base) return true;
++    if (typeof _bod_canvas_info !== 'function') return false;
++    if (!(p = _bod_canvas_info())) return false;
++
++    w = HEAPU32[(p >>> 2) + F_WIDTH];
++    h = HEAPU32[(p >>> 2) + F_HEIGHT];
++    el = Module['canvas'];
++    if (!el || !w || !h) return false;
++
++    if (!ctx && !(ctx = el.getContext('2d', { alpha: false }))) return false;
++    if (!img || img.width !== w || img.height !== h) {
++      img = ctx.createImageData(w, h);
++      out = new Uint32Array(img.data.buffer);
++    }
++    base = p >>> 2;
++    pixels = HEAPU32[base + F_PIXELS] >>> 2;
++    words = w * h;
++    last = -1;
++
++    return true;
++  }
++
++  function frame(now) {
++    var seq, again;
++
++    requestAnimationFrame(frame);
++    if (!ready()) return;
++
++    // The wasm side clears the magic when the buffer goes, which is what a
++    // window closing on the way out looks like from here.
++    if (HEAPU32[base + F_MAGIC] !== MAGIC) { base = 0; return; }
++
++    seq = Atomics.load(HEAPU32, base + F_SEQ);
++    if (seq !== last) {
++      out.set(HEAPU32.subarray(pixels, pixels + words));
++      if ((again = Atomics.load(HEAPU32, base + F_SEQ)) !== seq) {
++        out.set(HEAPU32.subarray(pixels, pixels + words));
++        seq = again;
++      }
++      last = seq;
++      ctx.putImageData(img, 0, 0);
++      HEAPU32[base + F_PRESENTED]++;
++    } else {
++      HEAPU32[base + F_STALE]++;
++    }
++
++    // And ask for the next one. The time this refresh began goes first, so
++    // that the counter is never ahead of the timestamp that belongs to it;
++    // microseconds, as an unsigned 32-bit count that wraps every seventy
++    // minutes and is only ever subtracted.
++    HEAPU32[base + F_TICK] = (now * 1000) >>> 0;
++    Atomics.add(HEAPU32, base + F_VSYNC, 1);
++  }
++
++  // How many refreshes found a new frame and how many found the one before it
++  // again, which is what smoothness looks like from the page's side.
++  Module['bodPresentStats'] = function () {
++    if (!base) return null;
++    return {
++      presented: HEAPU32[base + F_PRESENTED],
++      stale: HEAPU32[base + F_STALE],
++      published: Atomics.load(HEAPU32, base + F_SEQ),
++      refreshes: Atomics.load(HEAPU32, base + F_VSYNC)
++    };
++  };
++
++  requestAnimationFrame(frame);
++})();
 diff --git a/src/emscripten/main.c b/src/emscripten/main.c
 index ea74bb2..6fe5735 100644
 --- a/src/emscripten/main.c
@@ -1783,13 +1889,15 @@ index 069638e..f8adbda 100644
 +  launcher = app
  }
 diff --git a/src/liblsdl2/Makefile b/src/liblsdl2/Makefile
-index a8b7c26..d5ef1e9 100644
+index a8b7c26..c5f6c7b 100644
 --- a/src/liblsdl2/Makefile
 +++ b/src/liblsdl2/Makefile
-@@ -16,6 +16,15 @@ STATIC=1
+@@ -16,6 +16,17 @@ STATIC=1
  else ifeq ($(OSNAME),Emscripten)
  STATIC=2
  CUSTOMFLAGS=-s USE_SDL=2
++# In a browser the frame reaches the canvas from the page, not through SDL.
++SOURCE+=liblsdl2_web.c
 +else ifeq ($(OSNAME),Darwin)
 +SDL_PREFIX := $(shell sdl2-config --prefix)
 +CUSTOMFLAGS=$(MIXER_FLAGS) $(OPENGL_FLAGS) -I$(SDL_PREFIX)/include
@@ -1802,21 +1910,22 @@ index a8b7c26..d5ef1e9 100644
  else ifeq ($(OSNAME),Msys)
  CUSTOMFLAGS=$(MIXER_FLAGS) $(OPENGL_FLAGS)
  LIBS=-lSDL2 -lversion -limm32 -lgdi32 -lsetupapi -lwinmm -lole32 -loleaut32 $(MIXER_LIBS)
-@@ -25,3 +34,9 @@ LIBS=-lSDL2 $(MIXER_LIBS) $(OPENGL_LIBS)
+@@ -25,3 +36,10 @@ LIBS=-lSDL2 $(MIXER_LIBS) $(OPENGL_LIBS)
  endif
  
  include ../lib.mak
 +
 +liblsdl2.o $(MAC_OBJS): liblsdl2_mac.h
++liblsdl2.wasm liblsdl2_web.wasm: liblsdl2_web.h
 +
 +%.o: %.m
 +	@echo Compiling $<
 +	@$(CC) $(CPPFLAGS) -fobjc-arc -c -o $@ $<
 diff --git a/src/liblsdl2/liblsdl2.c b/src/liblsdl2/liblsdl2.c
-index b8e2f67..ef45f55 100644
+index b8e2f67..ed177da 100644
 --- a/src/liblsdl2/liblsdl2.c
 +++ b/src/liblsdl2/liblsdl2.c
-@@ -20,6 +20,10 @@
+@@ -20,6 +20,14 @@
  #include "average.h"
  #include "debug.h"
  
@@ -1824,20 +1933,37 @@ index b8e2f67..ef45f55 100644
 +#include "liblsdl2_mac.h"
 +#endif
 +
++#if defined(EMSCRIPTEN)
++#include "liblsdl2_web.h"
++#endif
++
  #define SDL_BUTTON1   1
  #define SDL_BUTTON2   2
  
-@@ -65,6 +69,9 @@ typedef struct {
+@@ -38,6 +46,9 @@ struct texture_t {
+   int width, height;
+   SDL_Texture *blur;
+   uint32_t *buf;
++#if defined(EMSCRIPTEN)
++  uint8_t *pixels;    /* the canvas path keeps the texture itself, in RGB565 */
++#endif
+ };
+ 
+ typedef struct {
+@@ -65,6 +76,12 @@ typedef struct {
  #endif
    void (*drop_callback)(char *filename, void *data);
    void *drop_data;
++#if defined(EMSCRIPTEN)
++  int canvas;         /* the page draws the frame; SDL never presents */
++#endif
 +#if defined(DARWIN)
 +  uint8_t key_owner[SDL_NUM_SCANCODES];
 +#endif
  } libsdl_window_t;
  
  typedef struct {
-@@ -356,6 +363,23 @@ static int map_key(libsdl_window_t *window, SDL_Event *ev) {
+@@ -356,6 +373,23 @@ static int map_key(libsdl_window_t *window, SDL_Event *ev) {
            case SDLK_HOME: key = WINDOW_KEY_HOME; break;
            case SDLK_END: key = WINDOW_KEY_END; break;
            case SDLK_INSERT: key = WINDOW_KEY_INS; break;
@@ -1861,7 +1987,7 @@ index b8e2f67..ef45f55 100644
            case SDLK_F1: key = WINDOW_KEY_F1; break;
            case SDLK_F2: key = WINDOW_KEY_F2; break;
            case SDLK_F3: key = WINDOW_KEY_F3; break;
-@@ -405,6 +429,49 @@ static int map_button(libsdl_window_t *window, SDL_Event *ev) {
+@@ -405,6 +439,49 @@ static int map_button(libsdl_window_t *window, SDL_Event *ev) {
    return 0;
  }
  
@@ -1911,7 +2037,7 @@ index b8e2f67..ef45f55 100644
  static int libsdl_event2(libsdl_window_t *window, int wait, int *arg1, int *arg2) {
    SDL_Event ev;
    int has_ev, r = 0;
-@@ -412,6 +479,9 @@ static int libsdl_event2(libsdl_window_t *window, int wait, int *arg1, int *arg2
+@@ -412,6 +489,9 @@ static int libsdl_event2(libsdl_window_t *window, int wait, int *arg1, int *arg2
    has_ev = wait < 0 ? SDL_WaitEvent(&ev) : SDL_WaitEventTimeout(&ev, wait);
  
    if (has_ev) {
@@ -1921,7 +2047,7 @@ index b8e2f67..ef45f55 100644
      switch (ev.type) {
        case SDL_KEYDOWN:
          *arg1 = map_key(window, &ev);
-@@ -780,6 +850,20 @@ static int libsdl_video_setup(libsdl_window_t *window) {
+@@ -780,10 +860,37 @@ static int libsdl_video_setup(libsdl_window_t *window) {
      }
    }
  
@@ -1941,8 +2067,146 @@ index b8e2f67..ef45f55 100644
 +
    SDL_SetRenderDrawBlendMode(window->renderer, SDL_BLENDMODE_BLEND);
  
-   SDL_RenderClear(window->renderer);
-@@ -1145,6 +1229,34 @@ static int libsdl_window_draw_texture(window_t *_window, texture_t *texture, int
+-  SDL_RenderClear(window->renderer);
+-  SDL_RenderPresent(window->renderer);
++#if defined(EMSCRIPTEN)
++  // In a browser the frame goes to the page instead (liblsdl2_web.c), and the
++  // renderer is never presented through -- including here, where presenting an
++  // empty one would cost a synchronous hop to the browser's main thread for a
++  // black screen nobody has asked for.
++  if (window->software && web_canvas_wanted() &&
++      web_canvas_init(window->width, window->height, window->xfactor, window->yfactor) == 0) {
++    window->canvas = 1;
++  }
++  if (!window->canvas)
++#endif
++  {
++    SDL_RenderClear(window->renderer);
++    SDL_RenderPresent(window->renderer);
++  }
+ 
+   for (i = 0; keymap[i].from; i++) {
+     index = (keymap[i].mods << 8) | keymap[i].from;
+@@ -794,6 +901,9 @@ static int libsdl_video_setup(libsdl_window_t *window) {
+ }
+ 
+ static int libsdl_video_close(libsdl_window_t *window) {
++#if defined(EMSCRIPTEN)
++  if (window->canvas) web_canvas_finish();
++#endif
+   if (window->background) SDL_DestroyTexture(window->background);
+   if (window->renderer) SDL_DestroyRenderer(window->renderer);
+   if (window->window) SDL_DestroyWindow(window->window);
+@@ -951,6 +1061,12 @@ static int libsdl_window_render(window_t *_window) {
+   int r = -1;
+ 
+   if (window) {
++#if defined(EMSCRIPTEN)
++    if (window->canvas) {
++      web_canvas_publish();
++      return 0;
++    }
++#endif
+ #ifdef SDL_OPENGL
+     if (window->opengl && window->texture) {
+       presentBackBuffer(window, window->texture, window->programId[0]);
+@@ -973,6 +1089,12 @@ static int libsdl_window_erase(window_t *_window, uint32_t bg) {
+   window = (libsdl_window_t *)_window;
+ 
+   if (window) {
++#if defined(EMSCRIPTEN)
++    if (window->canvas) {
++      web_canvas_fill(0xFF000000);
++      return 0;
++    }
++#endif
+     SDL_RenderClear(window->renderer);
+ 
+     if (window->background) {
+@@ -993,6 +1115,17 @@ static texture_t *libsdl_window_create_texture(window_t *_window, int width, int
+ 
+   if (window) {
+     if ((texture = sys_calloc(1, sizeof(texture_t))) != NULL) {
++#if defined(EMSCRIPTEN)
++      if (window->canvas) {
++        texture->width = width;
++        texture->height = height;
++        if ((texture->pixels = sys_calloc(1, width * height * window->spixel)) != NULL) {
++          return texture;
++        }
++        sys_free(texture);
++        return NULL;
++      }
++#endif
+       if ((texture->t = SDL_CreateTexture(window->renderer, window->format, SDL_TEXTUREACCESS_STREAMING, width, height)) != NULL) {
+         SDL_SetTextureBlendMode(texture->t, SDL_BLENDMODE_BLEND);
+         texture->width = width;
+@@ -1018,6 +1151,9 @@ static int libsdl_window_destroy_texture(window_t *_window, texture_t *texture)
+   window = (libsdl_window_t *)_window;
+ 
+   if (window && texture) {
++#if defined(EMSCRIPTEN)
++    if (texture->pixels) sys_free(texture->pixels);
++#endif
+     if (texture->t) SDL_DestroyTexture(texture->t);
+     if (texture->blur) SDL_DestroyTexture(texture->blur);
+     if (texture->buf) sys_free(texture->buf);
+@@ -1062,6 +1198,28 @@ static int libsdl_window_update_texture_rect(window_t *_window, texture_t *textu
+   rect.w = w;
+   rect.h = h;
+ 
++#if defined(EMSCRIPTEN)
++  if (window->canvas) {
++    // Clipped, as SDL_LockTexture would: nothing promises the rectangle is
++    // inside the texture, and past its end is the frame buffer.
++    if (tx < 0) { w += tx; tx = 0; }
++    if (ty < 0) { h += ty; ty = 0; }
++    if (w > texture->width  - tx) w = texture->width  - tx;
++    if (h > texture->height - ty) h = texture->height - ty;
++    if (w <= 0 || h <= 0) return 0;
++    spitch = texture->width * window->spixel;
++    len = w * window->spixel;
++    src = &src[(ty * texture->width + tx) * window->spixel];
++    dst = texture->pixels + (ty * texture->width + tx) * window->spixel;
++    for (i = 0; i < h; i++) {
++      sys_memcpy(dst, src, len);
++      src += spitch;
++      dst += spitch;
++    }
++    return 0;
++  }
++#endif
++
+   if (SDL_LockTexture(texture->t, &rect, &pixels, &pitch) == 0) {
+     src = &src[(ty * texture->width + tx) * window->spixel];
+     dst = (uint8_t *)pixels;
+@@ -1091,6 +1249,12 @@ static int libsdl_window_draw_texture_rect(window_t *_window, texture_t *texture
+   window = (libsdl_window_t *)_window;
+ 
+   if (window && texture && w > 0 && h > 0) {
++#if defined(EMSCRIPTEN)
++    if (window->canvas) {
++      web_canvas_blit565(texture->pixels, texture->width, texture->height, tx, ty, w, h, x, y);
++      return 0;
++    }
++#endif
+ #ifdef SDL_OPENGL
+     if (window->opengl) {
+       window->texture = texture;
+@@ -1128,6 +1292,12 @@ static int libsdl_window_draw_texture(window_t *_window, texture_t *texture, int
+   window = (libsdl_window_t *)_window;
+ 
+   if (window && texture) {
++#if defined(EMSCRIPTEN)
++    if (window->canvas) {
++      web_canvas_blit565(texture->pixels, texture->width, texture->height, 0, 0, texture->width, texture->height, x, y);
++      return 0;
++    }
++#endif
+     dst.x = x * window->xfactor;
+     dst.y = y * window->yfactor;
+     dst.w = texture->width  * window->xfactor;
+@@ -1145,6 +1315,34 @@ static int libsdl_window_draw_texture(window_t *_window, texture_t *texture, int
    return r;
  }
  
@@ -1977,7 +2241,7 @@ index b8e2f67..ef45f55 100644
  static void audio_destructor(void *p) {
    sdl_audio_t *audio = (sdl_audio_t *)p;
  
-@@ -1180,9 +1292,14 @@ static audio_t libsdl_audio_create(int pcm, int channels, int rate, void *data)
+@@ -1180,9 +1378,14 @@ static audio_t libsdl_audio_create(int pcm, int channels, int rate, void *data)
        audio->rate = rate;
        audio->channels = channels;
        debug(DEBUG_TRACE, "SDL", "sample size %d", audio->bsize);
@@ -1995,7 +2259,26 @@ index b8e2f67..ef45f55 100644
        }
        audio->buffer = sys_calloc(1, audio->bsize * audio->channels);
        debug(DEBUG_TRACE, "SDL", "buffer size %d", audio->bsize);
-@@ -1521,6 +1638,64 @@ static void *convert_audio(sdl_audio_buffer_t *abuf, sdl_audio_t *audio, void *a
+@@ -1312,6 +1515,18 @@ static int libsdl_window_update(window_t *_window, int x, int y, int width, int
+   return 0;
+ }
+ 
++#if defined(EMSCRIPTEN)
++// Whether a frame is due: one per display refresh the page has counted, so the
++// game draws just after a refresh and the frame is shown on the next one. -1
++// asks the caller to fall back to its own timer, which is what a page that is
++// not refreshing -- a hidden tab -- comes to.
++static int libsdl_window_refresh_due(window_t *_window, int64_t interval) {
++  libsdl_window_t *window = (libsdl_window_t *)_window;
++
++  return (window && window->canvas) ? web_canvas_due(interval) : -1;
++}
++#endif
++
+ #ifdef SDL_OPENGL
+ static GLuint compileShader(const char *source, GLint len, GLuint shaderType) {
+   GLuint result;
+@@ -1521,6 +1736,64 @@ static void *convert_audio(sdl_audio_buffer_t *abuf, sdl_audio_t *audio, void *a
    return buf;
  }
  
@@ -2060,7 +2343,7 @@ index b8e2f67..ef45f55 100644
  static void audio_callback(void *userdata, uint8_t *stream, int len) {
    int aptr = *(int *)userdata;
    sdl_audio_buffer_t *abuf;
-@@ -1568,22 +1743,28 @@ static int audio_action(void *_arg) {
+@@ -1568,22 +1841,28 @@ static int audio_action(void *_arg) {
    int aptr;
    unsigned char *msg;
    unsigned int msglen;
@@ -2092,7 +2375,7 @@ index b8e2f67..ef45f55 100644
    wait = 2000;
  
    for (; !thread_must_end();) {
-@@ -1596,9 +1777,9 @@ static int audio_action(void *_arg) {
+@@ -1596,9 +1875,9 @@ static int audio_action(void *_arg) {
      if (r == 1) {
        if (dev == 0) {
          switch (arg->pcm) {
@@ -2105,7 +2388,7 @@ index b8e2f67..ef45f55 100644
          }
          desired.freq = arg->rate;          // DSP frequency -- samples per second
          desired.channels = arg->channels;  // Number of channels: 1 mono, 2 stereo
-@@ -1608,12 +1789,22 @@ static int audio_action(void *_arg) {
+@@ -1608,12 +1887,22 @@ static int audio_action(void *_arg) {
          desired.callback = audio_callback; // Callback that feeds the audio device (NULL to use SDL_QueueAudio())
          desired.userdata = &aptr;          // Userdata passed to callback (ignored for NULL callbacks)
  
@@ -2131,7 +2414,7 @@ index b8e2f67..ef45f55 100644
        }
  
        if (msg) {
-@@ -1633,6 +1824,10 @@ static int audio_action(void *_arg) {
+@@ -1633,6 +1922,10 @@ static int audio_action(void *_arg) {
            }
            
            // empty the buffer
@@ -2142,7 +2425,7 @@ index b8e2f67..ef45f55 100644
            if ((abuf = ptr_lock(aptr, TAG_ABUF)) != NULL) {
              if (abuf->len > 0) {
                debug(DEBUG_TRACE, "SDL", "emptying %u bytes", abuf->len);
-@@ -1643,7 +1838,10 @@ static int audio_action(void *_arg) {
+@@ -1643,7 +1936,10 @@ static int audio_action(void *_arg) {
            wait = 0;
            debug(DEBUG_TRACE, "SDL", "set wait=%u", wait);
          } else {
@@ -2153,7 +2436,7 @@ index b8e2f67..ef45f55 100644
          }
          sys_free(msg);
        } else {
-@@ -1654,22 +1852,81 @@ static int audio_action(void *_arg) {
+@@ -1654,22 +1950,81 @@ static int audio_action(void *_arg) {
        wait = 2000;
        if (ptr) {
          if ((audio = ptr_lock(ptr, TAG_AUDIO)) != NULL) {
@@ -2246,7 +2529,7 @@ index b8e2f67..ef45f55 100644
            }
          } else {
            debug(DEBUG_TRACE, "SDL", "ptr %d deleted", ptr);
-@@ -1687,7 +1944,7 @@ static int audio_action(void *_arg) {
+@@ -1687,7 +2042,7 @@ static int audio_action(void *_arg) {
  
    if (dev > 0) {
      debug(DEBUG_INFO, "SDL", "close device %d", dev);
@@ -2255,6 +2538,16 @@ index b8e2f67..ef45f55 100644
    }
  
    if (buf) {
+@@ -1754,6 +2109,9 @@ int liblsdl2_load(void) {
+   window_provider.draw_texture_rect = libsdl_window_draw_texture_rect;
+   window_provider.update_texture_rect = libsdl_window_update_texture_rect;
+   window_provider.show_cursor = libsdl_window_show_cursor;
++#if defined(EMSCRIPTEN)
++  window_provider.refresh_due = libsdl_window_refresh_due;
++#endif
+ #ifdef SDL_OPENGL
+   window_provider.shader = libsdl_window_shader;
+ #endif
 diff --git a/src/liblsdl2/liblsdl2_mac.h b/src/liblsdl2/liblsdl2_mac.h
 new file mode 100644
 index 0000000..bfd9b35
@@ -3083,11 +3376,306 @@ index 0000000..3bc107d
 +int liblsdl2_mac_wants_keys(void) {
 +  return controls != nil && [controls wantsKeys];
 +}
+diff --git a/src/liblsdl2/liblsdl2_web.c b/src/liblsdl2/liblsdl2_web.c
+new file mode 100644
+index 0000000..b1efe87
+--- /dev/null
++++ b/src/liblsdl2/liblsdl2_web.c
+@@ -0,0 +1,260 @@
++/* How a frame reaches the canvas in the browser.
++ *
++ * SDL's software renderer presents with MAIN_THREAD_EM_ASM: the thread that
++ * has the frame stops, the browser's main thread is asked to convert 102,400
++ * pixels in JavaScript and hand them to putImageData, and only when it has
++ * done so does the game go on. That is a synchronous hop to another thread
++ * once a frame, and it costs about eight milliseconds -- which is why raising
++ * the refresh cap to sixty frames a second produced thirty-seven, arriving two
++ * display refreshes apart. The emulation had headroom to spare; the present
++ * did not.
++ *
++ * So the frame does not go through SDL at all here. The game converts it to
++ * RGBA where it already is -- in wasm, off a lookup table, a few hundred
++ * microseconds -- into a buffer in the shared heap, and bumps a counter. The
++ * page reads that buffer in its own requestAnimationFrame and puts it on the
++ * canvas. Nothing blocks: the game never waits for the browser's main thread,
++ * and the main thread never waits for the game.
++ *
++ * The two counters also pace it. The page bumps `vsync` once per refresh, and
++ * the game publishes at most one frame per refresh it has not answered yet, so
++ * a frame is drawn just after a refresh and shown on the next one -- evenly
++ * spaced, rather than beating against the display. If the page stops ticking
++ * (a hidden tab, or no requestAnimationFrame at all) the counter stops moving,
++ * and after a quarter of a second the caller is told to fall back to its own
++ * timer so that nothing depends on the page being there.
++ *
++ * `seq` is the other half: the page reads it, copies the buffer, and reads it
++ * again, so a frame published while it was copying is noticed rather than torn
++ * into the one before it.
++ */
++
++#include <SDL2/SDL.h>
++
++#include "sys.h"
++#include "pwindow.h"
++#include "debug.h"
++#include "liblsdl2_web.h"
++
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++#else
++#define EMSCRIPTEN_KEEPALIVE
++#endif
++
++#define WEB_CANVAS_MAGIC 0x424F4443   /* 'BODC' */
++
++/* How long the page may go without a refresh before the game stops waiting for
++ * one. A hidden tab stops calling requestAnimationFrame entirely. */
++#define WEB_VSYNC_IDLE_US 250000
++
++/* Read by the page as HEAPU32[(ptr>>2) + n], so every field is a uint32 and
++ * the order is part of the interface (see the presenting half of bod-pre.js). */
++typedef struct {
++  uint32_t magic;      /* set last: the page waits for it before reading */
++  uint32_t width;
++  uint32_t height;
++  uint32_t pixels;     /* RGBA8888, width*height, in the shared heap */
++  uint32_t seq;        /* frames published; the page's seqlock */
++  uint32_t vsync;      /* display refreshes, counted by the page */
++  uint32_t tick;       /* when the last one was, in microseconds of the page's
++                        * clock -- which wraps, so only differences are used */
++  uint32_t presented;  /* frames the page has drawn */
++  uint32_t stale;      /* refreshes that found no new frame */
++} web_canvas_t;
++
++static web_canvas_t canvas;
++static uint32_t *fb;
++static uint32_t *lut;            /* RGB565 -> RGBA8888, one entry per value */
++static uint32_t taken;           /* the refresh the last published frame answered */
++static uint32_t taken_tick;      /* and when that refresh was */
++static uint32_t seen;            /* the last value of vsync we looked at */
++static uint32_t seen_tick;       /* and when it says it was */
++static int64_t  seen_at;         /* when we noticed it change, by our own clock */
++static int xfactor, yfactor;
++
++/* Handed to the page, which reads the block above out of the shared heap.
++ * Zero until there is something to read. */
++EMSCRIPTEN_KEEPALIVE
++uint32_t bod_canvas_info(void) {
++  return canvas.magic == WEB_CANVAS_MAGIC ? (uint32_t)(uintptr_t)&canvas : 0;
++}
++
++int web_canvas_wanted(void) {
++#ifdef __EMSCRIPTEN__
++  char *spec = sys_getenv("BOD_PRESENT");
++  return !(spec && sys_strcmp(spec, "sdl") == 0);
++#else
++  return 0;
++#endif
++}
++
++int web_canvas_init(int width, int height, int xf, int yf) {
++  uint32_t i, r, g, b;
++
++  if (width <= 0 || height <= 0) return -1;
++  if (xf < 1) xf = 1;
++  if (yf < 1) yf = 1;
++
++  if ((fb = sys_calloc(width * xf * height * yf, sizeof(uint32_t))) == NULL) return -1;
++  if ((lut = sys_calloc(65536, sizeof(uint32_t))) == NULL) {
++    sys_free(fb);
++    fb = NULL;
++    return -1;
++  }
++
++  /* The canvas takes its bytes in R,G,B,A order, which on a little-endian
++   * machine is what a uint32 of 0xAABBGGRR writes. The low bits of each
++   * channel are filled from its high ones, so that 0x1F comes out 0xFF. */
++  for (i = 0; i < 65536; i++) {
++    r = (i >> 11) & 0x1F;
++    g = (i >>  5) & 0x3F;
++    b =  i        & 0x1F;
++    r = (r << 3) | (r >> 2);
++    g = (g << 2) | (g >> 4);
++    b = (b << 3) | (b >> 2);
++    lut[i] = 0xFF000000 | (b << 16) | (g << 8) | r;
++  }
++
++  xfactor = xf;
++  yfactor = yf;
++  canvas.width  = width * xf;
++  canvas.height = height * yf;
++  canvas.pixels = (uint32_t)(uintptr_t)fb;
++  canvas.seq = 0;
++  canvas.vsync = 0;
++  canvas.tick = 0;
++  seen = 0;
++  seen_tick = 0;
++  taken = 0;
++  taken_tick = 0;
++  seen_at = 0;
++
++  __atomic_store_n(&canvas.magic, WEB_CANVAS_MAGIC, __ATOMIC_RELEASE);
++  debug(DEBUG_INFO, "SDL", "canvas present: %dx%d, the page draws it", canvas.width, canvas.height);
++
++  return 0;
++}
++
++void web_canvas_finish(void) {
++  __atomic_store_n(&canvas.magic, 0, __ATOMIC_RELEASE);
++  if (fb)  { sys_free(fb);  fb = NULL; }
++  if (lut) { sys_free(lut); lut = NULL; }
++}
++
++/* One rectangle of the task's RGB565 surface, converted into the frame the
++ * page will draw. src_width and src_height are the surface's size in pixels;
++ * the rectangle is (sx,sy,w,h) of it, landing at (dx,dy) of the frame.
++ *
++ * The rectangle is clipped to both, which is not a formality: SDL_RenderCopy
++ * clips against the render target, so the rectangles the window manager hands
++ * down have never had to be inside it, and one that is not would otherwise be
++ * written straight past the end of the frame.
++ */
++void web_canvas_blit565(uint8_t *src, int src_width, int src_height,
++                        int sx, int sy, int w, int h, int dx, int dy) {
++  uint16_t *s;
++  uint32_t *d, v;
++  int i, j, k, l, fw, max;
++
++  if (fb == NULL || src == NULL) return;
++
++  if (sx < 0) { w += sx; dx -= sx; sx = 0; }
++  if (sy < 0) { h += sy; dy -= sy; sy = 0; }
++  if (dx < 0) { w += dx; sx -= dx; dx = 0; }
++  if (dy < 0) { h += dy; sy -= dy; dy = 0; }
++
++  if (w > src_width  - sx) w = src_width  - sx;
++  if (h > src_height - sy) h = src_height - sy;
++
++  max = ((int)canvas.width  - dx * xfactor) / xfactor;
++  if (w > max) w = max;
++  max = ((int)canvas.height - dy * yfactor) / yfactor;
++  if (h > max) h = max;
++
++  if (w <= 0 || h <= 0) return;
++
++  fw = canvas.width;
++  s = (uint16_t *)src + (sy * src_width) + sx;
++  d = fb + (dy * yfactor) * fw + (dx * xfactor);
++
++  if (xfactor == 1 && yfactor == 1) {
++    for (i = 0; i < h; i++) {
++      for (j = 0; j < w; j++) d[j] = lut[s[j]];
++      s += src_width;
++      d += fw;
++    }
++  } else {
++    for (i = 0; i < h; i++) {
++      for (j = 0, l = 0; j < w; j++) {
++        v = lut[s[j]];
++        for (k = 0; k < xfactor; k++) d[l++] = v;
++      }
++      for (k = 1; k < yfactor; k++) {
++        sys_memcpy(d + k * fw, d, l * sizeof(uint32_t));
++      }
++      s += src_width;
++      d += fw * yfactor;
++    }
++  }
++}
++
++void web_canvas_fill(uint32_t rgba) {
++  uint32_t i, n;
++
++  if (fb == NULL) return;
++  n = canvas.width * canvas.height;
++  for (i = 0; i < n; i++) fb[i] = rgba;
++}
++
++/* The frame is complete. Answer the refresh it was drawn for and let the page
++ * know there is something new to draw. */
++void web_canvas_publish(void) {
++  if (fb == NULL) return;
++  taken = seen;
++  taken_tick = seen_tick;
++  __atomic_store_n(&canvas.seq, canvas.seq + 1, __ATOMIC_RELEASE);
++}
++
++/* 1 if a refresh is waiting for a frame, 0 if the last one has been answered
++ * or would come sooner than interval, -1 if the page is not refreshing at all
++ * and the caller should use its own timer instead.
++ *
++ * The refreshes are compared by the timestamps the page records for them
++ * rather than by when this happened to notice them: the loop looks in several
++ * times per refresh, and a gap measured from the looking would be short by as
++ * much as one look, which at sixty frames a second is enough to reject a
++ * refresh that is really due.
++ */
++int web_canvas_due(int64_t interval) {
++  uint32_t v, t;
++  int64_t now;
++
++  if (fb == NULL) return -1;
++
++  /* tick is written before vsync and read after it, so the timestamp that
++   * comes back belongs to that refresh or an older one -- never a newer. */
++  v = __atomic_load_n(&canvas.vsync, __ATOMIC_ACQUIRE);
++  t = __atomic_load_n(&canvas.tick, __ATOMIC_RELAXED);
++  now = sys_get_clock();
++
++  if (v != seen) {
++    seen = v;
++    seen_tick = t;
++    seen_at = now;
++  }
++
++  if (seen_at == 0 || (now - seen_at) > WEB_VSYNC_IDLE_US) return -1;
++  if (seen == taken) return 0;
++
++  /* BOD_FPS, as a ceiling on the display's own rate. An eighth of slack, so
++   * that asking for exactly the rate the display already refreshes at is not
++   * refused by a fraction of a millisecond -- while asking for half of it
++   * still lets one refresh through in two. */
++  if (interval > 0 && taken_tick != seen_tick &&
++      (int64_t)(uint32_t)(seen_tick - taken_tick) < interval - interval / 8) {
++    return 0;
++  }
++
++  return 1;
++}
+diff --git a/src/liblsdl2/liblsdl2_web.h b/src/liblsdl2/liblsdl2_web.h
+new file mode 100644
+index 0000000..c67a8dc
+--- /dev/null
++++ b/src/liblsdl2/liblsdl2_web.h
+@@ -0,0 +1,23 @@
++#ifndef LIBLSDL2_WEB_H
++#define LIBLSDL2_WEB_H
++
++/* The browser's present path: the frame is handed to the page rather than
++ * pushed through SDL. See liblsdl2_web.c for why. */
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++int  web_canvas_wanted(void);
++int  web_canvas_init(int width, int height, int xfactor, int yfactor);
++void web_canvas_finish(void);
++void web_canvas_blit565(uint8_t *src, int src_width, int src_height, int sx, int sy, int w, int h, int dx, int dy);
++void web_canvas_fill(uint32_t rgba);
++void web_canvas_publish(void);
++int  web_canvas_due(int64_t interval);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
 diff --git a/src/libos/libos.c b/src/libos/libos.c
-index 3490278..669c353 100644
+index 3490278..0b2211d 100644
 --- a/src/libos/libos.c
 +++ b/src/libos/libos.c
-@@ -88,6 +88,10 @@ static int LoopIteration(libos_t *data, uint32_t dt) {
+@@ -88,10 +88,34 @@ static int LoopIteration(libos_t *data, uint32_t dt) {
  }
  
  #if defined(EMSCRIPTEN)
@@ -3095,10 +3683,35 @@ index 3490278..669c353 100644
 + * writable filesystem; absent in any other Emscripten build. */
 +extern void bod_flush_saves(void) __attribute__((weak));
 +
++/* How often the loop turns, in turns a second.
++ *
++ * Zero here asks Emscripten for requestAnimationFrame, which on a worker --
++ * where there is none -- it imitates with a setTimeout aimed at sixty a
++ * second. Two things are wrong with that for this loop. It is the loop that
++ * copies the screen to the display, and sixty turns a second free-running
++ * against a display refreshing sixty times a second beat: a turn that lands a
++ * hair early finds no refresh to answer and the frame waits for the next one,
++ * which is thirty-three milliseconds after the one before. And it takes one
++ * input event per turn, so sixty turns a second is also the ceiling on how
++ * fast the keyboard and the pen are read.
++ *
++ * Turning several times per refresh fixes both: the pacing is then the
++ * display's own (pumpkin_refresh_due), and what the turns in between cost is a
++ * mutex and a look at an empty event queue, since the gate is shut and nothing
++ * is drawn. setTimeout will not go below about four milliseconds once it is
++ * nested, so this is a ceiling rather than a rate.
++ */
++#define LOOP_HZ 250
++
  static void set_main_loop(void (*callback)(void *), void *data) {
    emscripten_cancel_main_loop();
    if (callback) {
-@@ -126,13 +130,10 @@ static void callback(void *_data) {
+-    emscripten_set_main_loop_arg(callback, data, 0, 1);
++    emscripten_set_main_loop_arg(callback, data, LOOP_HZ, 1);
+   }
+ }
+ 
+@@ -126,13 +150,10 @@ static void callback(void *_data) {
      thread_close();
      debug_close();
  
@@ -3116,7 +3729,7 @@ index 3490278..669c353 100644
    }
  }
  #endif
-@@ -146,8 +147,14 @@ static void EventLoop(libos_t *data) {
+@@ -146,8 +167,14 @@ static void EventLoop(libos_t *data) {
    request.code = sysAppLaunchCmdNormalLaunch;
    request.opendb = 1;
  #if defined(EMSCRIPTEN)
@@ -3197,6 +3810,24 @@ index fe20037..f7433f3 100644
  
      if (r != 0 && errno != ETIMEDOUT) {
        debug_errno("MUTEX", "sem_timedwait");
+diff --git a/src/libpit/pwindow.h b/src/libpit/pwindow.h
+index ffb9b08..76928a4 100644
+--- a/src/libpit/pwindow.h
++++ b/src/libpit/pwindow.h
+@@ -83,6 +83,13 @@ typedef struct {
+   int (*show_cursor)(window_t *window, int show);
+   int (*shader)(window_t *_window, int i, char *vertex, int vlen, char *fragment, int flen, float (*getvar)(char *name, void *data), void *data);
+   int (*drop_file)(window_t *_window, void (*callback)(char *filename, void *data), void *data);
++  // Whether the display wants a frame now: 1 yes, 0 not yet, -1 it has no say
++  // and the caller should fall back to its own timer. A display that refreshes
++  // on someone else's clock -- a browser's, say -- answers here rather than
++  // being polled against one of ours. interval is the shortest gap the caller
++  // will accept between frames, in microseconds, so that a cap of its own
++  // still applies to an answer of the display's.
++  int (*refresh_due)(window_t *window, int64_t interval);
+   void *data;
+ } window_provider_t;
+ 
 diff --git a/src/libpit/sys.c b/src/libpit/sys.c
 index 75c478a..d0bd254 100644
 --- a/src/libpit/sys.c
@@ -7667,7 +8298,7 @@ index 0000000..fcb2faf
 +
 +#endif
 diff --git a/src/libpumpkin/pumpkin.c b/src/libpumpkin/pumpkin.c
-index 93cf260..109c63e 100644
+index 93cf260..0b8f735 100644
 --- a/src/libpumpkin/pumpkin.c
 +++ b/src/libpumpkin/pumpkin.c
 @@ -255,6 +255,7 @@ typedef struct {
@@ -7750,7 +8381,16 @@ index 93cf260..109c63e 100644
  
        if ((regHeap = pumpkin_reg_get(creator, regHeapID, &regSize)) != NULL) {
          if (regHeap->heapSize) {
-@@ -3109,12 +3141,249 @@ int pumpkin_must_finish(void) {
+@@ -2836,6 +2868,8 @@ static int pumpkin_changed_display(pumpkin_task_t *task, task_screen_t *screen,
+   return r;
+ }
+ 
++static int pumpkin_refresh_due(uint64_t now);
++
+ static int draw_task(int i, int *x, int *y, int *w, int *h) {
+   task_screen_t *screen;
+   pumpkin_task_t *task;
+@@ -3109,12 +3143,249 @@ int pumpkin_must_finish(void) {
    return r;
  }
  
@@ -8002,7 +8642,7 @@ index 93cf260..109c63e 100644
      case WINDOW_KEY_F1:    pumpkin_module.keyMask |= keyBitHard1;      break;
      case WINDOW_KEY_F2:    pumpkin_module.keyMask |= keyBitHard2;      break;
      case WINDOW_KEY_F3:    pumpkin_module.keyMask |= keyBitHard3;      break;
-@@ -3134,11 +3403,20 @@ static void pumpkin_set_key(int key) {
+@@ -3134,11 +3405,20 @@ static void pumpkin_set_key(int key) {
  }
  
  static int pumpkin_reset_key(int key) {
@@ -8025,21 +8665,50 @@ index 93cf260..109c63e 100644
      case WINDOW_KEY_F1:    pumpkin_module.keyMask &= ~keyBitHard1;    break;
      case WINDOW_KEY_F2:    pumpkin_module.keyMask &= ~keyBitHard2;    break;
      case WINDOW_KEY_F3:    pumpkin_module.keyMask &= ~keyBitHard3;    break;
-@@ -3265,7 +3543,7 @@ int pumpkin_sys_event(void) {
+@@ -3265,7 +3545,7 @@ int pumpkin_sys_event(void) {
    if (mutex_lock(mutex) == 0) {
      now = sys_get_clock();
  
 -    if ((now - pumpkin_module.lastUpdate) > 50000) {
-+    if ((now - pumpkin_module.lastUpdate) > pumpkin_module.updateEvery) {
++    if (pumpkin_refresh_due(now)) {
        if (pumpkin_module.num_tasks > 0) {
          if (pumpkin_module.refresh) {
            if (pumpkin_module.background) {
-@@ -3608,7 +3886,7 @@ static void pumpkin_update_single_app(void) {
+@@ -3602,13 +3882,36 @@ int pumpkin_event_peek(void) {
+   return thread_server_peek();
+ }
+ 
++/* Whether the screen may be copied to the display yet.
++ *
++ * A display that knows when its own refreshes are answers this itself, and is
++ * given BOD_FPS as the shortest gap to allow between frames so that it stays
++ * the ceiling. One frame per refresh and no more is both smoother than a frame
++ * on a clock of our own -- which beats against the display's, and at sixty a
++ * second against sixty a second the beat costs every other frame -- and
++ * cheaper, since the frames in between were never going to be seen.
++ *
++ * -1 means the display has no say, which is every display but a browser's, and
++ * a browser tab whose page has stopped refreshing. Then the clock is ours.
++ */
++static int pumpkin_refresh_due(uint64_t now) {
++  int r;
++
++  if (pumpkin_module.wp->refresh_due) {
++    r = pumpkin_module.wp->refresh_due(pumpkin_module.w, pumpkin_module.updateEvery);
++    if (r >= 0) return r;
++  }
++
++  return (now - pumpkin_module.lastUpdate) > pumpkin_module.updateEvery;
++}
++
+ static void pumpkin_update_single_app(void) {
+   int x, y, w, h;
+   uint64_t now;
  
    now = sys_get_clock();
  
 -  if ((now - pumpkin_module.lastUpdate) > 50000) {
-+  if ((now - pumpkin_module.lastUpdate) > pumpkin_module.updateEvery) {
++  if (pumpkin_refresh_due(now)) {
      if (pumpkin_module.fullrefresh) {
        draw_task(0, &x, &y, &w, &h);
        wman_update(pumpkin_module.wm, 0, 0, 0, pumpkin_module.tasks[0].width, pumpkin_module.tasks[0].height);

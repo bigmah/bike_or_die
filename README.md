@@ -327,7 +327,8 @@ Useful knobs while debugging the ARM core:
 | `BOD_ARM_STRICT=1` | make out-of-range accesses fatal instead of clamped |
 | `BOD_ARM_LOCKSTEP=<n>` | run every instruction of `armc` *n* under both cores and report the first register that disagrees |
 | `BOD_WEB_TRACE=<n>` | report where each dispatch loop is every *n* dispatches; `1` reports every one. Written for the browser, where a blocked thread cannot be looked at, but it works anywhere |
-| `BOD_FPS=<n>` | how often at most the screen is copied to the display, in frames a second (default 60, clamped to 5-240). `20` is what PumpkinOS does on its own; lower is cheaper on a phone's battery |
+| `BOD_FPS=<n>` | how often at most the screen is copied to the display, in frames a second (default 60, clamped to 5-240). `20` is what PumpkinOS does on its own; lower is cheaper on a phone's battery. In a browser the display's own refresh paces the frames and this is the ceiling on it |
+| `BOD_PRESENT=sdl` | in a browser, hand the frame to the canvas through SDL again rather than from the page. Slower, and there for comparing the two |
 
 Lockstep needs a single-step core for that blob, which is large and generated on demand:
 
@@ -338,6 +339,14 @@ has none and pays nothing for them.
 
 `tools/bikecheck.py` scores a frame for how much of the (red) bike is visible, which is
 what makes the bisection automatic.
+
+For the browser build, `tools/webtest.js` drives it in a real Chrome -- booting it, sending
+keys and clicks, and taking screenshots -- and `tools/webfps.js` measures how fast it is
+actually drawing while being ridden, reporting the rate and the spread of the gaps between
+frames. Both need the local Chrome and puppeteer-core that `tools/setup.sh` installs.
+
+    tools/webserver.py 8080 build/web &
+    tools/webfps.js -u http://127.0.0.1:8080/pumpkin.html
 
 ## In a browser
 
@@ -398,29 +407,69 @@ the runtime exit, and a paused game has not finished. So the count is left where
 the push that `resume()` does on the way back is popped off instead. The audio context is
 suspended alongside, which is what stops a tab left paused from holding the audio session.
 
-**Twenty frames a second was the ceiling**, and it is what made the game feel slow. The
-screen is copied to the display by `pumpkin_update_single_app`, which upstream PumpkinOS
-gates to once every 50ms -- ample for a desktop of Palm applications, and about what a
-Palm managed, but a shutter to ride a bike through. `BOD_FPS` sets it instead, and the
-default is now 60: the same ride measured 16.3 frames a second before and 37.5 after.
+**Sixty frames a second**, arriving one per display refresh. The ride that measured 16.3
+frames a second when this port was first playable, and 37.5 once the refresh cap came off,
+now measures 59.1 -- and the gap between one frame and the next is 16.7ms at the median
+and 17.3ms at the ninetieth percentile, which is the part that reads as smooth.
+`tools/webfps.js` is what measures it: it boots the game, rides it, and counts the frames
+where they land, by wrapping the page's 2D context before anything loads, so it measures
+whatever the build does rather than what the build says it does.
 
-It costs nothing when the game is not drawing. The copy only happens if `draw_task` finds
-a dirty rectangle -- `fullrefresh` is off in this build -- so asking for more frames than
-the game produces buys nothing and spends nothing. What it cannot do is make the bike go
-faster: three seconds of pedalling covers the same ground either way, because the physics
-runs off the clock rather than off the frame. The cap was costing smoothness and the
-delay before a key showed on screen, which is most of what "slow" means in a game.
+Three things stood between the game and the display, and all three had to go.
 
-37.5 rather than 60 because the gate is only looked at once around the loop, and one turn
-of the loop is about 8ms -- nearly all of it the present, which SDL's software renderer
-does through a `MAIN_THREAD_EM_ASM` that converts 102,400 pixels in JavaScript and hands
-them to `putImageData`. That is a synchronous hop to the browser's main thread per frame,
-and it is the next ceiling: asking for 120 gets 55 and no more.
+**The present blocked the game.** SDL's software renderer presents with
+`MAIN_THREAD_EM_ASM`: the thread holding the frame stops while the browser's main thread
+converts 102,400 pixels in JavaScript and hands them to `putImageData`. That is a
+synchronous hop to another thread once a frame and costs about 8ms. So the frame does not
+go through SDL at all now (`src/liblsdl2/liblsdl2_web.c`). The game converts it to RGBA
+where it already is -- in wasm, off a 64K lookup table, a few hundred microseconds -- into
+a buffer in the shared heap, and bumps a counter; the page reads that buffer in its own
+`requestAnimationFrame` and puts it on the canvas. Neither side ever waits for the other.
+A counter either side of the copy is what keeps a frame published mid-copy from being torn
+into the one before it. `BOD_PRESENT=sdl` puts it back the old way, which is how the two
+are compared.
+
+**Sixty turns a second was beating against sixty refreshes a second.** The loop that
+copies the screen to the display is Emscripten's `MainLoop`, and asking it for
+`requestAnimationFrame` on a worker -- where there is none -- gets a `setTimeout` aimed at
+sixty a second. Free-running against a display refreshing sixty times a second, a turn
+that lands a hair early finds the 16,666-microsecond gate shut, and the frame waits for
+the next turn: 33ms, every other frame, which is exactly the 37.5 above. The loop now
+turns several times per refresh (`LOOP_HZ` in `src/libos/libos.c`), which also lifts the
+ceiling on how fast the keyboard and the pen are read, since the loop takes one input
+event per turn.
+
+**And the pacing is the display's.** A window provider can now answer `refresh_due`,
+saying whether the display wants a frame yet; the browser's does, from the refreshes the
+page counts, so a frame is drawn just after a refresh and shown on the next one -- evenly
+spaced, rather than on a clock of our own. `BOD_FPS` is passed down as the shortest gap to
+allow, so it stays the ceiling it always was: 30 gives 30.0 frames a second with 33.3ms
+between them, and on a display that refreshes faster than 60 it is what holds the game to
+60. If the page stops refreshing at all -- a tab in the background -- the counter stops,
+and after a quarter of a second the game goes back to its own timer, so nothing depends on
+the page being there. Every other display answers -1 and nothing changes for it.
+
+It still costs nothing when the game is not drawing: the copy only happens if `draw_task`
+finds a dirty rectangle -- `fullrefresh` is off in this build -- so a refresh that finds
+nothing new spends nothing. And none of it makes the bike go faster: three seconds of
+pedalling covers the same ground as before, because the physics runs off the clock rather
+than off the frame. What the shutter was costing is smoothness, and the delay before a key
+shows on screen, which between them are most of what "slow" means in a game.
+
+One thing the old path was doing for free had to be done by hand. `SDL_RenderCopy` clips
+against the render target, so the rectangles the window manager hands down have never had
+to be inside it -- and it hands down four, the borders it draws around a task window, at
+(-4,-4) and (320,-4). Blitted unclipped they run off the end of the frame buffer and into
+whatever follows it, which was the colour table: every dark colour in the game came out
+wrong, so the grass was periwinkle and the tyres were tan while the sky, higher up the
+table, was perfect. Both the blit and the texture upload clip now.
 
 The emulation is not what is in the way, which is worth saying because it is the thing
-that looks expensive. Throttled to a sixth of this machine's speed -- enough to stretch
-the boot from 1.2s to 6.0s -- the same measurements come back 38.3 and 55.0. Recompiling
-the cores at `-O2` would be optimising something with at least six times the headroom it
+that looks expensive. Counted where the game marks its own screen dirty, it draws about
+five hundred frames a second; all that was ever throttled is how many of them were carried
+to the display. Throttling the machine to a sixth of its speed -- enough to stretch the
+boot from 1.2s to 6.0s -- left both measurements roughly where they were. Recompiling the
+cores at `-O2` would be optimising something with at least six times the headroom it
 needs, on functions the note above says clang already handles badly.
 
 **On a phone** the page stops being a page with a game on it and becomes the game. A
