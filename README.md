@@ -327,6 +327,7 @@ Useful knobs while debugging the ARM core:
 | `BOD_ARM_STRICT=1` | make out-of-range accesses fatal instead of clamped |
 | `BOD_ARM_LOCKSTEP=<n>` | run every instruction of `armc` *n* under both cores and report the first register that disagrees |
 | `BOD_WEB_TRACE=<n>` | report where each dispatch loop is every *n* dispatches; `1` reports every one. Written for the browser, where a blocked thread cannot be looked at, but it works anywhere |
+| `BOD_FPS=<n>` | how often at most the screen is copied to the display, in frames a second (default 60, clamped to 5-240). `20` is what PumpkinOS does on its own; lower is cheaper on a phone's battery |
 
 Lockstep needs a single-step core for that blob, which is large and generated on demand:
 
@@ -396,6 +397,31 @@ keepalive reference the loop holds -- which is how a loop that has really finish
 the runtime exit, and a paused game has not finished. So the count is left where it is and
 the push that `resume()` does on the way back is popped off instead. The audio context is
 suspended alongside, which is what stops a tab left paused from holding the audio session.
+
+**Twenty frames a second was the ceiling**, and it is what made the game feel slow. The
+screen is copied to the display by `pumpkin_update_single_app`, which upstream PumpkinOS
+gates to once every 50ms -- ample for a desktop of Palm applications, and about what a
+Palm managed, but a shutter to ride a bike through. `BOD_FPS` sets it instead, and the
+default is now 60: the same ride measured 16.3 frames a second before and 37.5 after.
+
+It costs nothing when the game is not drawing. The copy only happens if `draw_task` finds
+a dirty rectangle -- `fullrefresh` is off in this build -- so asking for more frames than
+the game produces buys nothing and spends nothing. What it cannot do is make the bike go
+faster: three seconds of pedalling covers the same ground either way, because the physics
+runs off the clock rather than off the frame. The cap was costing smoothness and the
+delay before a key showed on screen, which is most of what "slow" means in a game.
+
+37.5 rather than 60 because the gate is only looked at once around the loop, and one turn
+of the loop is about 8ms -- nearly all of it the present, which SDL's software renderer
+does through a `MAIN_THREAD_EM_ASM` that converts 102,400 pixels in JavaScript and hands
+them to `putImageData`. That is a synchronous hop to the browser's main thread per frame,
+and it is the next ceiling: asking for 120 gets 55 and no more.
+
+The emulation is not what is in the way, which is worth saying because it is the thing
+that looks expensive. Throttled to a sixth of this machine's speed -- enough to stretch
+the boot from 1.2s to 6.0s -- the same measurements come back 38.3 and 55.0. Recompiling
+the cores at `-O2` would be optimising something with at least six times the headroom it
+needs, on functions the note above says clang already handles badly.
 
 **On a phone** the page stops being a page with a game on it and becomes the game. A
 coarse pointer is taken as a thumb -- `?touch=1` and `?touch=0` say so outright, which is
