@@ -397,6 +397,38 @@ the runtime exit, and a paused game has not finished. So the count is left where
 the push that `resume()` does on the way back is popped off instead. The audio context is
 suspended alongside, which is what stops a tab left paused from holding the audio session.
 
+**On a phone** the page stops being a page with a game on it and becomes the game. A
+coarse pointer is taken as a thumb -- `?touch=1` and `?touch=0` say so outright, which is
+how the layout is looked at on a desktop -- and the page rearranges: the heading goes and
+its buttons join the level buttons on one line at the top, the key legend goes with it,
+the status line moves over the screen, and the screen takes everything that is left.
+Nothing scrolls, and the safe-area insets keep it clear of a notch and a home indicator.
+
+The keys the game is ridden with come with it, since there is no keyboard to press them
+on: the four arrows in a cross and the space bar beside them, under the screen when the
+phone is upright and down either side of it when it is not. They send the keystrokes a
+thumb is asking for rather than talking to the game -- SDL listens for `keydown` and
+`keyup` on the window, so a `KeyboardEvent` dispatched there is the same press, with the
+same `code` and `key` a real one carries, and whatever the cog has bound follows along.
+The arrows always ride, because the runtime wires them to the navigator itself; space
+rides whatever the settings panel says it does, which is Flip until someone says
+otherwise. Each key is held for as long as the thumb is on it, which is what riding
+wants -- the game reads the keys as a mask rather than as repeats -- and each takes one
+pointer and captures it, so two can be held at once and a thumb that slides off a key
+still lets go of it. A key held when the tab goes away is released. While a panel is open
+the pad is dimmed and inert, the panel having taken the keys for itself, and the pad's
+keystrokes are marked so that a thumb cannot be the answer to the settings panel's
+"press the key you want".
+
+The screen is a square and a phone is not, so the square and the keys are sized together
+(`bodFit`) rather than by the stylesheet: each depends on the other. Upright, the cross is
+three keys tall under the screen, so every pixel a key gains costs the square three; on
+its side the cross and the space bar are five keys wide beside it, and it costs five. The
+keys take as much of the room beside the square as they can use and the square takes the
+rest, which on an upright phone is the whole width of it. The page a desktop gets is
+untouched by any of this: the grid that arranges the three of them is `display: contents`
+until the touch layout is on.
+
 Two things are arranged differently from the native build, both forced by the browser:
 
 - **The OS runs on a worker.** `-sPROXY_TO_PTHREAD` moves `main` off the browser's main

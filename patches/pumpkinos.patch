@@ -772,18 +772,18 @@ index ea74bb2..6fe5735 100644
    return 0;
  }
 diff --git a/src/emscripten/template.html b/src/emscripten/template.html
-index 216dea4..d5258af 100644
+index 216dea4..1b831ed 100644
 --- a/src/emscripten/template.html
 +++ b/src/emscripten/template.html
-@@ -2,37 +2,655 @@
+@@ -2,37 +2,932 @@
  <html>
  <head>
    <meta charset="utf-8">
 -  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-+  <meta name="viewport" content="width=device-width, initial-scale=1">
++  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 +  <title>Bike or Die 2</title>
 +  <style>
-+    :root { color-scheme: dark; }
++    :root { color-scheme: dark; --key: 46px; --keygap: 6px; }
 +    body {
 +      margin: 0; background: #14161a; color: #c9ced6;
 +      font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -824,6 +824,7 @@ index 216dea4..d5258af 100644
 +    #packs-open { display: flex; align-items: center; gap: 6px; max-width: 100%; }
 +    #packs-open .cur { color: #8b94a2; overflow: hidden; text-overflow: ellipsis;
 +                       white-space: nowrap; max-width: 18em; }
++    #packs-open .cur:not(:empty)::before { content: '\00b7\00a0'; color: #6f7885; }
 +    #packs-open .caret { color: #6f7885; font-size: 10px; }
 +    /* The panels sit over the game rather than beside it, so that opening
 +       one does not move the screen. */
@@ -879,6 +880,116 @@ index 216dea4..d5258af 100644
 +    }
 +    button:hover:not(:disabled) { background: #262b33; }
 +    button:disabled { color: #6f7885; cursor: wait; }
++
++    /* ------------------------------------------------------------ on a phone
++       There is no keyboard to ride with and no room to waste, so the page
++       becomes the game: one line of controls at the top, the screen as large
++       as what is left allows, and the five keys the game is played with along
++       the bottom -- or, held sideways, down either side of it. Nothing
++       scrolls. .stage is display:contents until then, so that the page a
++       desktop gets is laid out exactly as it was before any of this.
++       bodFit() below settles --key and the square between them. */
++    .stage { display: contents; }
++    .pad { display: none; }
++
++    html.touch, html.touch body {
++      height: 100%; overflow: hidden; overscroll-behavior: none;
++    }
++    html.touch body {
++      box-sizing: border-box; gap: 6px;
++      height: 100vh; height: 100dvh;   /* the part in front of the browser's own bars */
++      padding: calc(6px + env(safe-area-inset-top)) calc(6px + env(safe-area-inset-right))
++               calc(6px + env(safe-area-inset-bottom)) calc(6px + env(safe-area-inset-left));
++      touch-action: manipulation;      /* no zooming the page out from under the game */
++      -webkit-user-select: none; user-select: none;
++      -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
++    }
++    /* The title says nothing a phone has room for; its buttons move into the
++       line below, and the key legend is advice for a keyboard that is not
++       there. */
++    html.touch .bar, html.touch .keys { display: none; }
++    html.touch .tools { width: 100%; gap: 3px; flex-wrap: nowrap; }
++    html.touch .tools button { padding: 6px 8px; }
++    html.touch .tools__group button { min-width: 2em; }
++    html.touch #packs-open { min-width: 0; overflow: hidden; }
++    html.touch #packs-open .cur { max-width: none; }
++    /* Narrower than the line has room for, the words give way rather than the
++       caret: a button clipped mid-arrow does not look like one that opens. */
++    html.touch #packs-open .lbl { min-width: 0; overflow: hidden;
++                                  text-overflow: ellipsis; white-space: nowrap; }
++    html.touch #packs-open .caret { flex: none; }
++    html.touch #packs-open .cur:not(:empty)::before { content: none; }
++    /* The name says what the words in front of it would have, and the line has
++       room for one of them. */
++    html.touch #packs-open:has(.cur:not(:empty)) .lbl { display: none; }
++
++    html.touch .stage {
++      flex: 1 1 0; min-height: 0; width: 100%;
++      display: grid; gap: 8px; place-items: center;
++      grid-template-columns: auto minmax(0, 1fr) auto;
++      grid-template-rows: minmax(0, 1fr);
++      grid-template-areas: 'dir screen act';
++    }
++    @media (orientation: portrait) {
++      html.touch .stage {
++        grid-template-columns: auto minmax(0, 1fr);
++        grid-template-rows: auto minmax(0, 1fr);
++        grid-template-areas: 'screen screen' 'dir act';
++      }
++    }
++    html.touch .screen {
++      grid-area: screen; width: 100%; height: auto;
++      display: flex; align-items: center; justify-content: center;
++    }
++    html.touch #canvas { border-radius: 0; }
++    /* The status line has no line of its own to sit on, so it goes over the
++       screen -- which is black for as long as the words that matter, the
++       loading ones, are on it. */
++    html.touch #status {
++      position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
++      min-height: 0; line-height: 1.5; padding: 3px 8px; text-align: center;
++      background: #14161ad9; pointer-events: none;
++    }
++    html.touch #status:empty { display: none; }
++    html.touch .panel { padding: 12px 14px; }
++    html.touch .panel button, html.touch #packs-list button { min-height: 34px; }
++
++    /* The keys. Four in a cross, and the space bar beside them -- under the
++       screen when the phone is upright, and on the far side of it when it is
++       not. */
++    html.touch .pad--dir {
++      grid-area: dir; display: grid; gap: var(--keygap);
++      grid-template-columns: repeat(3, var(--key));
++      grid-template-rows: repeat(3, var(--key));
++    }
++    html.touch .pad--act {
++      grid-area: act; display: flex; align-items: center; justify-content: center;
++    }
++    .pad--dir .key--up    { grid-area: 1 / 2 / 2 / 3; }
++    .pad--dir .key--left  { grid-area: 2 / 1 / 3 / 2; }
++    .pad--dir .key--right { grid-area: 2 / 3 / 3 / 4; }
++    .pad--dir .key--down  { grid-area: 3 / 2 / 4 / 3; }
++    .key--space {
++      width: calc(var(--key) * 2 + var(--keygap));
++      height: calc(var(--key) * 3 + var(--keygap) * 2);
++    }
++    @media (orientation: portrait) {
++      html.touch .pad--act { width: 100%; }
++      .key--space { width: 100%; max-width: calc(var(--key) * 4); }
++    }
++    .key {
++      display: flex; align-items: center; justify-content: center; padding: 0;
++      font: 600 calc(var(--key) * 0.24)/1 ui-sans-serif, system-ui, -apple-system, sans-serif;
++      letter-spacing: .18em; color: #c9ced6;
++      background: #20242b; border: 1px solid #333941; border-radius: 12px;
++      touch-action: none; -webkit-tap-highlight-color: transparent;
++      -webkit-user-select: none; user-select: none;
++    }
++    .pad--dir .key { font-size: calc(var(--key) * 0.42); letter-spacing: 0; }
++    .key[data-down] { color: #fff; background: #39414d; border-color: #6a7482; }
++    /* A panel covers the screen and takes the keys for itself, so there is
++       nothing for the pad to send while one is open. */
++    html.touch .stage:has(.panel:not([hidden])) .pad { opacity: .3; pointer-events: none; }
 +  </style>
  </head>
  
@@ -905,7 +1016,7 @@ index 216dea4..d5258af 100644
 +
 +  <div class="tools">
 +    <button id="packs-open" type="button" title="Choose a level pack" aria-expanded="false" disabled>
-+      Level pack <span class="cur" id="packs-cur"></span> <span class="caret">&#9660;</span>
++      <span class="lbl">Level pack</span> <span class="cur" id="packs-cur"></span> <span class="caret">&#9660;</span>
 +    </button>
 +    <button id="levels" type="button" title="Choose a level in this pack" disabled>Levels&hellip;</button>
 +    <span class="tools__group">
@@ -915,30 +1026,47 @@ index 216dea4..d5258af 100644
 +    </span>
 +  </div>
 +
-+  <div class="screen">
-+    <canvas id="canvas" width="320" height="320" tabindex="0"
-+            oncontextmenu="event.preventDefault()"></canvas>
++  <div class="stage">
++    <div class="screen">
++      <canvas id="canvas" width="320" height="320" tabindex="0"
++              oncontextmenu="event.preventDefault()"></canvas>
 +
-+    <div id="packs" class="panel" hidden>
-+      <h2>Level packs</h2>
-+      <input id="packs-filter" type="search" placeholder="Find a pack" autocomplete="off" spellcheck="false">
-+      <div id="packs-list" role="listbox"></div>
-+      <p id="packs-note">Pick one and it starts. These are the game's own packs, in its order.</p>
-+      <div class="row">
-+        <button id="packs-cancel">Cancel</button>
++      <div id="packs" class="panel" hidden>
++        <h2>Level packs</h2>
++        <input id="packs-filter" type="search" placeholder="Find a pack" autocomplete="off" spellcheck="false">
++        <div id="packs-list" role="listbox"></div>
++        <p id="packs-note">Pick one and it starts. These are the game's own packs, in its order.</p>
++        <div class="row">
++          <button id="packs-cancel">Cancel</button>
++        </div>
++      </div>
++
++      <div id="settings" class="panel" hidden>
++        <h2>Controls</h2>
++        <table id="binds"></table>
++        <p>Click a key and press the one you want; <kbd>Backspace</kbd> takes it away
++           and <kbd>Esc</kbd> leaves it as it was. The arrow keys ride whatever these
++           say, so the bike can always be steered with them.</p>
++        <div class="row">
++          <button id="binds-done">Done</button>
++          <button id="binds-reset">Restore defaults</button>
++        </div>
 +      </div>
 +    </div>
 +
-+    <div id="settings" class="panel" hidden>
-+      <h2>Controls</h2>
-+      <table id="binds"></table>
-+      <p>Click a key and press the one you want; <kbd>Backspace</kbd> takes it away
-+         and <kbd>Esc</kbd> leaves it as it was. The arrow keys ride whatever these
-+         say, so the bike can always be steered with them.</p>
-+      <div class="row">
-+        <button id="binds-done">Done</button>
-+        <button id="binds-reset">Restore defaults</button>
-+      </div>
++    <div class="pad pad--dir">
++      <button class="key key--up" type="button" tabindex="-1" data-code="ArrowUp" data-key="ArrowUp"
++              title="Forward" aria-label="Forward">&#9650;</button>
++      <button class="key key--left" type="button" tabindex="-1" data-code="ArrowLeft" data-key="ArrowLeft"
++              title="Balance left" aria-label="Balance left">&#9664;</button>
++      <button class="key key--right" type="button" tabindex="-1" data-code="ArrowRight" data-key="ArrowRight"
++              title="Balance right" aria-label="Balance right">&#9654;</button>
++      <button class="key key--down" type="button" tabindex="-1" data-code="ArrowDown" data-key="ArrowDown"
++              title="Brake" aria-label="Brake">&#9660;</button>
++    </div>
++    <div class="pad pad--act">
++      <button class="key key--space" type="button" tabindex="-1" data-code="Space" data-key=" "
++              title="Flip" aria-label="Space, which flips">Space</button>
 +    </div>
 +  </div>
 +
@@ -1075,7 +1203,7 @@ index 216dea4..d5258af 100644
 +      try { localStorage.setItem(BOD_KEYS_STORE, bodKeysSpec()); } catch (e) { /* private window */ }
 +      bodSendKeys();
 +      bodDrawKeys();
-     }
++    }
 +
 +    function bodListen(action, button) {
 +      if (bodListening) bodListening.button.classList.remove('listening');
@@ -1092,7 +1220,7 @@ index 216dea4..d5258af 100644
 +      document.getElementById('cog').setAttribute('aria-expanded', open ? 'true' : 'false');
 +      bodDrawKeys();
 +      if (!open) canvas.focus();
-+    }
+     }
 +
 +    (function () {
 +      var stored = null, fromQuery;
@@ -1159,7 +1287,9 @@ index 216dea4..d5258af 100644
 +
 +      // Binding a key: the keystroke is the answer to the panel and must not
 +      // also reach the game, which is listening on the document below this.
-+      if (bodListening) {
++      // The pad's keys are not an answer to it: a thumb cannot be the key
++      // someone wants bound, and the pad is dimmed while the panel is open.
++      if (bodListening && !e.bodTouch) {
 +        e.preventDefault();
 +        e.stopPropagation();
 +        if (e.key !== 'Escape') {
@@ -1192,6 +1322,153 @@ index 216dea4..d5258af 100644
 +
 +    canvas.addEventListener('mousedown', function () { canvas.focus(); });
 +    pauseButton.addEventListener('click', function () { bodSetPaused(!bodPaused); });
++
++    // ------------------------------------------------------------ touch play
++    //
++    // A phone has no keyboard, so the page grows one: the four arrows and the
++    // space bar, as five keys under the thumbs. They send the keystrokes a
++    // rider would make rather than talking to the game directly -- SDL listens
++    // for those on the window, so a KeyboardEvent dispatched there is the same
++    // press, and whatever the settings panel has bound follows along. Each key
++    // is held for as long as the thumb is on it, which is what riding asks
++    // for; the game reads the keys as a mask rather than as repeats.
++    //
++    // They are not in the tab order: a keyboard has the keys they stand in
++    // for, and space on a focused one would be both a flip and whatever the
++    // key is. A pointer is what they are for, and assistive technology reaches
++    // them without the tab order's help.
++    var bodTouchOn = false;
++
++    function bodPadKey(btn, down) {
++      var e;
++
++      if (down === !!btn.bodDown) return;
++      try {
++        e = new KeyboardEvent(down ? 'keydown' : 'keyup',
++                              { key: btn.dataset.key, code: btn.dataset.code,
++                                bubbles: true, cancelable: true });
++      } catch (err) {
++        return;
++      }
++      btn.bodDown = down;
++      btn.toggleAttribute('data-down', down);
++      e.bodTouch = true;    // the page's own handler above lets these by
++      window.dispatchEvent(e);
++    }
++
++    // One pointer per key, captured, so that a thumb sliding off the key still
++    // releases it -- and so that two keys can be held at once, which balancing
++    // while pedalling needs.
++    function bodPadWire(btn) {
++      var held = null;
++      var release = function (e) {
++        if (held === null || (e && e.pointerId !== held)) return;
++        held = null;
++        bodPadKey(btn, false);
++      };
++
++      btn.addEventListener('pointerdown', function (e) {
++        e.preventDefault();      // no focus, no click, no zoom on a double tap
++        if (held !== null) return;
++        held = e.pointerId;
++        try { btn.setPointerCapture(e.pointerId); } catch (err) { /* a mouse is fine without */ }
++        bodPadKey(btn, true);
++      });
++      btn.addEventListener('pointerup', release);
++      btn.addEventListener('pointercancel', release);
++      btn.addEventListener('lostpointercapture', release);
++      btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
++      btn.bodRelease = function () { release(null); };
++    }
++
++    // A key held as the tab goes away would still be held when it comes back.
++    function bodPadReleaseAll() {
++      Array.prototype.forEach.call(document.querySelectorAll('.key'), function (btn) {
++        if (btn.bodRelease) btn.bodRelease();
++      });
++    }
++
++    // The screen is a square and a phone is not, so whichever way it is held
++    // there is room left over beside it. The keys take as much of that as they
++    // can use and the square takes the rest, which is the whole width of an
++    // upright phone. What neither wants ends up under the keys, where a band
++    // of nothing is least in the way.
++    //
++    // The two of them are sized here rather than by the stylesheet because
++    // each depends on the other: upright, the cross is three keys tall under
++    // the screen, so a key costs the square three pixels of its side; turned
++    // over, the cross and the space bar are five keys wide beside it, and a
++    // key costs five. The stage is the room they are dividing -- it is
++    // flex: 1 1 0, so what its children do cannot change how big it is.
++    var BOD_KEY_MIN = 46, BOD_KEY_MAX = 96, bodFitPending = false;
++
++    function bodFit() {
++      var stage, cs, gap, kgap, portrait, w, h, key, side;
++
++      if (!bodTouchOn) return;
++      stage = document.querySelector('.stage');
++      cs = getComputedStyle(stage);
++      kgap = parseFloat(getComputedStyle(document.documentElement)
++                        .getPropertyValue('--keygap')) || 0;
++      portrait = matchMedia('(orientation: portrait)').matches;
++      w = stage.clientWidth;
++      h = stage.clientHeight;
++
++      if (portrait) {
++        gap = parseFloat(cs.rowGap) || 0;
++        // As tall as the room under a full-width square leaves, and no more
++        // than three fifths of the line wide: the space bar has the rest.
++        key = Math.min((h - gap - w - 2 * kgap) / 3, (w * 0.6 - 2 * kgap) / 3);
++      } else {
++        gap = parseFloat(cs.columnGap) || 0;
++        // As wide as the room beside a full-height square leaves, and no
++        // taller than the cross has room to be.
++        key = Math.min((w - 2 * gap - h - 3 * kgap) / 5, (h - 2 * kgap) / 3);
++      }
++      key = Math.max(BOD_KEY_MIN, Math.min(BOD_KEY_MAX, Math.floor(key)));
++      document.documentElement.style.setProperty('--key', key + 'px');
++
++      side = portrait ? Math.min(w, h - gap - (3 * key + 2 * kgap))
++                      : Math.min(w - 2 * gap - (5 * key + 3 * kgap), h);
++      canvas.style.width = canvas.style.height = Math.max(120, Math.floor(side)) + 'px';
++    }
++
++    function bodFitSoon() {
++      if (bodFitPending) return;
++      bodFitPending = true;
++      requestAnimationFrame(function () { bodFitPending = false; bodFit(); });
++    }
++
++    (function () {
++      var q = null;
++
++      // A coarse pointer is a thumb. ?touch=1 and ?touch=0 say so outright,
++      // which is how the layout is looked at on a desktop.
++      try { q = new URLSearchParams(location.search).get('touch'); } catch (e) { /* no query string */ }
++      bodTouchOn = q === null ? matchMedia('(pointer: coarse)').matches : q !== '0';
++      if (!bodTouchOn) return;
++
++      document.documentElement.classList.add('touch');
++      // One line of controls rather than two: the heading says nothing a phone
++      // has room for, so its buttons join the rest and it goes.
++      document.querySelector('.tools').appendChild(document.querySelector('.bar__actions'));
++      document.querySelector('#packs-open .lbl').textContent = 'Pack';
++      // And the status line goes over the screen, there being no line spare.
++      document.querySelector('.screen').appendChild(statusEl);
++
++      Array.prototype.forEach.call(document.querySelectorAll('.key'), bodPadWire);
++      window.addEventListener('blur', bodPadReleaseAll);
++      document.addEventListener('visibilitychange', function () {
++        if (document.hidden) bodPadReleaseAll();
++      });
++
++      bodFit();
++      window.addEventListener('resize', bodFitSoon);
++      window.addEventListener('orientationchange', bodFitSoon);
++      // The visible height changes as the browser's own bars come and go,
++      // which is not a resize.
++      if (window.visualViewport) window.visualViewport.addEventListener('resize', bodFitSoon);
++    })();
 +
 +    // ------------------------------------------------ level packs and levels
 +    //
@@ -1246,7 +1523,7 @@ index 216dea4..d5258af 100644
 +
 +      setTitle: function (title) {
 +        bodPack.title = title;
-+        document.getElementById('packs-cur').textContent = title ? '\u00b7 ' + title : '';
++        document.getElementById('packs-cur').textContent = title || '';
 +      },
 +
 +      // Runs `cmd`, then polls until the state is one of `until`, or an error,
