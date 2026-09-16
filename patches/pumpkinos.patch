@@ -1165,10 +1165,10 @@ index ea74bb2..6fe5735 100644
    return 0;
  }
 diff --git a/src/emscripten/template.html b/src/emscripten/template.html
-index 216dea4..dcdc2ab 100644
+index 216dea4..1e76877 100644
 --- a/src/emscripten/template.html
 +++ b/src/emscripten/template.html
-@@ -2,37 +2,2152 @@
+@@ -2,37 +2,2269 @@
  <html>
  <head>
    <meta charset="utf-8">
@@ -1339,7 +1339,8 @@ index 216dea4..dcdc2ab 100644
 +    #dialog button.is-default:hover:not(:disabled) { background: #dde1e8; }
 +
 +    /* ---------------------------------------------------- touch controls
-+       Off unless they are asked for, in Settings or with ?touch=1. Then the
++       On for a touch screen with no mouse -- a phone, a tablet -- and off
++       for everything else, unless Settings or ?touch= says otherwise. Then the
 +       page becomes the game: one line of controls at the top, the screen as
 +       large as what is left allows, and the five keys the game is played
 +       with along the bottom -- or, held sideways, down either side of it.
@@ -1412,9 +1413,11 @@ index 216dea4..dcdc2ab 100644
 +    html.touch .panel { padding: 12px 14px; }
 +    html.touch .panel button, html.touch #packs-list button { min-height: 34px; }
 +
-+    /* The keys. Four in a cross, and the space bar beside them -- under the
-+       screen when the phone is upright, and on the far side of it when it is
-+       not. */
++    /* The keys. Four in a cross, and the space bar beside them -- at the
++       bottom when the phone is upright, where the thumbs are, and either side
++       of the screen when it is not. The cross is one control (bodCrossWire):
++       its corners are two arrows at once, so it takes the touch between its
++       keys as well as on them. */
 +    html.touch .pad--dir {
 +      grid-area: dir; display: grid; gap: var(--keygap);
 +      grid-template-columns: repeat(3, var(--key));
@@ -1422,6 +1425,13 @@ index 216dea4..dcdc2ab 100644
 +    }
 +    html.touch .pad--act {
 +      grid-area: act; display: flex; align-items: center; justify-content: center;
++    }
++    html.touch .pad {
++      touch-action: none; -webkit-user-select: none; user-select: none;
++      -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
++    }
++    @media (orientation: portrait) {
++      html.touch .pad { align-self: end; }
 +    }
 +    .pad--dir .key--up    { grid-area: 1 / 2 / 2 / 3; }
 +    .pad--dir .key--left  { grid-area: 2 / 1 / 3 / 2; }
@@ -1947,9 +1957,16 @@ index 216dea4..dcdc2ab 100644
 +      // type, the choice that is made, or the first thing there is -- which
 +      // in a dialog is its first control rather than its default button, the
 +      // default being Cancel as often as not, and Escape being that anyway.
++      // With the touch keys on, never somewhere to type: on a phone that
++      // puts the keyboard up over the game, and a thumb taps the field it
++      // wants.
 +      start: function (panel) {
 +        var items = bodNav.items(panel), prefer = ['input[type="text"]', 'input[type="search"]',
 +            '[role="radio"].is-on', '.dlg__list .is-on', '.is-current'], i, found;
++        if (bodTouchOn) {
++          prefer = prefer.slice(2);
++          items = items.filter(function (el) { return !el.matches('input[type="text"], input[type="search"]'); });
++        }
 +        for (i = 0; i < prefer.length; i++) {
 +          found = items.filter(function (el) { return el.matches(prefer[i]); })[0];
 +          if (found) return bodNav.focus(found);
@@ -2106,10 +2123,12 @@ index 216dea4..dcdc2ab 100644
 +    // ---------------------------------------------------------- touch controls
 +    //
 +    // A phone has no keyboard, so the page can grow one: the four arrows and
-+    // the space bar, as five keys under the thumbs. They are off unless they
-+    // are asked for -- Settings -> Touch controls, kept in this browser, or
-+    // ?touch=1 and ?touch=0 for one visit -- and they come and go without a
-+    // reload, since the game would go with it.
++    // the space bar, as five keys under the thumbs. They come on by themselves
++    // where the pointer is a finger -- (pointer: coarse), a phone or a tablet
++    // -- and stay off where it is a mouse, since a keyboard is what that page
++    // is played with. Settings -> Touch controls says otherwise and is kept
++    // in this browser; ?touch=1 and ?touch=0 say it for one visit. They come
++    // and go without a reload, since the game would go with it.
 +    //
 +    // They send the keystrokes a rider would make rather than talking to the
 +    // game directly -- SDL listens for those on the window, so a KeyboardEvent
@@ -2122,7 +2141,11 @@ index 216dea4..dcdc2ab 100644
 +    // for, and space on a focused one would be both a flip and whatever the
 +    // key is. A pointer is what they are for, and assistive technology reaches
 +    // them without the tab order's help.
-+    var BOD_TOUCH_STORE = 'bod.touch';
++    //
++    // The choice is kept under a name of its own rather than the one used
++    // while they were off everywhere by default, so that an Off chosen then,
++    // on a phone, does not leave that phone with no way to ride.
++    var BOD_TOUCH_STORE = 'bod.touch-keys';
 +    var bodTouchOn = false, bodTouchWired = false;
 +
 +    function bodPadKey(btn, down) {
@@ -2142,9 +2165,18 @@ index 216dea4..dcdc2ab 100644
 +      window.dispatchEvent(e);
 +    }
 +
-+    // One pointer per key, captured, so that a thumb sliding off the key still
-+    // releases it -- and so that two keys can be held at once, which balancing
-+    // while pedalling needs.
++    // Nothing a touch on the keys would otherwise start: a scroll, a zoom, a
++    // text selection or its magnifier, a callout on a long press. touch-action
++    // and user-select say most of that; Safari has been known to need telling
++    // again here. The pointer events a touch makes come first and are not
++    // affected.
++    function bodPadQuiet(el) {
++      el.addEventListener('touchstart', function (e) { if (e.cancelable) e.preventDefault(); }, { passive: false });
++      el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
++    }
++
++    // The space bar: one pointer, captured, so that a thumb sliding off the
++    // key still releases it.
 +    function bodPadWire(btn) {
 +      var held = null;
 +      var release = function (e) {
@@ -2163,22 +2195,97 @@ index 216dea4..dcdc2ab 100644
 +      btn.addEventListener('pointerup', release);
 +      btn.addEventListener('pointercancel', release);
 +      btn.addEventListener('lostpointercapture', release);
-+      btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
++      bodPadQuiet(btn);
 +      btn.bodRelease = function () { release(null); };
++    }
++
++    // The cross, which a thumb uses as one control rather than as four keys.
++    // Where the thumb is on it says which arrows are down, as a 3x3 grid: an
++    // arrow's own square is that arrow, a corner is the two either side of it
++    // -- forward and a lean at once, which is most of riding -- and the middle
++    // is none. A thumb that rolls from one square to the next takes the press
++    // with it, rather than holding the first until it lets go; one that
++    // strays off the cross altogether still steers, by which side of the
++    // middle it is on.
++    //
++    // A square is left a little further in than it was come into by, so a
++    // thumb resting on the line between two does not flicker between them.
++    // Every thumb on the cross is followed on its own and captured, and an
++    // arrow is down while any of them is on it: one can hold forward while the
++    // other leans.
++    function bodCrossWire(pad) {
++      var keys = {
++        up: pad.querySelector('.key--up'), down: pad.querySelector('.key--down'),
++        left: pad.querySelector('.key--left'), right: pad.querySelector('.key--right')
++      };
++      var thumbs = {};
++
++      // -1, 0 or 1 along one axis, for a thumb `d` pixels from the middle.
++      function side(d, was, edge, slack) {
++        if (d > edge || (was > 0 && d > edge - slack)) return 1;
++        if (d < -edge || (was < 0 && d < slack - edge)) return -1;
++        return 0;
++      }
++
++      function held() {
++        var on = { up: false, down: false, left: false, right: false };
++        Object.keys(thumbs).forEach(function (id) {
++          var t = thumbs[id];
++          if (t.y < 0) on.up = true;
++          if (t.y > 0) on.down = true;
++          if (t.x < 0) on.left = true;
++          if (t.x > 0) on.right = true;
++        });
++        // Presses before releases, so that a thumb rolling from one arrow to
++        // the next never leaves a moment with neither down.
++        Object.keys(keys).forEach(function (k) { if (on[k]) bodPadKey(keys[k], true); });
++        Object.keys(keys).forEach(function (k) { if (!on[k]) bodPadKey(keys[k], false); });
++      }
++
++      function aim(e) {
++        var t = thumbs[e.pointerId], r, key, edge;
++        if (!t) return;
++        r = pad.getBoundingClientRect();
++        key = keys.up.offsetWidth || r.width / 3;
++        // Halfway across the gap between the middle square and the next.
++        edge = key / 2 + (r.width - 3 * key) / 4;
++        t.x = side(e.clientX - (r.left + r.width / 2), t.x, edge, key * 0.15);
++        t.y = side(e.clientY - (r.top + r.height / 2), t.y, edge, key * 0.15);
++        held();
++      }
++
++      function release(e) {
++        if (!thumbs[e.pointerId]) return;
++        delete thumbs[e.pointerId];
++        held();
++      }
++
++      pad.addEventListener('pointerdown', function (e) {
++        e.preventDefault();      // no focus, no click, no zoom on a double tap
++        thumbs[e.pointerId] = { x: 0, y: 0 };
++        try { pad.setPointerCapture(e.pointerId); } catch (err) { /* a mouse is fine without */ }
++        aim(e);
++      });
++      pad.addEventListener('pointermove', aim);
++      pad.addEventListener('pointerup', release);
++      pad.addEventListener('pointercancel', release);
++      pad.addEventListener('lostpointercapture', release);
++      bodPadQuiet(pad);
++      pad.bodRelease = function () { thumbs = {}; held(); };
 +    }
 +
 +    // A key held as the tab goes away would still be held when it comes back.
 +    function bodPadReleaseAll() {
-+      Array.prototype.forEach.call(document.querySelectorAll('.key'), function (btn) {
-+        if (btn.bodRelease) btn.bodRelease();
++      Array.prototype.forEach.call(document.querySelectorAll('.pad, .key'), function (el) {
++        if (el.bodRelease) el.bodRelease();
 +      });
 +    }
 +
 +    // The screen is a square and a phone is not, so whichever way it is held
 +    // there is room left over beside it. The keys take as much of that as they
 +    // can use and the square takes the rest, which is the whole width of an
-+    // upright phone. What neither wants ends up under the keys, where a band
-+    // of nothing is least in the way.
++    // upright phone. What neither wants ends up between the screen and the
++    // keys, which sit at the bottom, where the thumbs holding the phone are.
 +    //
 +    // The two of them are sized here rather than by the stylesheet because
 +    // each depends on the other: upright, the cross is three keys tall under
@@ -2252,7 +2359,8 @@ index 216dea4..dcdc2ab 100644
 +          document.querySelector('.screen').appendChild(statusEl);
 +          if (!bodTouchWired) {
 +            bodTouchWired = true;
-+            Array.prototype.forEach.call(document.querySelectorAll('.key'), bodPadWire);
++            bodCrossWire(document.querySelector('.pad--dir'));
++            bodPadWire(document.querySelector('.key--space'));
 +            window.addEventListener('blur', bodPadReleaseAll);
 +            document.addEventListener('visibilitychange', function () {
 +              if (document.hidden) bodPadReleaseAll();
@@ -2284,7 +2392,9 @@ index 216dea4..dcdc2ab 100644
 +      Array.prototype.forEach.call(document.querySelectorAll('#touch-modes button'), function (b) {
 +        b.onclick = function () { bodSetTouch(b.dataset.touch === 'on', true); };
 +      });
-+      bodSetTouch(q !== null ? q !== '0' : stored === 'on', false);
++      bodSetTouch(q !== null ? q !== '0' :
++                  stored !== null ? stored === 'on' :
++                  !!(window.matchMedia && matchMedia('(pointer: coarse)').matches), false);
 +    })();
 +
 +    // ---------------------------------------------------------- the pause menu
@@ -2615,13 +2725,20 @@ index 216dea4..dcdc2ab 100644
 +        bodPack.filter.value = '';
 +        bodPack.panel.hidden = false;
 +        bodPack.button.setAttribute('aria-expanded', 'true');
-+        bodPack.filter.focus();
++        bodPack.typeHere();
 +        bodPack.run('open', ['listed'], function (r) {
 +          if (r.state !== 'listed') { bodPack.close(false); return; }
 +          bodPack.names = r.names || [];
 +          bodPack.draw();
-+          if (!bodPack.panel.hidden) bodPack.filter.focus();
++          if (!bodPack.panel.hidden) bodPack.typeHere();
 +        });
++      },
++
++      // The keyboard goes to the filter, to type a name straight away -- but
++      // not on a touch screen, where focusing it from a tap puts the phone's
++      // keyboard up over the list.
++      typeHere: function () {
++        if (!bodTouchOn) bodPack.filter.focus();
 +      },
 +
 +      // Which of the names is the pack the game is on: the level list's title
@@ -2663,7 +2780,7 @@ index 216dea4..dcdc2ab 100644
 +        // A pack is somewhere to ride: the pause, if there was one, is over.
 +        if (bodPack.fromPM) { bodPack.fromPM = false; bodPM.resume(); }
 +        bodPack.list.innerHTML = '<div class="none">Starting ' + name.trim() + '…</div>';
-+        bodPack.filter.focus();
++        bodPack.typeHere();
 +        bodPack.run('pick ' + i, ['done', 'idle'], function (r) {
 +          bodPack.close(false);
 +          if (r.state === 'done') bodPack.say('');
@@ -2725,7 +2842,7 @@ index 216dea4..dcdc2ab 100644
 +        if (label === 'Select Level') bodUI.expect();
 +        bodPack.menu(label);
 +      });
-+    }
+     }
 +    bodLevelButton('levels', 'Select Level');
 +    bodLevelButton('level-prev', 'Previous Level');
 +    bodLevelButton('level-next', 'Next Level');
@@ -3283,7 +3400,7 @@ index 216dea4..dcdc2ab 100644
 +      } else if (!bodPaused && ctx.state !== 'running' && ctx.resume) {
 +        ctx.resume().catch(function () { /* not in a gesture; the next one will */ });
 +      }
-     }
++    }
 +    ['pointerdown', 'mousedown', 'keydown', 'touchstart'].forEach(function (type) {
 +      window.addEventListener(type, bodSyncAudio, { capture: true });
 +    });
