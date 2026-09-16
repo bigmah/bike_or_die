@@ -353,10 +353,10 @@ index 4114db6..e46dbe7 100644
  	rm -f $(OBJS) $(PROGRAM).zip $(PROGRAM).wasm $(PROGRAM).data $(PROGRAM).html $(PROGRAM).js
 diff --git a/src/emscripten/bod-pre.js b/src/emscripten/bod-pre.js
 new file mode 100644
-index 0000000..054be7c
+index 0000000..ab5fbb3
 --- /dev/null
 +++ b/src/emscripten/bod-pre.js
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,544 @@
 +// Browser-side setup for the Bike or Die 2 WebAssembly build: the environment
 +// that tools/make_app.sh exports around the native one, and the page's half of
 +// the saved data.
@@ -483,6 +483,237 @@ index 0000000..054be7c
 +// `seq` counts published frames, and is read either side of the copy: a frame
 +// published while this one was being copied is copied again rather than torn
 +// into the one before it.
++//
++// What it draws with is the other half: see the screen, below.
++
++// ------------------------------------------------------------ the screen --
++//
++// The game draws 320x320, and the screen it is looked at on has several times
++// that many pixels in each direction. How they are made up is the Screen
++// setting on the page:
++//
++//   pixels  every one of the game's pixels a square, as a Palm showed it. At
++//           a whole-number scale that is exactly nearest-neighbour. At any
++//           other -- a phone, whose screen is as big as the phone allows --
++//           the squares cannot all be the same size, so the one device pixel
++//           that straddles a seam is blended instead of some rows doubling.
++//   smooth  bilinear.
++//   xbr     Hyllian's xBR (level 2). Each pixel's corners are redrawn from the
++//           edges that run through its 5x5 neighbourhood, so lettering,
++//           wheels and the outlines of hills come out as smooth lines at the
++//           display's own resolution, while flat colour and texture are left
++//           as they were.
++//
++// Each is a fragment shader, drawn into the canvas with its backing store set
++// to its CSS size times devicePixelRatio: one of its pixels per device pixel,
++// which is the resolution the frame is upscaled to. The frame itself goes up
++// as a 320x320 texture. Upscaling on the CPU instead would make the copy out
++// of the heap and the putImageData after it sixteen times the size, sixty
++// times a second, on the thread the page's controls run on.
++//
++// Without WebGL the canvas keeps the 2D context and its 320x320 backing, and
++// the browser scales it the way the stylesheet says: pixels or smooth. xBR
++// needs the shader and is not offered.
++
++var BOD_SCREEN_MODES = ['pixels', 'smooth', 'xbr'];
++
++var BOD_SCREEN_VS = [
++  'attribute vec2 a_pos;',
++  'varying vec2 v_uv;',
++  'void main() {',
++  '  v_uv = a_pos * vec2(0.5, -0.5) + 0.5;',   // row 0 of the frame at the top
++  '  gl_Position = vec4(a_pos, 0.0, 1.0);',
++  '}'
++].join('\n');
++
++// u_size is the frame in pixels, u_scale how many device pixels each of them
++// covers on the screen.
++var BOD_SCREEN_HEAD = [
++  'precision highp float;',
++  'uniform sampler2D u_tex;',
++  'uniform vec2 u_size;',
++  'uniform vec2 u_scale;',
++  'varying vec2 v_uv;',
++  ''
++].join('\n');
++
++var BOD_SCREEN_FS = {
++  // Sampled bilinearly, but only ever at a texel's centre except within half
++  // a device pixel of a seam, where the sample slides across it.
++  pixels: BOD_SCREEN_HEAD + [
++    'void main() {',
++    '  vec2 p = v_uv * u_size;',
++    '  vec2 seam = floor(p + 0.5);',
++    '  vec2 d = clamp((p - seam) * u_scale, -0.5, 0.5);',
++    '  gl_FragColor = texture2D(u_tex, (seam + d) / u_size);',
++    '}'
++  ].join('\n'),
++
++  smooth: BOD_SCREEN_HEAD + [
++    'void main() { gl_FragColor = texture2D(u_tex, v_uv); }'
++  ].join('\n'),
++
++  // xBR-lv2, after Hyllian's (MIT licence), with corner type C. Sampled with
++  // nearest-neighbour. The 5x5 neighbourhood of the pixel E being drawn:
++  //
++  //        A1 B1 C1
++  //     A0  A  B  C C4
++  //     D0  D  E  F F4
++  //     G0  G  H  I I4
++  //        G5 H5 I5
++  //
++  // Everything is worked out for the four corners of E at once, as the four
++  // components of a vec4: the bottom right, top right, top left and bottom
++  // left, each with its neighbours renamed as if it were the bottom right.
++  // The comparisons are of luma scaled to 0-48; delta is how far across an
++  // edge the blend runs, one device pixel's worth.
++  xbr: BOD_SCREEN_HEAD + [
++    'const vec3 Y  = vec3(14.352, 28.176, 5.472);',
++    'const vec4 Ao = vec4( 1.0, -1.0, -1.0,  1.0);',
++    'const vec4 Bo = vec4( 1.0,  1.0, -1.0, -1.0);',
++    'const vec4 Co = vec4( 1.5,  0.5, -0.5,  0.5);',
++    'const vec4 Ax = vec4( 1.0, -1.0, -1.0,  1.0);',
++    'const vec4 Bx = vec4( 0.5,  2.0, -0.5, -2.0);',
++    'const vec4 Cx = vec4( 1.0,  1.0, -0.5,  0.0);',
++    'const vec4 Ay = vec4( 1.0, -1.0, -1.0,  1.0);',
++    'const vec4 By = vec4( 2.0,  0.5, -2.0, -0.5);',
++    'const vec4 Cy = vec4( 2.0,  0.0, -1.0,  0.5);',
++    'vec4 df(vec4 a, vec4 b) { return abs(a - b); }',
++    'float cdf(vec3 a, vec3 b) { vec3 d = abs(a - b); return d.r + d.g + d.b; }',
++    'vec4 eq(vec4 a, vec4 b) { return step(df(a, b), vec4(15.0)); }',
++    'vec4 neq(vec4 a, vec4 b) { return vec4(1.0) - eq(a, b); }',
++    'vec4 wd(vec4 a, vec4 b, vec4 c, vec4 d, vec4 e, vec4 f, vec4 g, vec4 h) {',
++    '  return df(a, b) + df(a, c) + df(d, e) + df(d, f) + 4.0 * df(g, h);',
++    '}',
++    'vec3 at(vec2 c, float x, float y) { return texture2D(u_tex, c + vec2(x, y) / u_size).rgb; }',
++    'void main() {',
++    '  vec2 p = v_uv * u_size;',
++    '  vec2 fp = fract(p);',
++    '  vec2 c = (floor(p) + 0.5) / u_size;',
++    '  vec3 A1 = at(c, -1.0, -2.0), B1 = at(c, 0.0, -2.0), C1 = at(c, 1.0, -2.0);',
++    '  vec3 A0 = at(c, -2.0, -1.0), A = at(c, -1.0, -1.0), B = at(c, 0.0, -1.0), C = at(c, 1.0, -1.0), C4 = at(c, 2.0, -1.0);',
++    '  vec3 D0 = at(c, -2.0,  0.0), D = at(c, -1.0,  0.0), E = at(c, 0.0,  0.0), F = at(c, 1.0,  0.0), F4 = at(c, 2.0,  0.0);',
++    '  vec3 G0 = at(c, -2.0,  1.0), G = at(c, -1.0,  1.0), H = at(c, 0.0,  1.0), I = at(c, 1.0,  1.0), I4 = at(c, 2.0,  1.0);',
++    '  vec3 G5 = at(c, -1.0,  2.0), H5 = at(c, 0.0,  2.0), I5 = at(c, 1.0,  2.0);',
++    '  vec4 b  = vec4(dot(B, Y), dot(D, Y), dot(H, Y), dot(F, Y));',
++    '  vec4 k  = vec4(dot(C, Y), dot(A, Y), dot(G, Y), dot(I, Y));',   // c in Hyllian's
++    '  vec4 e  = vec4(dot(E, Y));',
++    '  vec4 d  = b.yzwx, f = b.wxyz, h = b.zwxy, g = k.zwxy, i = k.wxyz;',
++    '  vec4 i4 = vec4(dot(I4, Y), dot(C1, Y), dot(A0, Y), dot(G5, Y));',
++    '  vec4 i5 = vec4(dot(I5, Y), dot(C4, Y), dot(A1, Y), dot(G0, Y));',
++    '  vec4 h5 = vec4(dot(H5, Y), dot(F4, Y), dot(B1, Y), dot(D0, Y));',
++    '  vec4 f4 = h5.yzwx;',
++    // The lines across each corner that the blend is on the far side of:
++    // 45 degrees, and the shallow and steep ones either side of it.
++    '  vec4 fx   = Ao * fp.y + Bo * fp.x;',
++    '  vec4 fx_l = Ax * fp.y + Bx * fp.x;',
++    '  vec4 fx_u = Ay * fp.y + By * fp.x;',
++    '  vec4 irlv0 = neq(e, f) * neq(e, h);',
++    '  vec4 irlv1 = irlv0 * (neq(f, b) * neq(f, k) + neq(h, d) * neq(h, g) +',
++    '               eq(e, i) * (neq(f, f4) * neq(f, i4) + neq(h, h5) * neq(h, i5)) + eq(e, g) + eq(e, k));',
++    '  vec4 irlv2l = neq(e, g) * neq(d, g);',
++    '  vec4 irlv2u = neq(e, k) * neq(b, k);',
++    '  float dl = 1.0 / max(u_scale.x, 1.0);',
++    '  vec4 delta   = vec4(dl);',
++    '  vec4 delta_l = vec4(0.5, 1.0, 0.5, 1.0) * dl;',
++    '  vec4 delta_u = delta_l.yxwz;',
++    '  vec4 fx45 = clamp((fx   + delta   - Co) / (2.0 * delta),   0.0, 1.0);',
++    '  vec4 fx30 = clamp((fx_l + delta_l - Cx) / (2.0 * delta_l), 0.0, 1.0);',
++    '  vec4 fx60 = clamp((fx_u + delta_u - Cy) / (2.0 * delta_u), 0.0, 1.0);',
++    // Whether an edge runs across the corner at all, and whether it is
++    // shallow or steep enough to take the longer line.
++    '  vec4 wd1 = wd(e, k, g, i, h5, f4, h, f);',
++    '  vec4 wd2 = wd(h, d, i5, f, i4, b, e, i);',
++    '  vec4 edr   = step(wd1 + 0.1, wd2) * step(0.5, irlv1);',
++    '  vec4 edr_l = step(2.0 * df(f, g), df(h, k)) * irlv2l * edr;',
++    '  vec4 edr_u = step(2.0 * df(h, k), df(f, g)) * irlv2u * edr;',
++    '  vec4 m  = max(max(fx30 * edr_l, fx60 * edr_u), fx45 * edr);',
++    '  vec4 px = step(df(e, f), df(e, h));',
++    // Opposite corners are blended in pairs, and the pair that moved E the
++    // further wins.
++    '  vec3 r1 = mix(E,  mix(H, F, px.x), m.x);',
++    '  r1      = mix(r1, mix(B, D, px.z), m.z);',
++    '  vec3 r2 = mix(E,  mix(F, B, px.y), m.y);',
++    '  r2      = mix(r2, mix(D, H, px.w), m.w);',
++    '  gl_FragColor = vec4(mix(r1, r2, step(cdf(E, r1), cdf(E, r2))), 1.0);',
++    '}'
++  ].join('\n')
++};
++
++// The shaders and the quad they are drawn on, in a context that already
++// exists -- a lost context that comes back is the same object with nothing in
++// it, and is set up again from here. Programs are compiled when first used.
++function bodScreenGL(gl) {
++  var programs = {}, vs, quad, tex, tw = 0, th = 0;
++
++  function shader(type, source) {
++    var s = gl.createShader(type);
++    gl.shaderSource(s, source);
++    gl.compileShader(s);
++    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS) && !gl.isContextLost()) {
++      throw new Error('screen shader: ' + gl.getShaderInfoLog(s));
++    }
++    return s;
++  }
++
++  function program(mode) {
++    var p = programs[mode];
++
++    if (p) return p;
++    p = gl.createProgram();
++    gl.attachShader(p, vs);
++    gl.attachShader(p, shader(gl.FRAGMENT_SHADER, BOD_SCREEN_FS[mode]));
++    gl.bindAttribLocation(p, 0, 'a_pos');
++    gl.linkProgram(p);
++    if (!gl.getProgramParameter(p, gl.LINK_STATUS) && !gl.isContextLost()) {
++      throw new Error('screen program: ' + gl.getProgramInfoLog(p));
++    }
++    p.size = gl.getUniformLocation(p, 'u_size');
++    p.scale = gl.getUniformLocation(p, 'u_scale');
++    return (programs[mode] = p);
++  }
++
++  vs = shader(gl.VERTEX_SHADER, BOD_SCREEN_VS);
++  quad = gl.createBuffer();
++  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
++  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
++  gl.enableVertexAttribArray(0);
++  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
++
++  // A 320x320 texture is not a power of two, which WebGL 1 allows only
++  // clamped and without mipmaps.
++  tex = gl.createTexture();
++  gl.bindTexture(gl.TEXTURE_2D, tex);
++  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
++  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
++
++  return {
++    // bytes is RGBA, and not a view of the shared heap: WebGL refuses those.
++    upload: function (w, h, bytes) {
++      if (w !== tw || h !== th) {
++        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
++        tw = w;
++        th = h;
++      } else {
++        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
++      }
++    },
++    draw: function (mode) {
++      var p = program(mode), filter = mode === 'xbr' ? gl.NEAREST : gl.LINEAR;
++      var w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
++
++      if (!tw) return false;
++      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
++      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
++      gl.viewport(0, 0, w, h);
++      gl.useProgram(p);
++      gl.uniform2f(p.size, tw, th);
++      gl.uniform2f(p.scale, w / tw, h / th);
++      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
++      return true;
++    }
++  };
++}
 +
 +if (typeof ENVIRONMENT_IS_PTHREAD === 'undefined' || !ENVIRONMENT_IS_PTHREAD) (function () {
 +  // The order of the fields is the interface; see web_canvas_t.
@@ -490,13 +721,85 @@ index 0000000..054be7c
 +      F_TICK = 6, F_PRESENTED = 7, F_STALE = 8;
 +  var MAGIC = 0x424F4443;
 +
-+  var base = 0, ctx = null, img = null, out = null, pixels = 0, words = 0, last = -1;
++  var el = Module['canvas'], base = 0, pixels = 0, words = 0, last = -1;
++  var gl = null, screen = null, ctx = null, img = null, bytes = null, frame32 = null;
++  var fw = 0, fh = 0, devW = 0, devH = 0, dirty = false;
++  var mode = BOD_SCREEN_MODES.indexOf(Module['bodScreenMode']) >= 0 ? Module['bodScreenMode'] : 'xbr';
++
++  // SDL presents into the same canvas when it is asked to (BOD_PRESENT=sdl),
++  // with a 2D context of its own; a WebGL one taken first would leave it
++  // none. The frame is not this loop's to draw then anyway.
++  function sdlPresents() {
++    return /(^|\n)BOD_PRESENT=sdl(\n|$)/.test(bodEnvString());
++  }
++
++  // Taken at once rather than when the first frame arrives, so the page
++  // knows from the start whether xBR is on offer.
++  if (el && !sdlPresents()) {
++    try {
++      gl = el.getContext('webgl', { alpha: false, antialias: false, depth: false, stencil: false,
++                                    premultipliedAlpha: false, preserveDrawingBuffer: false });
++      if (gl) screen = bodScreenGL(gl);
++    } catch (e) {
++      console.warn('no WebGL screen, drawing it in 2D:', e);
++      gl = screen = null;
++    }
++    if (gl) {
++      el.addEventListener('webglcontextlost', function (e) {
++        e.preventDefault();       // or it never comes back
++        screen = null;
++      });
++      el.addEventListener('webglcontextrestored', function () {
++        try { screen = bodScreenGL(gl); } catch (e) { console.warn(e); }
++        last = -1;                // the texture went with it
++      });
++    }
++  }
++
++  // The size of the canvas in device pixels. Browsers that can say exactly
++  // what it is (device-pixel-content-box) are asked; the rest are worked out
++  // from the CSS size, as it is drawn, every refresh. The exact answer is only
++  // taken when it is the worked-out one give or take the rounding: Chrome's
++  // emulated device scale factors -- how the page is tested at 2x -- report
++  // the CSS size there.
++  if (gl && typeof ResizeObserver !== 'undefined') {
++    try {
++      new ResizeObserver(function (entries) {
++        var s = entries[entries.length - 1].devicePixelContentBoxSize;
++        if (s && s[0]) {
++          devW = s[0].inlineSize;
++          devH = s[0].blockSize;
++        }
++      }).observe(el, { box: 'device-pixel-content-box' });
++    } catch (e) { /* not in this browser */ }
++  }
++
++  function fit() {
++    var dpr = window.devicePixelRatio || 1;
++    var w = Math.round(el.clientWidth * dpr), h = Math.round(el.clientHeight * dpr);
++
++    if (Math.abs(devW - w) <= 1 && Math.abs(devH - h) <= 1) {
++      w = devW;
++      h = devH;
++    }
++
++    if (w > 0 && h > 0 && (el.width !== w || el.height !== h)) {
++      el.width = w;               // which clears it
++      el.height = h;
++      dirty = true;
++    }
++  }
++
++  // The 2D context has only the browser's own scaling to offer.
++  function style() {
++    if (!gl && el) el.style.imageRendering = mode === 'pixels' ? '' : 'auto';
++  }
 +
 +  // Zero until the wasm side has a frame buffer to show, which is when the
 +  // window is created -- a second or so into the boot. Asked again every time
 +  // the buffer goes, so a window that comes back is picked up again.
 +  function ready() {
-+    var p, w, h, el;
++    var p, w, h;
 +
 +    if (base) return true;
 +    if (typeof _bod_canvas_info !== 'function') return false;
@@ -504,13 +807,18 @@ index 0000000..054be7c
 +
 +    w = HEAPU32[(p >>> 2) + F_WIDTH];
 +    h = HEAPU32[(p >>> 2) + F_HEIGHT];
-+    el = Module['canvas'];
 +    if (!el || !w || !h) return false;
 +
-+    if (!ctx && !(ctx = el.getContext('2d', { alpha: false }))) return false;
-+    if (!img || img.width !== w || img.height !== h) {
-+      img = ctx.createImageData(w, h);
-+      out = new Uint32Array(img.data.buffer);
++    if (!gl && !ctx) {
++      if (!(ctx = el.getContext('2d', { alpha: false }))) return false;
++      style();
++    }
++    if (w !== fw || h !== fh) {
++      img = ctx ? ctx.createImageData(w, h) : null;
++      bytes = img ? new Uint8Array(img.data.buffer) : new Uint8Array(w * h * 4);
++      frame32 = new Uint32Array(bytes.buffer);
++      fw = w;
++      fh = h;
 +    }
 +    base = p >>> 2;
 +    pixels = HEAPU32[base + F_PIXELS] >>> 2;
@@ -530,17 +838,28 @@ index 0000000..054be7c
 +    // window closing on the way out looks like from here.
 +    if (HEAPU32[base + F_MAGIC] !== MAGIC) { base = 0; return; }
 +
++    if (gl) fit();
++
 +    seq = Atomics.load(HEAPU32, base + F_SEQ);
-+    if (seq !== last) {
-+      out.set(HEAPU32.subarray(pixels, pixels + words));
++    if (seq !== last && (screen || ctx)) {
++      frame32.set(HEAPU32.subarray(pixels, pixels + words));
 +      if ((again = Atomics.load(HEAPU32, base + F_SEQ)) !== seq) {
-+        out.set(HEAPU32.subarray(pixels, pixels + words));
++        frame32.set(HEAPU32.subarray(pixels, pixels + words));
 +        seq = again;
 +      }
 +      last = seq;
-+      ctx.putImageData(img, 0, 0);
++      if (screen) {
++        screen.upload(fw, fh, bytes);
++        screen.draw(mode);
++      } else {
++        ctx.putImageData(img, 0, 0);
++      }
++      dirty = false;
 +      HEAPU32[base + F_PRESENTED]++;
 +    } else {
++      // Resized, or a different screen asked for, with no new frame to show:
++      // the one there is, again.
++      if (dirty && screen && screen.draw(mode)) dirty = false;
 +      HEAPU32[base + F_STALE]++;
 +    }
 +
@@ -563,6 +882,22 @@ index 0000000..054be7c
 +      refreshes: Atomics.load(HEAPU32, base + F_VSYNC)
 +    };
 +  };
++
++  // The page's Screen setting. set() answers whether the mode was taken.
++  Module['bodScreen'] = {
++    modes: BOD_SCREEN_MODES.slice(),
++    get: function () { return mode; },
++    available: function (m) { return BOD_SCREEN_MODES.indexOf(m) >= 0 && (m !== 'xbr' || !!gl); },
++    set: function (m) {
++      if (!this.available(m)) return false;
++      mode = m;
++      dirty = true;
++      style();
++      return true;
++    }
++  };
++  if (!gl && mode === 'xbr') mode = 'smooth';
++  style();
 +
 +  requestAnimationFrame(frame);
 +})();
@@ -879,10 +1214,10 @@ index ea74bb2..6fe5735 100644
    return 0;
  }
 diff --git a/src/emscripten/template.html b/src/emscripten/template.html
-index 216dea4..ed0beab 100644
+index 216dea4..974da8b 100644
 --- a/src/emscripten/template.html
 +++ b/src/emscripten/template.html
-@@ -2,37 +2,1394 @@
+@@ -2,37 +2,1458 @@
  <html>
  <head>
    <meta charset="utf-8">
@@ -899,9 +1234,10 @@ index 216dea4..ed0beab 100644
 +    }
 +    h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .02em; }
 +    h1 span { color: #6f7885; font-weight: 400; }
-+    /* The game draws 320x320. The canvas stays that size and the page scales
-+       it with nearest-neighbour, so the pixel art is exact and the blitter
-+       does not do the scaling. */
++    /* The game draws 320x320. The canvas is drawn at the resolution of the
++       display under it, upscaled the way the Screen setting says (bod-pre.js);
++       pixelated is for a browser without WebGL, where the canvas stays 320x320
++       and this is the scaling. */
 +    #canvas {
 +      width: 640px; height: 640px;
 +      image-rendering: pixelated; image-rendering: crisp-edges;
@@ -980,11 +1316,11 @@ index 216dea4..ed0beab 100644
 +    .dlg__row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 +    .dlg__text { color: #c9ced6; }
 +    .dlg__note { color: #8b94a2; }
-+    .dlg__group { display: flex; gap: 0; }
-+    .dlg__group button { border-radius: 0; margin-left: -1px; }
-+    .dlg__group button:first-child { border-radius: 5px 0 0 5px; margin-left: 0; }
-+    .dlg__group button:last-child { border-radius: 0 5px 5px 0; }
-+    .dlg__group button.is-on { color: #14161a; background: #c9ced6; border-color: #c9ced6; }
++    .dlg__group, .seg { display: flex; gap: 0; }
++    .dlg__group button, .seg button { border-radius: 0; margin-left: -1px; }
++    .dlg__group button:first-child, .seg button:first-child { border-radius: 5px 0 0 5px; margin-left: 0; }
++    .dlg__group button:last-child, .seg button:last-child { border-radius: 0 5px 5px 0; }
++    .dlg__group button.is-on, .seg button.is-on { color: #14161a; background: #c9ced6; border-color: #c9ced6; }
 +    .dlg__list { width: 100%; max-height: 40vh; overflow: auto; display: flex; flex-direction: column;
 +                 gap: 1px; border: 1px solid #333941; border-radius: 5px; padding: 3px; }
 +    .dlg__list button { text-align: left; background: none; border: 0; border-radius: 4px; padding: 3px 7px;
@@ -1003,6 +1339,7 @@ index 216dea4..ed0beab 100644
 +    #binds button { min-width: 5.5em; font-variant-caps: all-small-caps; letter-spacing: .06em; }
 +    #binds button.listening { color: #14161a; background: #c9ced6; border-color: #c9ced6; }
 +    .panel p { margin: 0; color: #7d8593; max-width: 34em; }
++    .panel .gap { margin-top: 6px; }
 +    .panel .row { display: flex; gap: 8px; }
 +    #status { min-height: 1.5em; color: #8b94a2; font-variant-numeric: tabular-nums; }
 +    #status.err { color: #e0777a; }
@@ -1138,7 +1475,7 @@ index 216dea4..ed0beab 100644
 +    <h1>Bike or Die 2 <span>&mdash; ToySpring, 2008, recompiled to WebAssembly</span></h1>
 +    <div class="bar__actions">
 +      <button id="pause" type="button" title="Pause game" aria-pressed="false" disabled>Pause</button>
-+      <button id="cog" title="Controls" aria-label="Controls" aria-expanded="false">
++      <button id="cog" title="Settings" aria-label="Settings" aria-expanded="false">
 +        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
 +             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 +          <circle cx="12" cy="12" r="3.2"/>
@@ -1197,14 +1534,21 @@ index 216dea4..ed0beab 100644
 +      </div>
 +
 +      <div id="settings" class="panel" hidden>
-+        <h2>Controls</h2>
++        <h2>Screen</h2>
++        <div class="seg" id="screen-modes" role="radiogroup" aria-label="Screen">
++          <button type="button" role="radio" data-screen="pixels">Pixels</button>
++          <button type="button" role="radio" data-screen="smooth">Smooth</button>
++          <button type="button" role="radio" data-screen="xbr">xBR</button>
++        </div>
++        <p id="screen-note"></p>
++        <h2 class="gap">Controls</h2>
 +        <table id="binds"></table>
 +        <p>Click a key and press the one you want; <kbd>Backspace</kbd> takes it away
 +           and <kbd>Esc</kbd> leaves it as it was. The arrow keys ride whatever these
 +           say, so the bike can always be steered with them.</p>
 +        <div class="row">
 +          <button id="binds-done">Done</button>
-+          <button id="binds-reset">Restore defaults</button>
++          <button id="binds-reset">Default keys</button>
 +        </div>
 +      </div>
 +    </div>
@@ -1258,7 +1602,7 @@ index 216dea4..ed0beab 100644
 +      pauseButton.textContent = paused ? 'Resume' : 'Pause';
 +      pauseButton.title = paused ? 'Resume game' : 'Pause game';
 +      pauseButton.setAttribute('aria-pressed', paused ? 'true' : 'false');
-     }
++    }
 +
 +    // ---------------------------------------------------------- the controls
 +    //
@@ -1373,6 +1717,7 @@ index 216dea4..ed0beab 100644
 +      panel.hidden = !open;
 +      document.getElementById('cog').setAttribute('aria-expanded', open ? 'true' : 'false');
 +      bodDrawKeys();
++      bodDrawScreen();
 +      if (!open) canvas.focus();
 +    }
 +
@@ -1399,7 +1744,61 @@ index 216dea4..ed0beab 100644
 +      bodDrawKeys();
 +    })();
 +
++    // ------------------------------------------------------------ the screen
++    //
++    // How the game's 320x320 is made up to the display's resolution; the
++    // presenter in bod-pre.js does the drawing. Kept in this browser, and
++    // ?BOD_SCREEN= says it for one visit without keeping it. The runtime is
++    // told through Module before it loads, and asked directly after.
++    var BOD_SCREEN_STORE = 'bod.screen';
++    var BOD_SCREEN_NOTES = {
++      pixels: 'The game\u2019s own 320\u00d7320 pixels, each drawn as a square, the way a Palm showed them.',
++      smooth: 'Blended between pixels: no stair-steps, and softer everywhere.',
++      xbr: 'Upscaled with xBR to this display\u2019s resolution: edges, wheels and lettering are redrawn as smooth lines, and textures keep their detail.'
++    };
++    var bodScreenMode = 'xbr';
++
++    function bodScreenAvailable(m) {
++      if (window.Module && Module.bodScreen) return Module.bodScreen.available(m);
++      return !!BOD_SCREEN_NOTES[m];
++    }
++
++    function bodDrawScreen() {
++      var current = (window.Module && Module.bodScreen) ? Module.bodScreen.get() : bodScreenMode;
++      Array.prototype.forEach.call(document.querySelectorAll('#screen-modes button'), function (b) {
++        var on = b.dataset.screen === current;
++        b.classList.toggle('is-on', on);
++        b.setAttribute('aria-checked', on ? 'true' : 'false');
++        b.disabled = !bodScreenAvailable(b.dataset.screen);
++        b.title = b.disabled ? 'Needs WebGL, which this browser does not have' : '';
++      });
++      document.getElementById('screen-note').textContent = BOD_SCREEN_NOTES[current] || '';
++    }
++
++    function bodSetScreen(m, keep) {
++      if (!bodScreenAvailable(m)) return;
++      bodScreenMode = m;
++      if (window.Module && Module.bodScreen) Module.bodScreen.set(m);
++      else if (window.Module) Module.bodScreenMode = m;
++      if (keep) {
++        try { localStorage.setItem(BOD_SCREEN_STORE, m); } catch (e) { /* private window */ }
++      }
++      bodDrawScreen();
++    }
++
++    (function () {
++      var stored = null, fromQuery = null;
++      try { stored = localStorage.getItem(BOD_SCREEN_STORE); } catch (e) { /* private window */ }
++      try { fromQuery = new URLSearchParams(location.search).get('BOD_SCREEN'); } catch (e) { }
++      if (BOD_SCREEN_NOTES[fromQuery || stored]) bodScreenMode = fromQuery || stored;
++      Array.prototype.forEach.call(document.querySelectorAll('#screen-modes button'), function (b) {
++        b.onclick = function () { bodSetScreen(b.dataset.screen, true); };
++      });
++      bodDrawScreen();
++    })();
++
 +    var Module = {
++      bodScreenMode: bodScreenMode,
 +      canvas: canvas,
 +      onRuntimeInitialized: function () {
 +        if (window.bodPendingKeys) bodSendKeys();
@@ -1544,7 +1943,7 @@ index 216dea4..ed0beab 100644
 +      btn.addEventListener('lostpointercapture', release);
 +      btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 +      btn.bodRelease = function () { release(null); };
-+    }
+     }
 +
 +    // A key held as the tab goes away would still be held when it comes back.
 +    function bodPadReleaseAll() {
@@ -2351,10 +2750,10 @@ index 069638e..f8adbda 100644
 +  launcher = app
  }
 diff --git a/src/liblsdl2/Makefile b/src/liblsdl2/Makefile
-index a8b7c26..c8e577c 100644
+index a8b7c26..9f47905 100644
 --- a/src/liblsdl2/Makefile
 +++ b/src/liblsdl2/Makefile
-@@ -16,6 +16,18 @@ STATIC=1
+@@ -16,6 +16,21 @@ STATIC=1
  else ifeq ($(OSNAME),Emscripten)
  STATIC=2
  CUSTOMFLAGS=-s USE_SDL=2
@@ -2366,6 +2765,9 @@ index a8b7c26..c8e577c 100644
 +# The window's own level controls and the sheet that draws the game's dialogs
 +# are Objective-C (liblsdl2_mac.m, liblsdl2_mac_form.m).
 +MAC_OBJS=liblsdl2_mac.o liblsdl2_mac_form.o
++# The screen is composited on the CPU and upscaled to the display's resolution
++# before it is shown (liblsdl2_screen.c).
++SOURCE+=liblsdl2_screen.c
 +EXTDEPS=$(MAC_OBJS)
 +EXTCLEAN=$(MAC_OBJS)
 +LIBS=$(MAC_OBJS) -L$(SDL_PREFIX)/lib -lSDL2 $(MIXER_LIBS) -framework OpenGL -framework Cocoa
@@ -2373,27 +2775,29 @@ index a8b7c26..c8e577c 100644
  else ifeq ($(OSNAME),Msys)
  CUSTOMFLAGS=$(MIXER_FLAGS) $(OPENGL_FLAGS)
  LIBS=-lSDL2 -lversion -limm32 -lgdi32 -lsetupapi -lwinmm -lole32 -loleaut32 $(MIXER_LIBS)
-@@ -25,3 +37,10 @@ LIBS=-lSDL2 $(MIXER_LIBS) $(OPENGL_LIBS)
+@@ -25,3 +40,11 @@ LIBS=-lSDL2 $(MIXER_LIBS) $(OPENGL_LIBS)
  endif
  
  include ../lib.mak
 +
 +liblsdl2.o $(MAC_OBJS): liblsdl2_mac.h
++liblsdl2.o liblsdl2_screen.o: liblsdl2_screen.h
 +liblsdl2.wasm liblsdl2_web.wasm: liblsdl2_web.h
 +
 +%.o: %.m
 +	@echo Compiling $<
 +	@$(CC) $(CPPFLAGS) -fobjc-arc -c -o $@ $<
 diff --git a/src/liblsdl2/liblsdl2.c b/src/liblsdl2/liblsdl2.c
-index b8e2f67..ed177da 100644
+index b8e2f67..49873e2 100644
 --- a/src/liblsdl2/liblsdl2.c
 +++ b/src/liblsdl2/liblsdl2.c
-@@ -20,6 +20,14 @@
+@@ -20,6 +20,15 @@
  #include "average.h"
  #include "debug.h"
  
 +#if defined(DARWIN)
 +#include "liblsdl2_mac.h"
++#include "liblsdl2_screen.h"
 +#endif
 +
 +#if defined(EMSCRIPTEN)
@@ -2403,17 +2807,18 @@ index b8e2f67..ed177da 100644
  #define SDL_BUTTON1   1
  #define SDL_BUTTON2   2
  
-@@ -38,6 +46,9 @@ struct texture_t {
+@@ -38,6 +47,10 @@ struct texture_t {
    int width, height;
    SDL_Texture *blur;
    uint32_t *buf;
-+#if defined(EMSCRIPTEN)
-+  uint8_t *pixels;    /* the canvas path keeps the texture itself, in RGB565 */
++#if defined(EMSCRIPTEN) || defined(DARWIN)
++  uint8_t *pixels;    /* the canvas path keeps the texture itself: RGB565 in a
++                       * browser, ARGB8888 natively */
 +#endif
  };
  
  typedef struct {
-@@ -65,6 +76,12 @@ typedef struct {
+@@ -65,8 +78,21 @@ typedef struct {
  #endif
    void (*drop_callback)(char *filename, void *data);
    void *drop_data;
@@ -2422,11 +2827,20 @@ index b8e2f67..ed177da 100644
 +#endif
 +#if defined(DARWIN)
 +  uint8_t key_owner[SDL_NUM_SCANCODES];
++  int canvas;         /* the frame is composited, and upscaled when presented */
++  SDL_Texture *screen;
++  int screen_w, screen_h;
 +#endif
  } libsdl_window_t;
  
++#if defined(DARWIN)
++static void libsdl_screen_present(libsdl_window_t *window);
++#endif
++
  typedef struct {
-@@ -356,6 +373,23 @@ static int map_key(libsdl_window_t *window, SDL_Event *ev) {
+   char *tag;
+   int client;
+@@ -356,6 +382,23 @@ static int map_key(libsdl_window_t *window, SDL_Event *ev) {
            case SDLK_HOME: key = WINDOW_KEY_HOME; break;
            case SDLK_END: key = WINDOW_KEY_END; break;
            case SDLK_INSERT: key = WINDOW_KEY_INS; break;
@@ -2450,7 +2864,7 @@ index b8e2f67..ed177da 100644
            case SDLK_F1: key = WINDOW_KEY_F1; break;
            case SDLK_F2: key = WINDOW_KEY_F2; break;
            case SDLK_F3: key = WINDOW_KEY_F3; break;
-@@ -405,6 +439,49 @@ static int map_button(libsdl_window_t *window, SDL_Event *ev) {
+@@ -405,6 +448,49 @@ static int map_button(libsdl_window_t *window, SDL_Event *ev) {
    return 0;
  }
  
@@ -2500,7 +2914,7 @@ index b8e2f67..ed177da 100644
  static int libsdl_event2(libsdl_window_t *window, int wait, int *arg1, int *arg2) {
    SDL_Event ev;
    int has_ev, r = 0;
-@@ -412,6 +489,9 @@ static int libsdl_event2(libsdl_window_t *window, int wait, int *arg1, int *arg2
+@@ -412,6 +498,9 @@ static int libsdl_event2(libsdl_window_t *window, int wait, int *arg1, int *arg2
    has_ev = wait < 0 ? SDL_WaitEvent(&ev) : SDL_WaitEventTimeout(&ev, wait);
  
    if (has_ev) {
@@ -2510,12 +2924,162 @@ index b8e2f67..ed177da 100644
      switch (ev.type) {
        case SDL_KEYDOWN:
          *arg1 = map_key(window, &ev);
-@@ -780,10 +860,37 @@ static int libsdl_video_setup(libsdl_window_t *window) {
+@@ -458,6 +547,16 @@ static int libsdl_event2(libsdl_window_t *window, int wait, int *arg1, int *arg2
+           case SDL_WINDOWEVENT_CLOSE:
+             r = -1;
+             break;
++#if defined(DARWIN)
++          // Moved to a display with a different density, or uncovered: the
++          // frame there is to show again at once, at the new size, rather than
++          // whenever the game next draws one.
++          case SDL_WINDOWEVENT_EXPOSED:
++          case SDL_WINDOWEVENT_SIZE_CHANGED:
++          case SDL_WINDOWEVENT_DISPLAY_CHANGED:
++            if (window->canvas) libsdl_screen_present(window);
++            break;
++#endif
+           default:
+             break;
+         }
+@@ -689,6 +788,117 @@ static int libsdl_event(libsdl_window_t *window, int wait, int remove, int *ekey
+   return r;
+ }
+ 
++#if defined(DARWIN)
++/* The native window's screen (liblsdl2_screen.c): the frame is composited on
++ * the CPU as the game draws it, and each render upscales it to the pixels the
++ * window really has -- on a Retina display twice its size in points, so at the
++ * default zoom the game's 320x320 becomes 1920x1920 -- the way the Screen
++ * setting says.
++ *
++ * All of this is on the main thread, which is the one that pumps SDL's events
++ * and renders; the View menu's Screen items reach it from inside that pump. */
++
++static libsdl_window_t *screen_window;
++static int screen_mode = SCREEN_XBR;
++
++static void libsdl_screen_present(libsdl_window_t *window) {
++  SDL_Rect dst;
++  uint32_t *frame;
++  void *pixels;
++  int fw, fh, ow, oh, n, tw, th, pitch, exact, nearest;
++
++  if ((frame = screen_frame(&fw, &fh)) == NULL) return;
++  if (SDL_GetRendererOutputSize(window->renderer, &ow, &oh) != 0 || ow <= 0 || oh <= 0) return;
++
++  // The largest whole multiple of the frame that fits the output. The window
++  // is one, so this is the whole of it except in full screen.
++  n = (ow / fw < oh / fh) ? ow / fw : oh / fh;
++  if (n < 1) n = 1;
++  if (n > SCREEN_MAX_FACTOR) n = SCREEN_MAX_FACTOR;
++  exact = (fw * n == ow && fh * n == oh);
++
++  // Pixels at an exact multiple, and smooth at any size, are the renderer's
++  // own nearest-neighbour and bilinear scaling of the frame as it is. Pixels
++  // at any other size are made up to the multiple below it on the CPU and
++  // blended the rest of the way, so no row of squares comes out wider than
++  // its neighbours. xBR is always drawn at that multiple.
++  if (screen_mode == SCREEN_SMOOTH || (screen_mode == SCREEN_PIXELS && exact)) n = 1;
++  tw = fw * n;
++  th = fh * n;
++  nearest = (tw == ow && th == oh) || (screen_mode == SCREEN_PIXELS && exact);
++
++  if (window->screen == NULL || window->screen_w != tw || window->screen_h != th) {
++    if (window->screen) SDL_DestroyTexture(window->screen);
++    window->screen = SDL_CreateTexture(window->renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, tw, th);
++    window->screen_w = window->screen_h = 0;
++    if (window->screen == NULL) {
++      debug(DEBUG_ERROR, "SDL", "screen: SDL_CreateTexture %dx%d failed: %s", tw, th, SDL_GetError());
++      return;
++    }
++    SDL_SetTextureBlendMode(window->screen, SDL_BLENDMODE_NONE);
++    window->screen_w = tw;
++    window->screen_h = th;
++    debug(DEBUG_INFO, "SDL", "screen: %s, %dx%d frame made %dx%d for a %dx%d output",
++          screen_mode_name(screen_mode), fw, fh, tw, th, ow, oh);
++  }
++  SDL_SetTextureScaleMode(window->screen, nearest ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
++
++  if (n == 1) {
++    SDL_UpdateTexture(window->screen, NULL, frame, fw * 4);
++  } else if (SDL_LockTexture(window->screen, NULL, &pixels, &pitch) == 0) {
++    if (screen_mode == SCREEN_XBR) {
++      screen_xbr(frame, fw, fh, (uint32_t *)pixels, pitch / 4, n);
++    } else {
++      screen_nearest(frame, fw, fh, (uint32_t *)pixels, pitch / 4, n);
++    }
++    SDL_UnlockTexture(window->screen);
++  }
++
++  // In the renderer's coordinates: the window's logical size when it has one,
++  // which is how the zoom is set, and its pixels when it does not.
++  SDL_RenderGetLogicalSize(window->renderer, &dst.w, &dst.h);
++  if (dst.w <= 0 || dst.h <= 0) {
++    dst.w = ow;
++    dst.h = oh;
++  }
++  dst.x = 0;
++  dst.y = 0;
++  SDL_RenderCopy(window->renderer, window->screen, NULL, &dst);
++  SDL_RenderPresent(window->renderer);
++}
++
++static void screen_setup(libsdl_window_t *window) {
++  int mode;
++
++  // The frame is composited out of the textures' own pixels, which are
++  // ARGB8888 in a window with a 32-bit host depth: the only kind there is on
++  // a Mac.
++  if (window->spixel != 4 || screen_init(window->width, window->height) != 0) {
++    debug(DEBUG_ERROR, "SDL", "screen: not upscaling; the renderer draws the textures itself");
++    return;
++  }
++  if ((mode = screen_mode_named(sys_getenv("BOD_SCREEN"))) >= 0) screen_mode = mode;
++  window->canvas = 1;
++  screen_window = window;
++}
++
++/* The View menu's Screen items. BOD_SCREEN, when it is set, is what the
++ * window starts with, and liblsdl2_mac.m leaves the saved choice alone. */
++int liblsdl2_screen_get(void) {
++  return screen_mode;
++}
++
++int liblsdl2_screen_from_env(void) {
++  return screen_mode_named(sys_getenv("BOD_SCREEN")) >= 0;
++}
++
++void liblsdl2_screen_set(int mode) {
++  if (screen_mode_name(mode)[0] == 0) return;
++  screen_mode = mode;
++  if (screen_window) libsdl_screen_present(screen_window);
++}
++#endif
++
+ static int libsdl_window_show_cursor(window_t *window, int show) {
+   SDL_SetRelativeMouseMode(show ? SDL_FALSE : SDL_TRUE);
+   return 0;
+@@ -740,7 +950,13 @@ static int libsdl_video_setup(libsdl_window_t *window) {
+   }
+ 
+   debug(DEBUG_INFO, "SDL", "creating window (%d x %d) fullscreen %d", w, h, window->fullscreen);
++#if defined(DARWIN)
++  // As many pixels as the display has: on a Retina display, twice the window's
++  // size in points, which the screen is upscaled to (libsdl_screen_present).
++  window->window = SDL_CreateWindow("", c, c, w, h, window->fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : SDL_WINDOW_ALLOW_HIGHDPI);
++#else
+   window->window = SDL_CreateWindow("", c, c, w, h, window->fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
++#endif
+   if (window->window == NULL) {
+     debug(DEBUG_ERROR, "SDL", "SDL_CreateWindow failed: %s", SDL_GetError());
+     return -1;
+@@ -780,10 +996,38 @@ static int libsdl_video_setup(libsdl_window_t *window) {
      }
    }
  
 +#if defined(DARWIN)
 +  if (!window->fullscreen) {
++    screen_setup(window);
 +    liblsdl2_mac_attach(window->window);
 +  }
 +#endif
@@ -2550,17 +3114,24 @@ index b8e2f67..ed177da 100644
  
    for (i = 0; keymap[i].from; i++) {
      index = (keymap[i].mods << 8) | keymap[i].from;
-@@ -794,6 +901,9 @@ static int libsdl_video_setup(libsdl_window_t *window) {
+@@ -794,6 +1038,16 @@ static int libsdl_video_setup(libsdl_window_t *window) {
  }
  
  static int libsdl_video_close(libsdl_window_t *window) {
 +#if defined(EMSCRIPTEN)
 +  if (window->canvas) web_canvas_finish();
 +#endif
++#if defined(DARWIN)
++  if (window->canvas) {
++    if (screen_window == window) screen_window = NULL;
++    if (window->screen) SDL_DestroyTexture(window->screen);
++    screen_finish();
++  }
++#endif
    if (window->background) SDL_DestroyTexture(window->background);
    if (window->renderer) SDL_DestroyRenderer(window->renderer);
    if (window->window) SDL_DestroyWindow(window->window);
-@@ -951,6 +1061,12 @@ static int libsdl_window_render(window_t *_window) {
+@@ -951,6 +1205,18 @@ static int libsdl_window_render(window_t *_window) {
    int r = -1;
  
    if (window) {
@@ -2570,10 +3141,16 @@ index b8e2f67..ed177da 100644
 +      return 0;
 +    }
 +#endif
++#if defined(DARWIN)
++    if (window->canvas) {
++      libsdl_screen_present(window);
++      return 0;
++    }
++#endif
  #ifdef SDL_OPENGL
      if (window->opengl && window->texture) {
        presentBackBuffer(window, window->texture, window->programId[0]);
-@@ -973,6 +1089,12 @@ static int libsdl_window_erase(window_t *_window, uint32_t bg) {
+@@ -973,6 +1239,18 @@ static int libsdl_window_erase(window_t *_window, uint32_t bg) {
    window = (libsdl_window_t *)_window;
  
    if (window) {
@@ -2583,14 +3160,20 @@ index b8e2f67..ed177da 100644
 +      return 0;
 +    }
 +#endif
++#if defined(DARWIN)
++    if (window->canvas) {
++      screen_fill(0xFF000000);
++      return 0;
++    }
++#endif
      SDL_RenderClear(window->renderer);
  
      if (window->background) {
-@@ -993,6 +1115,17 @@ static texture_t *libsdl_window_create_texture(window_t *_window, int width, int
+@@ -993,6 +1271,17 @@ static texture_t *libsdl_window_create_texture(window_t *_window, int width, int
  
    if (window) {
      if ((texture = sys_calloc(1, sizeof(texture_t))) != NULL) {
-+#if defined(EMSCRIPTEN)
++#if defined(EMSCRIPTEN) || defined(DARWIN)
 +      if (window->canvas) {
 +        texture->width = width;
 +        texture->height = height;
@@ -2604,21 +3187,21 @@ index b8e2f67..ed177da 100644
        if ((texture->t = SDL_CreateTexture(window->renderer, window->format, SDL_TEXTUREACCESS_STREAMING, width, height)) != NULL) {
          SDL_SetTextureBlendMode(texture->t, SDL_BLENDMODE_BLEND);
          texture->width = width;
-@@ -1018,6 +1151,9 @@ static int libsdl_window_destroy_texture(window_t *_window, texture_t *texture)
+@@ -1018,6 +1307,9 @@ static int libsdl_window_destroy_texture(window_t *_window, texture_t *texture)
    window = (libsdl_window_t *)_window;
  
    if (window && texture) {
-+#if defined(EMSCRIPTEN)
++#if defined(EMSCRIPTEN) || defined(DARWIN)
 +    if (texture->pixels) sys_free(texture->pixels);
 +#endif
      if (texture->t) SDL_DestroyTexture(texture->t);
      if (texture->blur) SDL_DestroyTexture(texture->blur);
      if (texture->buf) sys_free(texture->buf);
-@@ -1062,6 +1198,28 @@ static int libsdl_window_update_texture_rect(window_t *_window, texture_t *textu
+@@ -1062,6 +1354,28 @@ static int libsdl_window_update_texture_rect(window_t *_window, texture_t *textu
    rect.w = w;
    rect.h = h;
  
-+#if defined(EMSCRIPTEN)
++#if defined(EMSCRIPTEN) || defined(DARWIN)
 +  if (window->canvas) {
 +    // Clipped, as SDL_LockTexture would: nothing promises the rectangle is
 +    // inside the texture, and past its end is the frame buffer.
@@ -2643,7 +3226,7 @@ index b8e2f67..ed177da 100644
    if (SDL_LockTexture(texture->t, &rect, &pixels, &pitch) == 0) {
      src = &src[(ty * texture->width + tx) * window->spixel];
      dst = (uint8_t *)pixels;
-@@ -1091,6 +1249,12 @@ static int libsdl_window_draw_texture_rect(window_t *_window, texture_t *texture
+@@ -1091,6 +1405,18 @@ static int libsdl_window_draw_texture_rect(window_t *_window, texture_t *texture
    window = (libsdl_window_t *)_window;
  
    if (window && texture && w > 0 && h > 0) {
@@ -2653,10 +3236,16 @@ index b8e2f67..ed177da 100644
 +      return 0;
 +    }
 +#endif
++#if defined(DARWIN)
++    if (window->canvas) {
++      screen_blit((uint32_t *)texture->pixels, texture->width, texture->height, tx, ty, w, h, x, y);
++      return 0;
++    }
++#endif
  #ifdef SDL_OPENGL
      if (window->opengl) {
        window->texture = texture;
-@@ -1128,6 +1292,12 @@ static int libsdl_window_draw_texture(window_t *_window, texture_t *texture, int
+@@ -1128,6 +1454,18 @@ static int libsdl_window_draw_texture(window_t *_window, texture_t *texture, int
    window = (libsdl_window_t *)_window;
  
    if (window && texture) {
@@ -2666,10 +3255,16 @@ index b8e2f67..ed177da 100644
 +      return 0;
 +    }
 +#endif
++#if defined(DARWIN)
++    if (window->canvas) {
++      screen_blit((uint32_t *)texture->pixels, texture->width, texture->height, 0, 0, texture->width, texture->height, x, y);
++      return 0;
++    }
++#endif
      dst.x = x * window->xfactor;
      dst.y = y * window->yfactor;
      dst.w = texture->width  * window->xfactor;
-@@ -1145,6 +1315,34 @@ static int libsdl_window_draw_texture(window_t *_window, texture_t *texture, int
+@@ -1145,6 +1483,34 @@ static int libsdl_window_draw_texture(window_t *_window, texture_t *texture, int
    return r;
  }
  
@@ -2704,7 +3299,7 @@ index b8e2f67..ed177da 100644
  static void audio_destructor(void *p) {
    sdl_audio_t *audio = (sdl_audio_t *)p;
  
-@@ -1180,9 +1378,14 @@ static audio_t libsdl_audio_create(int pcm, int channels, int rate, void *data)
+@@ -1180,9 +1546,14 @@ static audio_t libsdl_audio_create(int pcm, int channels, int rate, void *data)
        audio->rate = rate;
        audio->channels = channels;
        debug(DEBUG_TRACE, "SDL", "sample size %d", audio->bsize);
@@ -2722,7 +3317,7 @@ index b8e2f67..ed177da 100644
        }
        audio->buffer = sys_calloc(1, audio->bsize * audio->channels);
        debug(DEBUG_TRACE, "SDL", "buffer size %d", audio->bsize);
-@@ -1312,6 +1515,18 @@ static int libsdl_window_update(window_t *_window, int x, int y, int width, int
+@@ -1312,6 +1683,18 @@ static int libsdl_window_update(window_t *_window, int x, int y, int width, int
    return 0;
  }
  
@@ -2741,7 +3336,7 @@ index b8e2f67..ed177da 100644
  #ifdef SDL_OPENGL
  static GLuint compileShader(const char *source, GLint len, GLuint shaderType) {
    GLuint result;
-@@ -1521,6 +1736,64 @@ static void *convert_audio(sdl_audio_buffer_t *abuf, sdl_audio_t *audio, void *a
+@@ -1521,6 +1904,64 @@ static void *convert_audio(sdl_audio_buffer_t *abuf, sdl_audio_t *audio, void *a
    return buf;
  }
  
@@ -2806,7 +3401,7 @@ index b8e2f67..ed177da 100644
  static void audio_callback(void *userdata, uint8_t *stream, int len) {
    int aptr = *(int *)userdata;
    sdl_audio_buffer_t *abuf;
-@@ -1568,22 +1841,28 @@ static int audio_action(void *_arg) {
+@@ -1568,22 +2009,28 @@ static int audio_action(void *_arg) {
    int aptr;
    unsigned char *msg;
    unsigned int msglen;
@@ -2838,7 +3433,7 @@ index b8e2f67..ed177da 100644
    wait = 2000;
  
    for (; !thread_must_end();) {
-@@ -1596,9 +1875,9 @@ static int audio_action(void *_arg) {
+@@ -1596,9 +2043,9 @@ static int audio_action(void *_arg) {
      if (r == 1) {
        if (dev == 0) {
          switch (arg->pcm) {
@@ -2851,7 +3446,7 @@ index b8e2f67..ed177da 100644
          }
          desired.freq = arg->rate;          // DSP frequency -- samples per second
          desired.channels = arg->channels;  // Number of channels: 1 mono, 2 stereo
-@@ -1608,12 +1887,22 @@ static int audio_action(void *_arg) {
+@@ -1608,12 +2055,22 @@ static int audio_action(void *_arg) {
          desired.callback = audio_callback; // Callback that feeds the audio device (NULL to use SDL_QueueAudio())
          desired.userdata = &aptr;          // Userdata passed to callback (ignored for NULL callbacks)
  
@@ -2877,7 +3472,7 @@ index b8e2f67..ed177da 100644
        }
  
        if (msg) {
-@@ -1633,6 +1922,10 @@ static int audio_action(void *_arg) {
+@@ -1633,6 +2090,10 @@ static int audio_action(void *_arg) {
            }
            
            // empty the buffer
@@ -2888,7 +3483,7 @@ index b8e2f67..ed177da 100644
            if ((abuf = ptr_lock(aptr, TAG_ABUF)) != NULL) {
              if (abuf->len > 0) {
                debug(DEBUG_TRACE, "SDL", "emptying %u bytes", abuf->len);
-@@ -1643,7 +1936,10 @@ static int audio_action(void *_arg) {
+@@ -1643,7 +2104,10 @@ static int audio_action(void *_arg) {
            wait = 0;
            debug(DEBUG_TRACE, "SDL", "set wait=%u", wait);
          } else {
@@ -2899,7 +3494,7 @@ index b8e2f67..ed177da 100644
          }
          sys_free(msg);
        } else {
-@@ -1654,22 +1950,81 @@ static int audio_action(void *_arg) {
+@@ -1654,22 +2118,81 @@ static int audio_action(void *_arg) {
        wait = 2000;
        if (ptr) {
          if ((audio = ptr_lock(ptr, TAG_AUDIO)) != NULL) {
@@ -2992,7 +3587,7 @@ index b8e2f67..ed177da 100644
            }
          } else {
            debug(DEBUG_TRACE, "SDL", "ptr %d deleted", ptr);
-@@ -1687,7 +2042,7 @@ static int audio_action(void *_arg) {
+@@ -1687,7 +2210,7 @@ static int audio_action(void *_arg) {
  
    if (dev > 0) {
      debug(DEBUG_INFO, "SDL", "close device %d", dev);
@@ -3001,7 +3596,7 @@ index b8e2f67..ed177da 100644
    }
  
    if (buf) {
-@@ -1754,6 +2109,9 @@ int liblsdl2_load(void) {
+@@ -1754,6 +2277,9 @@ int liblsdl2_load(void) {
    window_provider.draw_texture_rect = libsdl_window_draw_texture_rect;
    window_provider.update_texture_rect = libsdl_window_update_texture_rect;
    window_provider.show_cursor = libsdl_window_show_cursor;
@@ -3013,10 +3608,10 @@ index b8e2f67..ed177da 100644
  #endif
 diff --git a/src/liblsdl2/liblsdl2_mac.h b/src/liblsdl2/liblsdl2_mac.h
 new file mode 100644
-index 0000000..3a3118a
+index 0000000..8bf21be
 --- /dev/null
 +++ b/src/liblsdl2/liblsdl2_mac.h
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,34 @@
 +#ifndef LIBLSDL2_MAC_H
 +#define LIBLSDL2_MAC_H
 +
@@ -3043,13 +3638,20 @@ index 0000000..3a3118a
 + * the game's level and pack lists belong to it and not to the form sheet. */
 +int liblsdl2_mac_pack_busy(void);
 +
++/* The Screen setting, for the View menu (liblsdl2.c): SCREEN_PIXELS,
++ * SCREEN_SMOOTH or SCREEN_XBR from liblsdl2_screen.h. Setting it shows the
++ * frame again at once. from_env says BOD_SCREEN chose it for this run. */
++int  liblsdl2_screen_get(void);
++void liblsdl2_screen_set(int mode);
++int  liblsdl2_screen_from_env(void);
++
 +#endif
 diff --git a/src/liblsdl2/liblsdl2_mac.m b/src/liblsdl2/liblsdl2_mac.m
 new file mode 100644
-index 0000000..5eef8d1
+index 0000000..8c693a3
 --- /dev/null
 +++ b/src/liblsdl2/liblsdl2_mac.m
-@@ -0,0 +1,812 @@
+@@ -0,0 +1,871 @@
 +/* Bike or Die's levels and level packs, from the macOS window itself.
 + *
 + * The browser build has a row of controls above the screen -- Level pack,
@@ -3079,6 +3681,7 @@ index 0000000..5eef8d1
 +#include <SDL2/SDL_syswm.h>
 +
 +#include "liblsdl2_mac.h"
++#include "liblsdl2_screen.h"
 +
 +#define TITLEBAR_BUTTONS 78.0   /* room for close, minimise and zoom */
 +#define POLL_BUSY        0.08   /* seconds between looks while a command is under way */
@@ -3087,6 +3690,12 @@ index 0000000..5eef8d1
 +#define NOTICE_TIMEOUT   5.0
 +
 +static NSString *const kPacksNote = @"Pick one and it starts. These are the game's own packs, in its order.";
++
++/* Where the Screen setting is kept. The process is PumpkinOS's, run from
++ * Application Support rather than from inside the bundle, so it has no
++ * bundle identifier of its own to keep defaults under: this is the bundle's. */
++static NSString *const kDefaultsSuite = @"local.bikeordie2";
++static NSString *const kScreenKey = @"Screen";
 +
 +static void mac_log(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
 +
@@ -3373,10 +3982,62 @@ index 0000000..5eef8d1
 +  top = [[NSMenuItem alloc] initWithTitle:@"Level" action:NULL keyEquivalent:@""];
 +  top.submenu = menu;
 +  at = NSApp.windowsMenu ? [bar indexOfItemWithSubmenu:NSApp.windowsMenu] : -1;
-+  [bar insertItem:top atIndex:at >= 0 ? at : bar.numberOfItems];
++  if (at < 0) at = bar.numberOfItems;
++  [bar insertItem:top atIndex:at];
++
++  [bar insertItem:[self screenMenu] atIndex:at];
++}
++
++/* ------------------------------------------------------------ the screen */
++
++/* View -> Pixels, Smooth, xBR: how the game's 320x320 is made up to the
++ * pixels the window has (liblsdl2_screen.c). The browser build has the same
++ * three under its cog. The choice is kept; BOD_SCREEN, when it is set, is the
++ * choice for that run and is not. */
++- (NSMenuItem *)screenMenu {
++  NSArray<NSArray<NSString *> *> *modes;
++  NSMenuItem *top, *item;
++  NSMenu *menu;
++  NSInteger i;
++  int saved;
++
++  modes = @[ @[ @"Pixels", @"1", @"The game's own pixels, each drawn as a square" ],
++             @[ @"Smooth", @"2", @"Blended between pixels" ],
++             @[ @"xBR",    @"3", @"Edges, wheels and lettering redrawn as smooth lines at the display's resolution" ] ];
++
++  menu = [[NSMenu alloc] initWithTitle:@"View"];
++  if (@available(macOS 14.0, *)) {
++    [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Screen"]];
++  }
++  for (i = 0; i < (NSInteger)modes.count; i++) {
++    [self addItem:modes[i][0] action:@selector(setScreen:) key:modes[i][1] modifiers:NSEventModifierFlagCommand to:menu];
++    item = menu.itemArray.lastObject;
++    item.tag = i;          /* SCREEN_PIXELS, SCREEN_SMOOTH, SCREEN_XBR */
++    item.toolTip = modes[i][2];
++  }
++
++  if (!liblsdl2_screen_from_env()) {
++    saved = screen_mode_named([[[NSUserDefaults alloc] initWithSuiteName:kDefaultsSuite] stringForKey:kScreenKey].UTF8String);
++    if (saved >= 0) liblsdl2_screen_set(saved);
++  }
++  mac_log(@"screen: %s%s", screen_mode_name(liblsdl2_screen_get()), liblsdl2_screen_from_env() ? " (BOD_SCREEN)" : "");
++
++  top = [[NSMenuItem alloc] initWithTitle:@"View" action:NULL keyEquivalent:@""];
++  top.submenu = menu;
++  return top;
++}
++
++- (void)setScreen:(NSMenuItem *)sender {
++  liblsdl2_screen_set((int)sender.tag);
++  [[[NSUserDefaults alloc] initWithSuiteName:kDefaultsSuite] setObject:@(screen_mode_name((int)sender.tag))
++                                                                 forKey:kScreenKey];
 +}
 +
 +- (BOOL)validateMenuItem:(NSMenuItem *)item {
++  if (item.action == @selector(setScreen:)) {
++    item.state = item.tag == liblsdl2_screen_get() ? NSControlStateValueOn : NSControlStateValueOff;
++    return YES;
++  }
 +  return _sheet.sheetParent == nil;
 +}
 +
@@ -4903,6 +5564,501 @@ index 0000000..fb4832e
 +int liblsdl2_mac_form_wants_keys(void) {
 +  return sheet != nil && [sheet wantsKeys];
 +}
+diff --git a/src/liblsdl2/liblsdl2_screen.c b/src/liblsdl2/liblsdl2_screen.c
+new file mode 100644
+index 0000000..7750aef
+--- /dev/null
++++ b/src/liblsdl2/liblsdl2_screen.c
+@@ -0,0 +1,444 @@
++/* The native window's screen.
++ *
++ * The game draws 320x320, and the window shows it three times that size in
++ * points -- which on a Retina display is six times that size in pixels. How
++ * the difference is made up is the Screen setting in the View menu, the same
++ * three choices the browser build has:
++ *
++ *   pixels  every one of the game's pixels a square, as a Palm showed it.
++ *   smooth  bilinear.
++ *   xbr     Hyllian's xBR (level 2). Each pixel's corners are redrawn from the
++ *           edges that run through its 5x5 neighbourhood, so lettering,
++ *           wheels and the outlines of hills come out as smooth lines at the
++ *           display's own resolution, while flat colour and texture are left
++ *           as they were.
++ *
++ * SDL's renderer draws each window's texture straight into its back buffer,
++ * rectangle by rectangle, so there was never a picture of the whole screen to
++ * upscale. The frame is composited here instead, on the CPU, the way the
++ * browser build already does it (liblsdl2_web.c): the textures keep their
++ * pixels, and drawing one copies it into this frame. The window gets the
++ * frame once per render, upscaled.
++ *
++ * The browser draws xBR with a fragment shader. SDL's renderer offers no way
++ * to run one, so here it is the same arithmetic on the CPU, and the same
++ * picture to the last bit. Most of a frame has no edge near it and is a copy;
++ * a whole frame at six times the size -- 3.7 million pixels -- takes about a
++ * millisecond on one core of an M-series Mac. Spread over all of them it took
++ * a quarter of that and a third more CPU in all, and in the running game the
++ * threads waking for every frame cost most of a core, so it is not.
++ */
++
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <math.h>
++
++#include "liblsdl2_screen.h"
++
++static const char *names[] = { "pixels", "smooth", "xbr" };
++
++int screen_mode_named(const char *name) {
++  int i;
++
++  if (name == NULL) return -1;
++  for (i = 0; i < 3; i++) {
++    if (strcmp(name, names[i]) == 0) return i;
++  }
++
++  return -1;
++}
++
++const char *screen_mode_name(int mode) {
++  return (mode >= 0 && mode < 3) ? names[mode] : "";
++}
++
++/* ------------------------------------------------------------ the frame -- */
++
++static uint32_t *frame;
++static int frame_width, frame_height;
++
++int screen_init(int width, int height) {
++  if (width <= 0 || height <= 0) return -1;
++  screen_finish();
++  if ((frame = calloc((size_t)width * height, sizeof(uint32_t))) == NULL) return -1;
++  frame_width = width;
++  frame_height = height;
++  screen_fill(0xFF000000);
++
++  return 0;
++}
++
++void screen_finish(void) {
++  free(frame);
++  frame = NULL;
++  frame_width = frame_height = 0;
++}
++
++uint32_t *screen_frame(int *width, int *height) {
++  if (width) *width = frame_width;
++  if (height) *height = frame_height;
++  return frame;
++}
++
++void screen_fill(uint32_t argb) {
++  size_t i, n = (size_t)frame_width * frame_height;
++
++  if (frame == NULL) return;
++  for (i = 0; i < n; i++) frame[i] = argb;
++}
++
++/* One rectangle (sx,sy,w,h) of a src_width x src_height ARGB8888 texture,
++ * landing at (dx,dy) of the frame. Clipped against both, as SDL_RenderCopy
++ * would have: the window manager hands down rectangles that are not inside
++ * either, the borders it draws around a task window among them. */
++void screen_blit(uint32_t *src, int src_width, int src_height, int sx, int sy, int w, int h, int dx, int dy) {
++  int i;
++
++  if (frame == NULL || src == NULL) return;
++
++  if (sx < 0) { w += sx; dx -= sx; sx = 0; }
++  if (sy < 0) { h += sy; dy -= sy; sy = 0; }
++  if (dx < 0) { w += dx; sx -= dx; dx = 0; }
++  if (dy < 0) { h += dy; sy -= dy; dy = 0; }
++  if (w > src_width  - sx) w = src_width  - sx;
++  if (h > src_height - sy) h = src_height - sy;
++  if (w > frame_width  - dx) w = frame_width  - dx;
++  if (h > frame_height - dy) h = frame_height - dy;
++  if (w <= 0 || h <= 0) return;
++
++  for (i = 0; i < h; i++) {
++    memcpy(frame + (dy + i) * frame_width + dx, src + (sy + i) * src_width + sx, w * sizeof(uint32_t));
++  }
++}
++
++/* ------------------------------------------------------------ upscaling -- */
++
++typedef struct {
++  const uint32_t *src;
++  int width, height;
++  uint32_t *dst;
++  int stride, n;
++} job_t;
++
++static void nearest_band(job_t *job, int y0, int y1) {
++  const uint32_t *s;
++  uint32_t *d, v;
++  int x, y, i, j, n = job->n;
++
++  for (y = y0; y < y1; y++) {
++    s = job->src + y * job->width;
++    d = job->dst + (size_t)y * n * job->stride;
++    for (x = 0; x < job->width; x++) {
++      v = s[x];
++      for (i = 0; i < n; i++) d[x * n + i] = v;
++    }
++    for (j = 1; j < n; j++) {
++      memcpy(d + (size_t)j * job->stride, d, (size_t)job->width * n * sizeof(uint32_t));
++    }
++  }
++}
++
++void screen_nearest(const uint32_t *src, int width, int height, uint32_t *dst, int dst_stride, int n) {
++  job_t job = { src, width, height, dst, dst_stride, n };
++
++  if (n < 1) job.n = 1;
++  nearest_band(&job, 0, height);
++}
++
++/* xBR-lv2, after Hyllian's (MIT licence), with corner type C -- the shader in
++ * src/emscripten/bod-pre.js, line for line where it can be, and pixel for
++ * pixel the same picture. There, every quantity is a vec4 holding the four
++ * corners of the pixel E at once; here it is an array of four, in the same
++ * order: bottom right, top right, top left, bottom left. The neighbourhood:
++ *
++ *        A1 B1 C1
++ *     A0  A  B  C C4
++ *     D0  D  E  F F4
++ *     G0  G  H  I I4
++ *        G5 H5 I5
++ *
++ * The comparisons are of luma, scaled to 0-48 as the shader's are. What they
++ * decide depends only on the source. How far into each corner's blend an
++ * output pixel is depends only on its place in the block, so that is a table
++ * per factor -- and so is which places a corner's blend reaches at all, which
++ * is what lets the rest of the block be a copy of E. */
++
++static const float Ao[4] = {  1.0f, -1.0f, -1.0f,  1.0f }, Bo[4] = {  1.0f,  1.0f, -1.0f, -1.0f }, Co[4] = {  1.5f,  0.5f, -0.5f,  0.5f };
++static const float Ax[4] = {  1.0f, -1.0f, -1.0f,  1.0f }, Bx[4] = {  0.5f,  2.0f, -0.5f, -2.0f }, Cx[4] = {  1.0f,  1.0f, -0.5f,  0.0f };
++static const float Ay[4] = {  1.0f, -1.0f, -1.0f,  1.0f }, By[4] = {  2.0f,  0.5f, -2.0f, -0.5f }, Cy[4] = {  2.0f,  0.0f, -1.0f,  0.5f };
++
++/* What a corner's edge is: none, or the 45-degree line with neither, the
++ * shallow, the steep or both of the longer ones beside it. */
++#define EDGE_NONE    0
++#define EDGE_45      1
++#define EDGE_30      2
++#define EDGE_60      3
++#define EDGE_30_60   4
++#define EDGES        5
++
++/* For factor n: weight[c][edge][j * n + i] is how far output pixel (i,j) of
++ * the block is blended towards corner c's colour -- m in the shader -- and
++ * reach[c][edge] has bit j * n + i set where that is more than nothing. */
++static float weight[4][EDGES][SCREEN_MAX_FACTOR * SCREEN_MAX_FACTOR];
++static uint64_t reach[4][EDGES];
++static int tables_n;
++
++static float clamp01(float v) {
++  return v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v;
++}
++
++static void make_tables(int n) {
++  float dl = 1.0f / (float)n, fpx, fpy, delta_l, delta_u, fx45, fx30, fx60, *w;
++  int c, e, i, j, t;
++
++  if (n == tables_n) return;
++
++  for (c = 0; c < 4; c++) {
++    delta_l = ((c & 1) ? 1.0f : 0.5f) * dl;    /* vec4(0.5, 1.0, 0.5, 1.0) * dl */
++    delta_u = ((c & 1) ? 0.5f : 1.0f) * dl;    /* its .yxwz */
++    for (e = 0; e < EDGES; e++) reach[c][e] = 0;
++
++    for (j = 0; j < n; j++) {
++      fpy = ((float)j + 0.5f) / (float)n;
++      for (i = 0; i < n; i++) {
++        fpx = ((float)i + 0.5f) / (float)n;
++        t = j * n + i;
++        fx45 = clamp01((Ao[c] * fpy + Bo[c] * fpx + dl - Co[c]) / (2.0f * dl));
++        fx30 = clamp01((Ax[c] * fpy + Bx[c] * fpx + delta_l - Cx[c]) / (2.0f * delta_l));
++        fx60 = clamp01((Ay[c] * fpy + By[c] * fpx + delta_u - Cy[c]) / (2.0f * delta_u));
++
++        w = weight[c][EDGE_NONE];  w[t] = 0.0f;
++        w = weight[c][EDGE_45];    w[t] = fx45;
++        w = weight[c][EDGE_30];    w[t] = fx30 > fx45 ? fx30 : fx45;
++        w = weight[c][EDGE_60];    w[t] = fx60 > fx45 ? fx60 : fx45;
++        w = weight[c][EDGE_30_60]; w[t] = fx30 > fx45 ? fx30 : fx45;
++                                   if (fx60 > w[t]) w[t] = fx60;
++        for (e = 0; e < EDGES; e++) {
++          if (weight[c][e][t] > 0.0f) reach[c][e] |= (uint64_t)1 << t;
++        }
++      }
++    }
++  }
++  tables_n = n;
++}
++
++/* The source with two pixels of its own edge repeated around it, as a
++ * texture clamped to its edge samples, and the luma of every pixel of that:
++ * the neighbourhood of any pixel is then at fixed offsets from it. */
++static uint32_t *padded;
++static float *padded_luma;
++static int padded_w, padded_h;
++static float luma_r[256], luma_g[256], luma_b[256];
++
++static int pad(const uint32_t *src, int w, int h) {
++  int x, y, sx, sy, pw = w + 4, ph = h + 4;
++  uint32_t p;
++
++  if (pw != padded_w || ph != padded_h) {
++    free(padded);
++    free(padded_luma);
++    padded = malloc((size_t)pw * ph * sizeof(uint32_t));
++    padded_luma = malloc((size_t)pw * ph * sizeof(float));
++    padded_w = padded_h = 0;
++    if (padded == NULL || padded_luma == NULL) return -1;
++    padded_w = pw;
++    padded_h = ph;
++    for (x = 0; x < 256; x++) {
++      luma_r[x] = (float)x / 255.0f * 14.352f;
++      luma_g[x] = (float)x / 255.0f * 28.176f;
++      luma_b[x] = (float)x / 255.0f *  5.472f;
++    }
++  }
++
++  for (y = 0; y < ph; y++) {
++    sy = y < 2 ? 0 : y - 2 >= h ? h - 1 : y - 2;
++    for (x = 0; x < pw; x++) {
++      sx = x < 2 ? 0 : x - 2 >= w ? w - 1 : x - 2;
++      p = src[sy * w + sx];
++      padded[y * pw + x] = p;
++      padded_luma[y * pw + x] = luma_r[(p >> 16) & 0xFF] + luma_g[(p >> 8) & 0xFF] + luma_b[p & 0xFF];
++    }
++  }
++
++  return 0;
++}
++
++typedef struct { float r, g, b; } rgb_t;
++
++static inline rgb_t rgb(uint32_t p) {
++  rgb_t c = { (float)((p >> 16) & 0xFF), (float)((p >> 8) & 0xFF), (float)(p & 0xFF) };
++  return c;
++}
++
++static inline rgb_t mix(rgb_t a, rgb_t b, float t) {
++  rgb_t c = { a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t };
++  return c;
++}
++
++static inline float cdf(rgb_t a, rgb_t b) {
++  return fabsf(a.r - b.r) + fabsf(a.g - b.g) + fabsf(a.b - b.b);
++}
++
++static inline uint32_t argb(rgb_t c) {
++  return 0xFF000000 | ((uint32_t)(c.r + 0.5f) << 16) | ((uint32_t)(c.g + 0.5f) << 8) | (uint32_t)(c.b + 0.5f);
++}
++
++#define EQ(a, b)  (fabsf((a) - (b)) <= 15.0f)
++#define NEQ(a, b) (!EQ(a, b))
++
++static void xbr_band(job_t *job, int y0, int y1) {
++  int w = job->width, n = job->n, stride = job->stride, pw = w + 4;
++  int x, y, c, i, j, t, edge[4], px;
++  const uint32_t *P;
++  const float *L;
++  uint32_t *d, pe, blend[4];
++  uint64_t bits;
++  float e, b[4], k[4], dd[4], f[4], hh[4], g[4], ii[4], i4[4], i5[4], h5[4], f4[4];
++  float wd1, wd2, m[4];
++  rgb_t ce, pc[4], r1, r2;
++
++/* Neighbours of E, as offsets in the padded frame. */
++#define A1 (-2 * pw - 1)
++#define B1 (-2 * pw)
++#define C1 (-2 * pw + 1)
++#define A0 (-pw - 2)
++#define A  (-pw - 1)
++#define B  (-pw)
++#define C  (-pw + 1)
++#define C4 (-pw + 2)
++#define D0 (-2)
++#define D  (-1)
++#define F  (1)
++#define F4 (2)
++#define G0 (pw - 2)
++#define G  (pw - 1)
++#define H  (pw)
++#define I  (pw + 1)
++#define I4 (pw + 2)
++#define G5 (2 * pw - 1)
++#define H5 (2 * pw)
++#define I5 (2 * pw + 1)
++
++  for (y = y0; y < y1; y++) {
++    P = padded + (y + 2) * pw + 2;
++    L = padded_luma + (y + 2) * pw + 2;
++    d = job->dst + (size_t)y * n * stride;
++
++    for (x = 0; x < w; x++, P++, L++, d += n) {
++      pe = P[0];
++      e = L[0];
++      bits = 0;
++
++      /* A corner can only have an edge across it if E differs from both of
++       * the neighbours either side of it (irlv0 in the shader). Where that
++       * is so for none of the four, which is most of any frame, the block is
++       * all E. */
++      if ((EQ(e, L[F]) || EQ(e, L[H])) && (EQ(e, L[B]) || EQ(e, L[F])) &&
++          (EQ(e, L[D]) || EQ(e, L[B])) && (EQ(e, L[H]) || EQ(e, L[D]))) {
++        for (j = 0; j < n; j++) {
++          for (i = 0; i < n; i++) d[j * stride + i] = pe;
++        }
++        continue;
++      }
++
++      b[0]  = L[B];  b[1]  = L[D];  b[2]  = L[H];  b[3]  = L[F];     /* (B, D, H, F) */
++      k[0]  = L[C];  k[1]  = L[A];  k[2]  = L[G];  k[3]  = L[I];     /* (C, A, G, I), c in the shader */
++      i4[0] = L[I4]; i4[1] = L[C1]; i4[2] = L[A0]; i4[3] = L[G5];
++      i5[0] = L[I5]; i5[1] = L[C4]; i5[2] = L[A1]; i5[3] = L[G0];
++      h5[0] = L[H5]; h5[1] = L[F4]; h5[2] = L[B1]; h5[3] = L[D0];
++
++      for (c = 0; c < 4; c++) {
++        dd[c] = b[(c + 1) & 3];     /* b.yzwx */
++        f[c]  = b[(c + 3) & 3];     /* b.wxyz */
++        hh[c] = b[(c + 2) & 3];     /* b.zwxy */
++        g[c]  = k[(c + 2) & 3];     /* c.zwxy */
++        ii[c] = k[(c + 3) & 3];     /* c.wxyz */
++        f4[c] = h5[(c + 1) & 3];    /* h5.yzwx */
++
++        /* Whether an edge runs across the corner at all, and whether it is
++         * shallow or steep enough to take the longer line. */
++        edge[c] = EDGE_NONE;
++        if (NEQ(e, f[c]) && NEQ(e, hh[c]) &&
++            ((NEQ(f[c], b[c]) && NEQ(f[c], k[c])) || (NEQ(hh[c], dd[c]) && NEQ(hh[c], g[c])) ||
++             (EQ(e, ii[c]) && ((NEQ(f[c], f4[c]) && NEQ(f[c], i4[c])) || (NEQ(hh[c], h5[c]) && NEQ(hh[c], i5[c])))) ||
++             EQ(e, g[c]) || EQ(e, k[c]))) {
++          wd1 = fabsf(e - k[c]) + fabsf(e - g[c]) + fabsf(ii[c] - h5[c]) + fabsf(ii[c] - f4[c]) + 4.0f * fabsf(hh[c] - f[c]);
++          wd2 = fabsf(hh[c] - dd[c]) + fabsf(hh[c] - i5[c]) + fabsf(f[c] - i4[c]) + fabsf(f[c] - b[c]) + 4.0f * fabsf(e - ii[c]);
++          if (wd2 >= wd1 + 0.1f) {
++            int shallow = fabsf(hh[c] - k[c]) >= 2.0f * fabsf(f[c] - g[c]) && NEQ(e, g[c]) && NEQ(dd[c], g[c]);
++            int steep   = fabsf(f[c] - g[c]) >= 2.0f * fabsf(hh[c] - k[c]) && NEQ(e, k[c]) && NEQ(b[c], k[c]);
++            edge[c] = shallow ? (steep ? EDGE_30_60 : EDGE_30) : steep ? EDGE_60 : EDGE_45;
++            bits |= reach[c][edge[c]];
++          }
++        }
++      }
++
++      for (j = 0; j < n; j++) {
++        for (i = 0; i < n; i++) d[j * stride + i] = pe;
++      }
++      if (bits == 0) continue;
++
++      /* mix(H, F, px.x), mix(F, B, px.y), mix(B, D, px.z), mix(D, H, px.w) */
++      for (c = 0; c < 4; c++) {
++        px = fabsf(e - hh[c]) >= fabsf(e - f[c]);
++        switch (c) {
++          case 0: blend[0] = px ? P[F] : P[H]; break;
++          case 1: blend[1] = px ? P[B] : P[F]; break;
++          case 2: blend[2] = px ? P[D] : P[B]; break;
++          default: blend[3] = px ? P[H] : P[D]; break;
++        }
++        pc[c] = rgb(blend[c]);
++      }
++      ce = rgb(pe);
++
++      /* Only the places some corner's blend reaches; the rest are E. */
++      while (bits) {
++        t = __builtin_ctzll(bits);
++        bits &= bits - 1;
++        for (c = 0; c < 4; c++) m[c] = weight[c][edge[c]][t];
++        /* Opposite corners are blended in pairs, and the pair that moved E
++         * the further wins. */
++        r1 = mix(ce, pc[0], m[0]);
++        r1 = mix(r1, pc[2], m[2]);
++        r2 = mix(ce, pc[1], m[1]);
++        r2 = mix(r2, pc[3], m[3]);
++        d[(t / n) * stride + t % n] = argb(cdf(ce, r2) >= cdf(ce, r1) ? r2 : r1);
++      }
++    }
++  }
++
++#undef A1
++#undef B1
++#undef C1
++#undef A0
++#undef A
++#undef B
++#undef C
++#undef C4
++#undef D0
++#undef D
++#undef F
++#undef F4
++#undef G0
++#undef G
++#undef H
++#undef I
++#undef I4
++#undef G5
++#undef H5
++#undef I5
++}
++
++void screen_xbr(const uint32_t *src, int width, int height, uint32_t *dst, int dst_stride, int n) {
++  job_t job = { src, width, height, dst, dst_stride, n };
++
++  if (n < 1) n = job.n = 1;
++  if (n > SCREEN_MAX_FACTOR) n = job.n = SCREEN_MAX_FACTOR;
++  if (pad(src, width, height) != 0) {
++    screen_nearest(src, width, height, dst, dst_stride, n);
++    return;
++  }
++  make_tables(n);
++  xbr_band(&job, 0, height);
++}
+diff --git a/src/liblsdl2/liblsdl2_screen.h b/src/liblsdl2/liblsdl2_screen.h
+new file mode 100644
+index 0000000..b132441
+--- /dev/null
++++ b/src/liblsdl2/liblsdl2_screen.h
+@@ -0,0 +1,39 @@
++#ifndef LIBLSDL2_SCREEN_H
++#define LIBLSDL2_SCREEN_H
++
++/* The native window's screen: the game's frame, composited on the CPU and
++ * upscaled to the resolution of the display the window is on. See
++ * liblsdl2_screen.c. */
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define SCREEN_PIXELS 0   /* nearest-neighbour squares, as the Palm showed them */
++#define SCREEN_SMOOTH 1   /* bilinear */
++#define SCREEN_XBR    2   /* xBR, the edges redrawn at the display's resolution */
++
++/* The largest factor xBR is run at; a bigger screen is scaled up from that. */
++#define SCREEN_MAX_FACTOR 8
++
++int  screen_mode_named(const char *name);    /* -1 if it is not one */
++const char *screen_mode_name(int mode);
++
++int  screen_init(int width, int height);
++void screen_finish(void);
++uint32_t *screen_frame(int *width, int *height);
++void screen_fill(uint32_t argb);
++void screen_blit(uint32_t *src, int src_width, int src_height, int sx, int sy, int w, int h, int dx, int dy);
++
++/* ARGB8888 in, ARGB8888 out, n times the size in each direction; dst_stride is
++ * in pixels. xbr() matches the shader the browser build draws with, sampled at
++ * the centre of each output pixel; nearest() is the pixels mode's first half
++ * when the display is not a whole multiple of the frame. */
++void screen_xbr(const uint32_t *src, int width, int height, uint32_t *dst, int dst_stride, int n);
++void screen_nearest(const uint32_t *src, int width, int height, uint32_t *dst, int dst_stride, int n);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
 diff --git a/src/liblsdl2/liblsdl2_web.c b/src/liblsdl2/liblsdl2_web.c
 new file mode 100644
 index 0000000..b1efe87

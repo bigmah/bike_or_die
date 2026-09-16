@@ -2,7 +2,7 @@
 // Drive the WebAssembly build in a real browser and screenshot it -- the web
 // counterpart of tools/run.sh.
 //
-//   tools/webtest.js [-o out.png] [-w seconds] [-k actions] [-u url] [--head]
+//   tools/webtest.js [-o out.png] [-w seconds] [-k actions] [-u url] [--dpr n] [--head]
 //
 // actions, comma separated (same vocabulary as run.sh):
 //   d:S        wait S seconds
@@ -39,6 +39,9 @@ const wait = parseFloat(arg('-w', '25'));
 const keys = arg('-k', '');
 const url = arg('-u', 'http://127.0.0.1:8080/pumpkin.html');
 const head = process.argv.includes('--head');
+// Device pixels per CSS pixel: 2 is a Retina display, which is what the
+// screen is upscaled to, and what the screenshots are then taken at.
+const dpr = parseFloat(arg('--dpr', '1'));
 const logFile = arg('-l', 'build/webtest.log');
 const probe = arg('-e', '');
 // A profile directory makes a run see what the one before it saved.
@@ -67,7 +70,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   });
 
   const page = await browser.newPage();
-  await page.setViewport({ width: 900, height: 900 });
+  await page.setViewport({ width: 900, height: 900, deviceScaleFactor: dpr });
 
   const lines = [];
   // Written as they happen: a page that dies takes the end of the run with it.

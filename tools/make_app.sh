@@ -26,11 +26,9 @@ cat > "$OUT/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>       <string>APPL</string>
   <key>CFBundleExecutable</key>        <string>BikeOrDie</string>
   <key>CFBundleIconFile</key>          <string>AppIcon</string>
-  <!-- The game is 320x320 nearest-neighbour pixel art scaled by an integer
-       factor. A Retina backing store makes SDL's renderer output size 2x the
-       window size, which its logical-size scaling does not account for, and the
-       screen comes out magnified and clipped. 1x backing keeps it exact. -->
-  <key>NSHighResolutionCapable</key>   <false/>
+  <!-- A Retina backing store: the window asks SDL for one, and the game's
+       320x320 is upscaled to all of its pixels (liblsdl2_screen.c). -->
+  <key>NSHighResolutionCapable</key>   <true/>
   <key>LSMinimumSystemVersion</key>    <string>11.0</string>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
 </dict>
@@ -76,6 +74,9 @@ export BOD_ARM_ENGINE="${BOD_ARM_ENGINE:-recomp}"
 # The keys that ride, on top of the arrows. The browser build has a panel for
 # this; here it is whatever ~/.bikeordie.env says, or WASD and space.
 export BOD_KEYS="${BOD_KEYS:-}"
+# How the screen is upscaled: pixels, smooth or xbr. Unset, it is what the View
+# menu last chose, which starts as xbr.
+export BOD_SCREEN="${BOD_SCREEN:-}"
 exec "$DATA/pumpkin" -d 1 -f "$DATA/pumpkin.log" -s libscriptlua "$HERE/script/bod.lua"
 LAUNCH
 chmod +x "$OUT/Contents/MacOS/BikeOrDie"

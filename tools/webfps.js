@@ -5,9 +5,10 @@
 //   tools/webfps.js [-u url] [-s seconds] [-w warmup] [--head] [-o shot.png]
 //
 // Frames are counted where they land rather than where they are produced: the
-// page's 2D context is wrapped before anything loads, so both present paths --
-// SDL's putImageData from the worker and the page's own -- are counted the same
-// way, and neither build has to be told it is being measured.
+// page's 2D and WebGL contexts are wrapped before anything loads, so every
+// present path -- SDL's putImageData from the worker, and the page's own in 2D
+// or through its screen shader -- is counted the same way, and no build has to
+// be told it is being measured.
 //
 // It boots the game, taps into the first level, holds the pedal down and reports
 // the rate over the sample window, plus the spread of the gaps between frames,
@@ -80,6 +81,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       window.__bodTimes.push(performance.now());
       if (window.__bodTimes.length > 4000) window.__bodTimes.shift();
       return draw.apply(this, a);
+    };
+    // And the page's own presenter draws the screen through WebGL, one quad
+    // per frame, whatever the Screen setting is.
+    const quad = WebGLRenderingContext.prototype.drawArrays;
+    WebGLRenderingContext.prototype.drawArrays = function (...a) {
+      window.__bodFrames++;
+      window.__bodTimes.push(performance.now());
+      if (window.__bodTimes.length > 4000) window.__bodTimes.shift();
+      return quad.apply(this, a);
     };
   });
 

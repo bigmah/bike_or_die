@@ -271,6 +271,7 @@ The launcher reads `~/.bikeordie.env` if it exists. Useful settings:
 | `BOD_RESET` | `0` | `1` re-seeds the game data on next launch |
 | `BOD_ZOOM` | `3` | integer window scale; the game itself is 320x320 |
 | `BOD_NATIVE_UI` | `1` | the host draws the game's menus and dialogs; `0` lets the game draw its own |
+| `BOD_SCREEN` | View menu | how the screen is upscaled: `pixels`, `smooth` or `xbr`; unset, the last choice in the View menu, which starts as `xbr`. See **Display** |
 | `BOD_KEYS` | WASD | the keys that ride, on top of the arrows; see **Controls** |
 | `BOD_UNLOCK` | `44652` | the registration code to answer the About dialog with; `0` leaves it alone |
 
@@ -367,13 +368,52 @@ pass into one that is already playing silence.
 
 The Palm screen is 320x320 and the window is that, scaled by an integer factor
 (`BOD_ZOOM`, default 3 -> a 960x960 window). PumpkinOS's desktop is sized to match, so
-there is no surrounding chrome to redraw.
+there is no surrounding chrome to redraw. On a Retina display the window has twice that
+many pixels -- 1920x1920, six to each of the game's -- and the game is drawn into all of
+them.
 
-The bundle sets `NSHighResolutionCapable` to **false** on purpose. With a Retina backing
-store the SDL drawable is twice the window size, which PumpkinOS's `xfactor` scaling does
-not account for, and the screen comes out magnified and clipped -- but only when launched
-as a bundle (via Finder or `open`), because running the binary directly never reads the
-Info.plist. With a 1x backing the integer scaling is exact.
+How the game's 320x320 is made up to those is the **Screen** setting: **View** in the
+menu bar (⌘1, ⌘2, ⌘3), and the cog above the screen in a browser. It is kept, in the user defaults
+natively and in the browser's storage on a page; `BOD_SCREEN` (or `?BOD_SCREEN=`) says
+it for one run without keeping it.
+
+| | |
+|---|---|
+| **Pixels** | every one of the game's pixels a square, as a Palm showed it |
+| **Smooth** | bilinear |
+| **xBR** | the default. Hyllian's xBR (level 2): each pixel's corners are redrawn from the edges that run through its 5x5 neighbourhood, so lettering, wheels and the outlines of hills come out as smooth lines at the display's own resolution, while flat colour and texture stay as they were |
+
+**In a browser** each is a fragment shader (`src/emscripten/bod-pre.js`). The canvas's
+backing store is its CSS size times `devicePixelRatio` -- one of its pixels per device
+pixel -- and the frame goes up as a 320x320 texture, so a bigger screen costs the GPU and
+not the page: riding measures 58.0 frames a second with xBR against 58.7 with pixels.
+Pixels there is not quite nearest-neighbour. At a whole-number scale it is exactly that,
+but a phone's screen is as big as the phone allows, and at 3.125 device pixels to a game
+pixel the squares cannot all be the same size; the one device pixel that straddles each
+seam is blended instead of some rows coming out doubled. Without WebGL the canvas stays
+320x320 in 2D, the browser does the scaling, and xBR is not offered.
+
+**Natively** SDL's renderer has no way to run a shader, and it draws each window's
+texture straight into its back buffer, rectangle by rectangle, so there was never a picture
+of the whole screen to upscale either. So the frame is composited on the CPU, the way the
+browser build already had to (`src/liblsdl2/liblsdl2_screen.c`), and each render upscales
+it to the window's pixels and draws it as one texture. xBR is the shader's arithmetic in C
+and the same picture to the last bit -- checked against Chrome's output at 2x, 4x and 6x.
+Most of any frame has no edge near it and is a copy, so a whole frame at 6x, 3.7 million
+pixels, takes about a millisecond on one core. Spread over all of them it took a quarter of
+that but a third more CPU in all, and in the running game the threads waking for every frame
+cost more than half a core, so it runs on the main thread, where the frame is. Smooth and pixels
+at an exact multiple are the renderer's own scaling; pixels at any other size -- full
+screen, say -- are made up to the whole multiple below it and blended the rest of the way,
+as in a browser.
+
+The bundle sets `NSHighResolutionCapable`, and the window asks SDL for a high-density
+drawable. It used to do neither on purpose: with a Retina backing store the drawable is
+twice the window's size, which PumpkinOS's `xfactor` scaling did not account for, and the
+screen came out magnified and clipped. Nothing depends on that any more -- the whole frame
+is drawn into the renderer's logical size in one piece, and the texture it is drawn from is
+sized from `SDL_GetRendererOutputSize` -- and a window moved to a display of a different
+density is drawn again at the new size straight away.
 
 ## Testing
 
@@ -453,10 +493,10 @@ Everything the native build does, this does: the recompiled 68k and ARM cores, t
 level packs, the game's menus and dialogs drawn by the page rather than by the game, the
 keyboard, and sound. Progress, settings and best times are kept in the browser's origin private
 filesystem and restored on the next visit; `bodReset()` from the console throws them away.
-The cog above the screen binds the riding keys, over the game rather than beside it so
-that opening it does not move the screen. What it sets goes to the runtime through
-`pumpkin_set_ride_keys` and into this browser's storage, so it takes effect at once and
-is there on the next visit.
+The cog above the screen chooses how the screen is upscaled (see **Display**) and binds
+the riding keys, over the game rather than beside it so that opening it does not move the
+screen. The keys it sets go to the runtime through `pumpkin_set_ride_keys`, and both go
+into this browser's storage, so they take effect at once and are there on the next visit.
 
 **Level pack** and the level buttons above the screen do what the game's Game menu does,
 without the menu. Restart, Previous and Next each queue the matching menu event, the way
@@ -506,8 +546,8 @@ frames a second when this port was first playable, and 37.5 once the refresh cap
 now measures 59.1 -- and the gap between one frame and the next is 16.7ms at the median
 and 17.3ms at the ninetieth percentile, which is the part that reads as smooth.
 `tools/webfps.js` is what measures it: it boots the game, rides it, and counts the frames
-where they land, by wrapping the page's 2D context before anything loads, so it measures
-whatever the build does rather than what the build says it does.
+where they land, by wrapping the page's 2D and WebGL contexts before anything loads, so it
+measures whatever the build does rather than what the build says it does.
 
 Three things stood between the game and the display, and all three had to go.
 
@@ -604,9 +644,10 @@ Two things are arranged differently from the native build, both forced by the br
   thread, which then does nothing but answer the calls the other threads proxy to it. It
   has to stay free: every file the application opens and every SDL audio call is one of
   those, and PumpkinOS's own threads block on each other's locks, so a main thread that
-  waits for a lock deadlocks the lot. That also rules out WebGL, whose context Emscripten
-  can only create on the main thread, so SDL draws through its software renderer -- at
-  320x320 with the page doing the scaling, that costs nothing.
+  waits for a lock deadlocks the lot. That also rules out WebGL for SDL, whose context
+  Emscripten can only create on the main thread, so SDL draws through its software
+  renderer at 320x320 -- and the page, which is on the main thread, draws the frame through
+  WebGL itself (see **Display**).
 - **The filesystem lives inside the wasm module** (`-sWASMFS`). The default one is
   implemented in JavaScript on the main thread, so every `open` from the application
   would be a round trip to it; the storage scan alone is a few thousand.
@@ -632,6 +673,10 @@ there; Safari can be driven the same way over WebDriver with `safaridriver`, onc
 
     tools/webtest.js -u http://127.0.0.1:8080/pumpkin.html -w 30 \
         -k "d:3,m:160/295,d:8,k:ArrowUp/down,d:4,k:ArrowUp/up" -o build/shot.png
+
+`--dpr 2` runs the page at a Retina display's density, which is what the screen is
+upscaled to, and takes the screenshots at it: `j:Module.bodScreen.set('pixels')` between
+two `p:` actions is the same moment with and without xBR.
 
 `j:` runs a line of JavaScript in the page between the other actions -- `j:bodPack.open()`
 opens the pack panel, `j:bodPack.pick(1)` takes its second entry -- which is how the
