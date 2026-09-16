@@ -1,0 +1,25 @@
+# The host's pause holds the game rather than the picture: ride with Up held,
+# pause for five seconds, let go of the pause. h2 has the bike where h1 has it,
+# give or take the frame or two drawn before the pause lands, though Up is down
+# throughout -- and h3 is 150ms of riding on from there. Without the pause
+# lines, h2 is at the red flag. Wants a fresh runtime (FRESH=1): a pack left
+# switched by packs.txt starts somewhere else.
+# The log says "holding the game" and "released the game after 5003 ms".
+wait 12000
+tap 160 160
+wait 3000
+tap 160 160
+wait 4000
+shot h0
+keydown up
+wait 800
+shot h1
+ui pause 1
+wait 5000
+shot h2
+ui pause 0
+wait 150
+shot h3
+keyup up
+wait 1500
+shot h4

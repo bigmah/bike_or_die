@@ -57,9 +57,10 @@ to be translated too, not just run.
 | **←** / **→**, **A** / **D** | Balance left / right |
 | **Space** | **Flip** -- turn around and ride the other way |
 | F1-F4 | the four Palm hardware buttons |
+| **Esc** | in a browser, pause: levels, packs, controls, settings (see **In a browser**) |
 
 Those are the game's own defaults, visible and rebindable under **Options → Control** --
-in the menu bar, or behind **Menu...** on the page. Its five actions map to a Palm 5-way
+in the menu bar, or under **Settings** in the pause menu on the page. Its five actions map to a Palm 5-way
 navigator: Forward=Up, Brake=Down, Balance=Left/Right, Flip=Select.
 
 WASD rides as well, and the arrow keys still do -- the letters are added to the
@@ -67,10 +68,10 @@ navigator bits the game polls rather than translated into arrow keys, so they ke
 their ordinary meaning too and typing a name or a code is unaffected. Space does the
 same thing for Select.
 
-Which letters those are is up to you. In the browser the cog above the screen opens a
-panel that binds one key to each of the five actions; it takes effect where it is set,
-without reloading, and is kept in that browser. Everywhere else the same thing is
-`BOD_KEYS`, whose default is what the panel starts from:
+Which letters those are is up to you. In the browser the pause menu's **Controls** page
+binds one key to each of the five actions; it takes effect where it is set, without
+reloading, and is kept in that browser. Everywhere else the same thing is `BOD_KEYS`,
+whose default is what that page starts from:
 
     BOD_KEYS="forward=w brake=s left=a right=d flip=space"
 
@@ -189,8 +190,9 @@ are what knows what a level pack is, what the sound settings mean, which recordi
 which -- but their windows never reach the screen, and what is on them is published for
 the host, which puts up controls of its own. A press on one of those goes back into the
 form the way the pen would. The macOS window draws them as the game's four menus in the
-menu bar and a sheet over the game; the page draws them as **Menu...** and a panel over
-the screen. The menu key opens nothing now: what was behind it is in the menu bar.
+menu bar and a sheet over the game; the page draws them in its pause menu and a panel over
+the screen (see **In a browser**). The menu key opens nothing now: what was behind it is
+in the menu bar.
 `BOD_NATIVE_UI=0` puts the game's own back, drawn where they always were.
 
 Three things make that possible, and all three were already true:
@@ -247,6 +249,19 @@ the queue ends it -- otherwise the first alert of a session is a dialog nobody c
 **The level pack sheet stays what it was.** It drives the game's own level and pack lists
 from the outside (`bodpack.c`), and those dialogs are hidden like every other; while it
 is doing that they are its business, and the generic sheet leaves them alone.
+
+**A press is a pen's press.** A pen changes a checkbox or a push button as it goes down on
+it, and the game reads the new value from the control when it hears the `ctlSelectEvent`
+that follows. `CtlHitControl` is only the second half, so a checkbox pressed from the host
+used to stay as it was -- and the value published was the control's highlight while the
+pen is on it rather than whether it is on, so no checkbox ever showed ticked and no tab
+showed chosen either. Both are what the pen does now.
+
+**Commands go one at a time, or together.** The runtime keeps one command, and a second
+sent before the first was taken replaces it. A host that means two things at once --
+choose this item, then press Select -- sends them as one, a line each, and they are carried
+out in order; one that sends them apart waits until `bod_ui_taken()` says the first has
+been taken. The page used to send those two back to back, and the choice was usually lost.
 
 Two differences worth knowing. The sliders on Sound Options come through as plain buttons
 in the browser and as sliders natively -- a control's style reads differently in
@@ -373,7 +388,7 @@ many pixels -- 1920x1920, six to each of the game's -- and the game is drawn int
 them.
 
 How the game's 320x320 is made up to those is the **Screen** setting: **View** in the
-menu bar (⌘1, ⌘2, ⌘3), and the cog above the screen in a browser. It is kept, in the user defaults
+menu bar (⌘1, ⌘2, ⌘3), and **Settings** in the pause menu in a browser. It is kept, in the user defaults
 natively and in the browser's storage on a page; `BOD_SCREEN` (or `?BOD_SCREEN=`) says
 it for one run without keeping it.
 
@@ -439,7 +454,11 @@ name, not "BOD - Introduction". `tools/scripts/dialogs.txt` opens every dialog t
 menu bar can and reads each one back -- a script's `ui` action drives `bodui.c` the way
 `pack` drives `bodpack.c`, and `ui dump` writes what the game has on screen into the log
 -- so a form that comes up empty, or takes the game with it, shows up there; the frames
-it takes have to be of the game throughout, since none of those dialogs is drawn.
+it takes have to be of the game throughout, since none of those dialogs is drawn. A `ui`
+line can carry several commands separated by `;` (`ui press 10; press 12`), which go to
+the game as one, and `ui pause 1` / `ui pause 0` hold the game still and let it go --
+`tools/scripts/pause.txt` rides into a pause with Up held and has to come out of it with
+the bike where it stopped.
 
 Useful knobs while debugging the ARM core:
 
@@ -493,13 +512,59 @@ Everything the native build does, this does: the recompiled 68k and ARM cores, t
 level packs, the game's menus and dialogs drawn by the page rather than by the game, the
 keyboard, and sound. Progress, settings and best times are kept in the browser's origin private
 filesystem and restored on the next visit; `bodReset()` from the console throws them away.
-The cog above the screen chooses how the screen is upscaled (see **Display**) and binds
-the riding keys, over the game rather than beside it so that opening it does not move the
-screen. The keys it sets go to the runtime through `pumpkin_set_ride_keys`, and both go
-into this browser's storage, so they take effect at once and are there on the next visit.
+
+**Escape pauses.** So does **Pause** above the screen, and so does putting the tab away.
+The pause menu comes up over the game, and everything that is not riding is in it:
+
+| | |
+|---|---|
+| **Resume** | or Escape again |
+| **Restart / Next / Previous level** | |
+| **Choose a level…** | the game's own level list |
+| **Level packs…** | the pack panel, below |
+| **Controls** | the key each riding action answers to, and the game's own control options |
+| **Settings** | Screen (see **Display**), Touch controls, and the game's Options menu: Bike, Control, Display, Sound, Recording, Hall of Fame and its three toggles |
+| **Profiles & records** | the rest of the game's Game and Rec menus: profiles, statistics, recorded games, the Hall of Fame |
+| **Help** | the game's Help menu |
+
+Quit is not in it -- in a page it ends the game for good -- and nor is sending the game to
+another Palm. The keys set on the Controls page go to the runtime through
+`pumpkin_set_ride_keys`, and they and the Screen and Touch settings go into this browser's
+storage, so they take effect at once and are there on the next visit.
+
+It really stops the game. The page's Pause used to stop the loop that draws the screen,
+and the picture stood still while the game carried on under it: five seconds "paused" with
+Up held rode the tutorial to the red flag and crashed, the same as five seconds riding.
+Pausing now asks the runtime to hold the game (`pause 1`, `src/libpumpkin/bodui.c`). The
+game's own thread waits in `EvtGetEvent` before it is handed anything, and the game's clock
+leaves that time out (`TimSkipTicks`): Bike or Die times its riding off `TimGetTicks`, so a
+pause that let the ticks run on would give it the whole pause as one long frame. It carries
+on from the moment it stopped -- eleven seconds held measures the same as none. Held is not
+deaf: the thread goes on answering the window and the mixer -- the mixer with silence -- and
+taking the host's commands, which is how the menu opens the game's dialogs and switches
+levels from behind the pause. A dialog of the game's is never held, since it has stopped the
+game already. The audio context is suspended as well, which gives up the audio session.
+
+A dialog of the game's opened from the menu comes up over it with the game still held, and
+when it is dismissed -- Escape, Cancel, OK, Close, Done -- the menu comes back to where it
+was. One left some other way, Play this level or a replay, ends the pause instead, since
+that is what was asked for.
+
+**All of it is driven by the arrow keys**, and nothing in any panel needs the mouse: the
+pause menu, the level packs, and every dialog of the game's the page draws. The arrows move
+to the control that is that way on the screen -- down a list, across a row of buttons, from
+the last row round to the first -- Enter or Space presses it, Escape goes back a step, and
+Tab goes round inside the panel. Where the controls are is where they are drawn, so a dialog
+nobody laid out by hand is walked the same way. A few keep an arrow for themselves: a text
+field keeps left and right for its caret, a drop-down takes them as the previous and next
+choice, and a row of choices -- Screen, Touch controls -- picks the next one as the arrow
+reaches it. A dialog opens with the keyboard on the chosen item of its list, somewhere to
+type, or its first control. Choosing a level in the game's level list and pressing Enter
+chooses it and moves on to Play this level: that list's default button is Cancel, and the
+page used to press it on every click, throwing the choice away.
 
 **Level pack** and the level buttons above the screen do what the game's Game menu does,
-without the menu. Restart, Previous and Next each queue the matching menu event, the way
+without the menu, and end a pause if there is one. Restart, Previous and Next each queue the matching menu event, the way
 picking the item with the keyboard would. **Levels...** opens the game's own level list.
 **Level pack** opens a panel over the screen that lists every pack the game has, in the
 game's order, with a filter; picking one starts it. The panel is a front for the game's
@@ -524,22 +589,11 @@ its results database, and opening that reads its empty index file -- and WasmFS 
 `select()` said "not ready" at once and forever, and `sys_read()` asked forever. A regular
 file is always ready; the browser build no longer asks (`sys_select`).
 
-**Menu...** opens the game's own menu bar -- Game, Rec, Options and Help, in its order,
-with the items under them -- as a panel over the screen, and picking one hands the game
-the menu event it would have got from its own menu. Whatever that opens is drawn by the
-page too, as a second panel of real controls built out of what the form publishes; see
-**The game's own menus and dialogs**. Escape over that panel does what its Cancel would.
-The dialogs the game raises by itself, finishing a level among them, come up the same
-way.
-
-**Pause** sits next to the cog, and there is nothing on the main thread for it to stop:
-`-sPROXY_TO_PTHREAD` put the game's loop on a worker, so the page asks the workers instead
-and whichever of them owns a main loop stops its own (`src/emscripten/bod-pre.js`).
-Emscripten's own `MainLoop.pause()` is not quite it either, because it also drops the
-keepalive reference the loop holds -- which is how a loop that has really finished lets
-the runtime exit, and a paused game has not finished. So the count is left where it is and
-the push that `resume()` does on the way back is popped off instead. The audio context is
-suspended alongside, which is what stops a tab left paused from holding the audio session.
+The pause menu's game items hand the game the menu event it would have got from its own
+menu, and whatever that opens is drawn by the page too, as a panel of real controls built
+out of what the form publishes; see **The game's own menus and dialogs**. Escape over that
+panel does what its Cancel would. The dialogs the game raises by itself, finishing a level
+among them, come up the same way.
 
 **Sixty frames a second**, arriving one per display refresh. The ride that measured 16.3
 frames a second when this port was first playable, and 37.5 once the refresh cap came off,
@@ -606,28 +660,31 @@ boot from 1.2s to 6.0s -- left both measurements roughly where they were. Recomp
 cores at `-O2` would be optimising something with at least six times the headroom it
 needs, on functions the note above says clang already handles badly.
 
-**On a phone** the page stops being a page with a game on it and becomes the game. A
-coarse pointer is taken as a thumb -- `?touch=1` and `?touch=0` say so outright, which is
-how the layout is looked at on a desktop -- and the page rearranges: the heading goes and
+**Touch controls** are off unless they are asked for: **Settings → Touch controls** in the
+pause menu, which is kept in this browser, or `?touch=1` and `?touch=0` for one visit. They
+used to come on by themselves for any coarse pointer; now a phone gets the same page as
+everything else until they are turned on, and they come and go without a reload, since
+the game would go with it. With them on, the page stops being a page with a game on it and
+becomes the game. It rearranges: the heading goes and
 its buttons join the level buttons on one line at the top, the key legend goes with it,
 the status line moves over the screen, and the screen takes everything that is left.
 Nothing scrolls, and the safe-area insets keep it clear of a notch and a home indicator.
 
-The keys the game is ridden with come with it, since there is no keyboard to press them
-on: the four arrows in a cross and the space bar beside them, under the screen when the
+The keys the game is ridden with come with it, for a phone or a tablet with no keyboard to
+press them on: the four arrows in a cross and the space bar beside them, under the screen when the
 phone is upright and down either side of it when it is not. They send the keystrokes a
 thumb is asking for rather than talking to the game -- SDL listens for `keydown` and
 `keyup` on the window, so a `KeyboardEvent` dispatched there is the same press, with the
-same `code` and `key` a real one carries, and whatever the cog has bound follows along.
+same `code` and `key` a real one carries, and whatever Controls has bound follows along.
 The arrows always ride, because the runtime wires them to the navigator itself; space
-rides whatever the settings panel says it does, which is Flip until someone says
+rides whatever the Controls page says it does, which is Flip until someone says
 otherwise. Each key is held for as long as the thumb is on it, which is what riding
 wants -- the game reads the keys as a mask rather than as repeats -- and each takes one
 pointer and captures it, so two can be held at once and a thumb that slides off a key
 still lets go of it. A key held when the tab goes away is released. While a panel is open
 the pad is dimmed and inert, the panel having taken the keys for itself, and the pad's
-keystrokes are marked so that a thumb cannot be the answer to the settings panel's
-"press the key you want".
+keystrokes are marked so that a thumb cannot be the answer to the Controls page's
+"press a key".
 
 The screen is a square and a phone is not, so the square and the keys are sized together
 (`bodFit`) rather than by the stylesheet: each depends on the other. Upright, the cross is
@@ -679,8 +736,9 @@ upscaled to, and takes the screenshots at it: `j:Module.bodScreen.set('pixels')`
 two `p:` actions is the same moment with and without xBR.
 
 `j:` runs a line of JavaScript in the page between the other actions -- `j:bodPack.open()`
-opens the pack panel, `j:bodPack.pick(1)` takes its second entry -- which is how the
-buttons are driven from a script. It cannot contain a comma.
+opens the pack panel, `j:bodPack.pick(1)` takes its second entry, `j:bodPM.open()` pauses --
+which is how the buttons are driven from a script. It cannot contain a comma. `k:Escape`,
+`k:ArrowDown` and `k:Enter` drive the pause menu the way a player does.
 
 ## Licensing
 
