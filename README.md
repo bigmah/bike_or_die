@@ -57,10 +57,10 @@ to be translated too, not just run.
 | **←** / **→**, **A** / **D** | Balance left / right |
 | **Space** | **Flip** -- turn around and ride the other way |
 | F1-F4 | the four Palm hardware buttons |
-| **Esc** | in a browser, pause: levels, packs, controls, settings (see **In a browser**) |
+| **Esc** | pause: levels, packs, controls, settings (see **The pause menu**) |
 
 Those are the game's own defaults, visible and rebindable under **Options → Control** --
-in the menu bar, or under **Settings** in the pause menu on the page. Its five actions map to a Palm 5-way
+in the menu bar, or under **Settings** in the pause menu. Its five actions map to a Palm 5-way
 navigator: Forward=Up, Brake=Down, Balance=Left/Right, Flip=Select.
 
 WASD rides as well, and the arrow keys still do -- the letters are added to the
@@ -68,10 +68,11 @@ navigator bits the game polls rather than translated into arrow keys, so they ke
 their ordinary meaning too and typing a name or a code is unaffected. Space does the
 same thing for Select.
 
-Which letters those are is up to you. In the browser the pause menu's **Controls** page
-binds one key to each of the five actions; it takes effect where it is set, without
-reloading, and is kept in that browser. Everywhere else the same thing is `BOD_KEYS`,
-whose default is what that page starts from:
+Which letters those are is up to you. The pause menu's **Controls** page binds one key to
+each of the five actions, in the window and in the browser alike; it takes effect where it
+is set, and is kept -- in the app's preferences, or in that browser. Underneath, the same
+thing is `BOD_KEYS`, whose default is what that page starts from, and which wins for a run
+it is set for:
 
     BOD_KEYS="forward=w brake=s left=a right=d flip=space"
 
@@ -137,8 +138,8 @@ event it generated would leave the button drawn stuck down.
 ## Levels and level packs
 
 The window's title bar carries the controls the browser build has above its screen:
-**Level Pack…**, **Levels…**, and Previous / Restart / Next, with the name of the pack
-the game is on between them. The same commands are in the menu bar under **Level**:
+**Level Pack…**, **Levels…**, Previous / Restart / Next, with the name of the pack the game
+is on between them, and **Pause**. The same commands are in the menu bar under **Level**:
 
 | key | action |
 |---|---|
@@ -176,6 +177,54 @@ code, through Palm OS 5's `DmFindDatabase` (offset 0x15C of the Boot library's t
 which PumpkinOS did not provide. A call it does not provide hands back its first argument
 untouched, so the game opened the pointer to the pack's name as if it were the pack, was
 refused, and quietly fell back to "BOD - Introduction". `armsyscall.c` answers it now.
+
+## The pause menu
+
+**Escape pauses**, in the window and on the page. So do **Pause** -- in the title bar, under
+**Level**, above the screen in a browser -- and minimizing the window, hiding the app or
+putting the tab away. The game really stops: the runtime holds its thread and leaves the
+time out of its clock (see **In a browser**, where this was first needed), so it carries on
+from the moment it stopped. A menu comes down over it with everything that is not riding:
+
+| | |
+|---|---|
+| **Resume** | or Escape again |
+| **Restart / Next / Previous level** | |
+| **Choose a level…** | the game's own level list |
+| **Level packs…** | the pack sheet or panel |
+| **Controls** | the key each riding action answers to (see **Controls**), and the game's own control options |
+| **Settings** | Screen (see **Display**), Touch controls in a browser, and the game's Options menu |
+| **Profiles & records** | the rest of the game's Game and Rec menus: profiles, statistics, recorded games |
+| **Help** | the game's Help menu |
+
+Up and down move, left and right change a row of choices, Return or Space picks, and
+Escape goes back a page and then resumes. A new pause starts on Resume, so Escape twice is
+always there and back. The game's dialogs open from it with the game still held, and a
+dialog that is dismissed -- Escape, Cancel, OK, Close, Done -- comes back to the menu where
+it was; one left some other way, Play this level or a replay, ends the pause, since that is
+what was asked for. The pack sheet is the same: back to the menu without a choice, riding
+with one.
+
+In the window the menu is a sheet (`src/liblsdl2/liblsdl2_mac_pause.m`), and a window has
+one sheet at a time, so it steps aside for a dialog's sheet or the pack sheet and comes back
+after. Its rows are its own rather than buttons: the system only lets the keyboard move
+between buttons when Keyboard navigation is turned on in System Settings, and then only by
+Tab. The same goes for **the game's dialogs in the window, which are now walked by the
+arrow keys too** (`liblsdl2_mac_keys.m`): the sheet hands every key to its owner before
+any control sees it, the arrows move to the control that is that way on the sheet, left and
+right change a pop-up, a segmented control or a slider, Return or Space presses, and a
+ring drawn just outside the control says where the keyboard is. A list keeps up and down
+until they would leave it; Return in a list whose default button is Cancel -- the level
+list -- chooses the item and moves on to Play this level, and a double-click plays it,
+where it used to choose it and press Cancel.
+
+Two things had to be arranged for the window that the page does not need. SDL takes a key
+before the sheet it was typed into does, and hands it to the game's side later, when the
+sheet may be gone: Escape on the menu resumes, and the same Escape would then pause again.
+So each sheet notes when it comes down, and a key whose SDL event is no later than that is
+the window's. And the game publishes a dialog again every time something on it is chosen,
+which reloaded the sheet's lists and let go of their selection, so a choice lasted only
+until the game had heard it; the selection is put back now.
 
 ## The game's own menus and dialogs
 
@@ -287,7 +336,7 @@ The launcher reads `~/.bikeordie.env` if it exists. Useful settings:
 | `BOD_ZOOM` | `3` | integer window scale; the game itself is 320x320 |
 | `BOD_NATIVE_UI` | `1` | the host draws the game's menus and dialogs; `0` lets the game draw its own |
 | `BOD_SCREEN` | View menu | how the screen is upscaled: `pixels`, `smooth` or `xbr`; unset, the last choice in the View menu, which starts as `xbr`. See **Display** |
-| `BOD_KEYS` | WASD | the keys that ride, on top of the arrows; see **Controls** |
+| `BOD_KEYS` | Controls page | the keys that ride, on top of the arrows; unset, what the pause menu's Controls page last chose, which starts as WASD. See **Controls** |
 | `BOD_UNLOCK` | `44652` | the registration code to answer the About dialog with; `0` leaves it alone |
 
 Game data (saves, level packs, preferences) lives in
@@ -460,6 +509,16 @@ the game as one, and `ui pause 1` / `ui pause 0` hold the game still and let it 
 `tools/scripts/pause.txt` rides into a pause with Up held and has to come out of it with
 the bike where it stopped.
 
+`tools/macsheets.sh` tests the window's sheets -- the pause menu, the game's dialogs, the
+level pack sheet -- without showing anything on a screen: it compiles
+`liblsdl2_mac*.m` against a simulated game, keeps a window that refuses to be on any
+display, never lets itself become the active application, and hands each key press to the
+sheet as an event. It walks the pause menu, binds a key, changes the screen, opens Sound
+and Display and comes back, ticks a checkbox, chooses and plays a level, backs out of the
+pack sheet, and checks that the Escape which resumes is not taken for a new pause. The
+app's preferences are left alone: the suite the sheets keep things in is swapped for a
+throwaway one.
+
 Useful knobs while debugging the ARM core:
 
 | variable | meaning |
@@ -513,20 +572,7 @@ level packs, the game's menus and dialogs drawn by the page rather than by the g
 keyboard, and sound. Progress, settings and best times are kept in the browser's origin private
 filesystem and restored on the next visit; `bodReset()` from the console throws them away.
 
-**Escape pauses.** So does **Pause** above the screen, and so does putting the tab away.
-The pause menu comes up over the game, and everything that is not riding is in it:
-
-| | |
-|---|---|
-| **Resume** | or Escape again |
-| **Restart / Next / Previous level** | |
-| **Choose a level…** | the game's own level list |
-| **Level packs…** | the pack panel, below |
-| **Controls** | the key each riding action answers to, and the game's own control options |
-| **Settings** | Screen (see **Display**), Touch controls, and the game's Options menu: Bike, Control, Display, Sound, Recording, Hall of Fame and its three toggles |
-| **Profiles & records** | the rest of the game's Game and Rec menus: profiles, statistics, recorded games, the Hall of Fame |
-| **Help** | the game's Help menu |
-
+**Escape pauses**, and the pause menu comes up over the screen; see **The pause menu**.
 Quit is not in it -- in a page it ends the game for good -- and nor is sending the game to
 another Palm. The keys set on the Controls page go to the runtime through
 `pumpkin_set_ride_keys`, and they and the Screen and Touch settings go into this browser's
@@ -544,11 +590,6 @@ deaf: the thread goes on answering the window and the mixer -- the mixer with si
 taking the host's commands, which is how the menu opens the game's dialogs and switches
 levels from behind the pause. A dialog of the game's is never held, since it has stopped the
 game already. The audio context is suspended as well, which gives up the audio session.
-
-A dialog of the game's opened from the menu comes up over it with the game still held, and
-when it is dismissed -- Escape, Cancel, OK, Close, Done -- the menu comes back to where it
-was. One left some other way, Play this level or a replay, ends the pause instead, since
-that is what was asked for.
 
 **All of it is driven by the arrow keys**, and nothing in any panel needs the mouse: the
 pause menu, the level packs, and every dialog of the game's the page draws. The arrows move

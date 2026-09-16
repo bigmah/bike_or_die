@@ -3395,10 +3395,10 @@ index 069638e..f8adbda 100644
 +  launcher = app
  }
 diff --git a/src/liblsdl2/Makefile b/src/liblsdl2/Makefile
-index a8b7c26..9f47905 100644
+index a8b7c26..2f52a8c 100644
 --- a/src/liblsdl2/Makefile
 +++ b/src/liblsdl2/Makefile
-@@ -16,6 +16,21 @@ STATIC=1
+@@ -16,6 +16,22 @@ STATIC=1
  else ifeq ($(OSNAME),Emscripten)
  STATIC=2
  CUSTOMFLAGS=-s USE_SDL=2
@@ -3407,9 +3407,10 @@ index a8b7c26..9f47905 100644
 +else ifeq ($(OSNAME),Darwin)
 +SDL_PREFIX := $(shell sdl2-config --prefix)
 +CUSTOMFLAGS=$(MIXER_FLAGS) $(OPENGL_FLAGS) -I$(SDL_PREFIX)/include
-+# The window's own level controls and the sheet that draws the game's dialogs
-+# are Objective-C (liblsdl2_mac.m, liblsdl2_mac_form.m).
-+MAC_OBJS=liblsdl2_mac.o liblsdl2_mac_form.o
++# The window's own level controls, the sheet that draws the game's dialogs and
++# the pause menu are Objective-C (liblsdl2_mac.m, liblsdl2_mac_form.m,
++# liblsdl2_mac_pause.m), walked by the keyboard with liblsdl2_mac_keys.m.
++MAC_OBJS=liblsdl2_mac.o liblsdl2_mac_form.o liblsdl2_mac_pause.o liblsdl2_mac_keys.o
 +# The screen is composited on the CPU and upscaled to the display's resolution
 +# before it is shown (liblsdl2_screen.c).
 +SOURCE+=liblsdl2_screen.c
@@ -3420,12 +3421,13 @@ index a8b7c26..9f47905 100644
  else ifeq ($(OSNAME),Msys)
  CUSTOMFLAGS=$(MIXER_FLAGS) $(OPENGL_FLAGS)
  LIBS=-lSDL2 -lversion -limm32 -lgdi32 -lsetupapi -lwinmm -lole32 -loleaut32 $(MIXER_LIBS)
-@@ -25,3 +40,11 @@ LIBS=-lSDL2 $(MIXER_LIBS) $(OPENGL_LIBS)
+@@ -25,3 +41,12 @@ LIBS=-lSDL2 $(MIXER_LIBS) $(OPENGL_LIBS)
  endif
  
  include ../lib.mak
 +
 +liblsdl2.o $(MAC_OBJS): liblsdl2_mac.h
++$(MAC_OBJS): liblsdl2_mac_keys.h
 +liblsdl2.o liblsdl2_screen.o: liblsdl2_screen.h
 +liblsdl2.wasm liblsdl2_web.wasm: liblsdl2_web.h
 +
@@ -3433,7 +3435,7 @@ index a8b7c26..9f47905 100644
 +	@echo Compiling $<
 +	@$(CC) $(CPPFLAGS) -fobjc-arc -c -o $@ $<
 diff --git a/src/liblsdl2/liblsdl2.c b/src/liblsdl2/liblsdl2.c
-index b8e2f67..49873e2 100644
+index b8e2f67..df71ba3 100644
 --- a/src/liblsdl2/liblsdl2.c
 +++ b/src/liblsdl2/liblsdl2.c
 @@ -20,6 +20,15 @@
@@ -3509,7 +3511,7 @@ index b8e2f67..49873e2 100644
            case SDLK_F1: key = WINDOW_KEY_F1; break;
            case SDLK_F2: key = WINDOW_KEY_F2; break;
            case SDLK_F3: key = WINDOW_KEY_F3; break;
-@@ -405,6 +448,49 @@ static int map_button(libsdl_window_t *window, SDL_Event *ev) {
+@@ -405,6 +448,57 @@ static int map_button(libsdl_window_t *window, SDL_Event *ev) {
    return 0;
  }
  
@@ -3526,7 +3528,8 @@ index b8e2f67..49873e2 100644
 + * (liblsdl2_mac.m) rather than for the game. SDL reports every key the
 + * application receives, whichever window it was typed into, so a name typed
 + * into the level pack sheet's search field would otherwise reach the game's
-+ * dialog behind it; and a Command chord is the menu bar's. A key belongs to
++ * dialog behind it; a Command chord is the menu bar's; and Escape, with no
++ * sheet up, is the pause menu's. A key belongs to
 + * whoever it was pressed for until it is released -- the release is what types
 + * a character in PumpkinOS (pumpkin_event_single_app) -- so one that was down
 + * for the game when the sheet came up is still let go of there. */
@@ -3541,7 +3544,14 @@ index b8e2f67..49873e2 100644
 +
 +  if (ev->type == SDL_KEYDOWN) {
 +    if (*owner == OWNER_NONE) {
-+      *owner = ((ev->key.keysym.mod & KMOD_GUI) || liblsdl2_mac_wants_keys()) ? OWNER_HOST : OWNER_GAME;
++      if ((ev->key.keysym.mod & KMOD_GUI) || liblsdl2_mac_wants_key(ev->key.timestamp)) {
++        *owner = OWNER_HOST;
++      } else if (sc == SDL_SCANCODE_ESCAPE && !ev->key.repeat && liblsdl2_mac_escape()) {
++        /* Escape pauses: the pause menu is the window's (liblsdl2_mac_pause.m). */
++        *owner = OWNER_HOST;
++      } else {
++        *owner = OWNER_GAME;
++      }
 +    }
 +    return *owner == OWNER_HOST;
 +  }
@@ -3559,7 +3569,7 @@ index b8e2f67..49873e2 100644
  static int libsdl_event2(libsdl_window_t *window, int wait, int *arg1, int *arg2) {
    SDL_Event ev;
    int has_ev, r = 0;
-@@ -412,6 +498,9 @@ static int libsdl_event2(libsdl_window_t *window, int wait, int *arg1, int *arg2
+@@ -412,6 +506,9 @@ static int libsdl_event2(libsdl_window_t *window, int wait, int *arg1, int *arg2
    has_ev = wait < 0 ? SDL_WaitEvent(&ev) : SDL_WaitEventTimeout(&ev, wait);
  
    if (has_ev) {
@@ -3569,7 +3579,7 @@ index b8e2f67..49873e2 100644
      switch (ev.type) {
        case SDL_KEYDOWN:
          *arg1 = map_key(window, &ev);
-@@ -458,6 +547,16 @@ static int libsdl_event2(libsdl_window_t *window, int wait, int *arg1, int *arg2
+@@ -458,6 +555,16 @@ static int libsdl_event2(libsdl_window_t *window, int wait, int *arg1, int *arg2
            case SDL_WINDOWEVENT_CLOSE:
              r = -1;
              break;
@@ -3586,7 +3596,7 @@ index b8e2f67..49873e2 100644
            default:
              break;
          }
-@@ -689,6 +788,117 @@ static int libsdl_event(libsdl_window_t *window, int wait, int remove, int *ekey
+@@ -689,6 +796,117 @@ static int libsdl_event(libsdl_window_t *window, int wait, int remove, int *ekey
    return r;
  }
  
@@ -3704,7 +3714,7 @@ index b8e2f67..49873e2 100644
  static int libsdl_window_show_cursor(window_t *window, int show) {
    SDL_SetRelativeMouseMode(show ? SDL_FALSE : SDL_TRUE);
    return 0;
-@@ -740,7 +950,13 @@ static int libsdl_video_setup(libsdl_window_t *window) {
+@@ -740,7 +958,13 @@ static int libsdl_video_setup(libsdl_window_t *window) {
    }
  
    debug(DEBUG_INFO, "SDL", "creating window (%d x %d) fullscreen %d", w, h, window->fullscreen);
@@ -3718,7 +3728,7 @@ index b8e2f67..49873e2 100644
    if (window->window == NULL) {
      debug(DEBUG_ERROR, "SDL", "SDL_CreateWindow failed: %s", SDL_GetError());
      return -1;
-@@ -780,10 +996,38 @@ static int libsdl_video_setup(libsdl_window_t *window) {
+@@ -780,10 +1004,38 @@ static int libsdl_video_setup(libsdl_window_t *window) {
      }
    }
  
@@ -3759,7 +3769,7 @@ index b8e2f67..49873e2 100644
  
    for (i = 0; keymap[i].from; i++) {
      index = (keymap[i].mods << 8) | keymap[i].from;
-@@ -794,6 +1038,16 @@ static int libsdl_video_setup(libsdl_window_t *window) {
+@@ -794,6 +1046,16 @@ static int libsdl_video_setup(libsdl_window_t *window) {
  }
  
  static int libsdl_video_close(libsdl_window_t *window) {
@@ -3776,7 +3786,7 @@ index b8e2f67..49873e2 100644
    if (window->background) SDL_DestroyTexture(window->background);
    if (window->renderer) SDL_DestroyRenderer(window->renderer);
    if (window->window) SDL_DestroyWindow(window->window);
-@@ -951,6 +1205,18 @@ static int libsdl_window_render(window_t *_window) {
+@@ -951,6 +1213,18 @@ static int libsdl_window_render(window_t *_window) {
    int r = -1;
  
    if (window) {
@@ -3795,7 +3805,7 @@ index b8e2f67..49873e2 100644
  #ifdef SDL_OPENGL
      if (window->opengl && window->texture) {
        presentBackBuffer(window, window->texture, window->programId[0]);
-@@ -973,6 +1239,18 @@ static int libsdl_window_erase(window_t *_window, uint32_t bg) {
+@@ -973,6 +1247,18 @@ static int libsdl_window_erase(window_t *_window, uint32_t bg) {
    window = (libsdl_window_t *)_window;
  
    if (window) {
@@ -3814,7 +3824,7 @@ index b8e2f67..49873e2 100644
      SDL_RenderClear(window->renderer);
  
      if (window->background) {
-@@ -993,6 +1271,17 @@ static texture_t *libsdl_window_create_texture(window_t *_window, int width, int
+@@ -993,6 +1279,17 @@ static texture_t *libsdl_window_create_texture(window_t *_window, int width, int
  
    if (window) {
      if ((texture = sys_calloc(1, sizeof(texture_t))) != NULL) {
@@ -3832,7 +3842,7 @@ index b8e2f67..49873e2 100644
        if ((texture->t = SDL_CreateTexture(window->renderer, window->format, SDL_TEXTUREACCESS_STREAMING, width, height)) != NULL) {
          SDL_SetTextureBlendMode(texture->t, SDL_BLENDMODE_BLEND);
          texture->width = width;
-@@ -1018,6 +1307,9 @@ static int libsdl_window_destroy_texture(window_t *_window, texture_t *texture)
+@@ -1018,6 +1315,9 @@ static int libsdl_window_destroy_texture(window_t *_window, texture_t *texture)
    window = (libsdl_window_t *)_window;
  
    if (window && texture) {
@@ -3842,7 +3852,7 @@ index b8e2f67..49873e2 100644
      if (texture->t) SDL_DestroyTexture(texture->t);
      if (texture->blur) SDL_DestroyTexture(texture->blur);
      if (texture->buf) sys_free(texture->buf);
-@@ -1062,6 +1354,28 @@ static int libsdl_window_update_texture_rect(window_t *_window, texture_t *textu
+@@ -1062,6 +1362,28 @@ static int libsdl_window_update_texture_rect(window_t *_window, texture_t *textu
    rect.w = w;
    rect.h = h;
  
@@ -3871,7 +3881,7 @@ index b8e2f67..49873e2 100644
    if (SDL_LockTexture(texture->t, &rect, &pixels, &pitch) == 0) {
      src = &src[(ty * texture->width + tx) * window->spixel];
      dst = (uint8_t *)pixels;
-@@ -1091,6 +1405,18 @@ static int libsdl_window_draw_texture_rect(window_t *_window, texture_t *texture
+@@ -1091,6 +1413,18 @@ static int libsdl_window_draw_texture_rect(window_t *_window, texture_t *texture
    window = (libsdl_window_t *)_window;
  
    if (window && texture && w > 0 && h > 0) {
@@ -3890,7 +3900,7 @@ index b8e2f67..49873e2 100644
  #ifdef SDL_OPENGL
      if (window->opengl) {
        window->texture = texture;
-@@ -1128,6 +1454,18 @@ static int libsdl_window_draw_texture(window_t *_window, texture_t *texture, int
+@@ -1128,6 +1462,18 @@ static int libsdl_window_draw_texture(window_t *_window, texture_t *texture, int
    window = (libsdl_window_t *)_window;
  
    if (window && texture) {
@@ -3909,7 +3919,7 @@ index b8e2f67..49873e2 100644
      dst.x = x * window->xfactor;
      dst.y = y * window->yfactor;
      dst.w = texture->width  * window->xfactor;
-@@ -1145,6 +1483,34 @@ static int libsdl_window_draw_texture(window_t *_window, texture_t *texture, int
+@@ -1145,6 +1491,34 @@ static int libsdl_window_draw_texture(window_t *_window, texture_t *texture, int
    return r;
  }
  
@@ -3944,7 +3954,7 @@ index b8e2f67..49873e2 100644
  static void audio_destructor(void *p) {
    sdl_audio_t *audio = (sdl_audio_t *)p;
  
-@@ -1180,9 +1546,14 @@ static audio_t libsdl_audio_create(int pcm, int channels, int rate, void *data)
+@@ -1180,9 +1554,14 @@ static audio_t libsdl_audio_create(int pcm, int channels, int rate, void *data)
        audio->rate = rate;
        audio->channels = channels;
        debug(DEBUG_TRACE, "SDL", "sample size %d", audio->bsize);
@@ -3962,7 +3972,7 @@ index b8e2f67..49873e2 100644
        }
        audio->buffer = sys_calloc(1, audio->bsize * audio->channels);
        debug(DEBUG_TRACE, "SDL", "buffer size %d", audio->bsize);
-@@ -1312,6 +1683,18 @@ static int libsdl_window_update(window_t *_window, int x, int y, int width, int
+@@ -1312,6 +1691,18 @@ static int libsdl_window_update(window_t *_window, int x, int y, int width, int
    return 0;
  }
  
@@ -3981,7 +3991,7 @@ index b8e2f67..49873e2 100644
  #ifdef SDL_OPENGL
  static GLuint compileShader(const char *source, GLint len, GLuint shaderType) {
    GLuint result;
-@@ -1521,6 +1904,64 @@ static void *convert_audio(sdl_audio_buffer_t *abuf, sdl_audio_t *audio, void *a
+@@ -1521,6 +1912,64 @@ static void *convert_audio(sdl_audio_buffer_t *abuf, sdl_audio_t *audio, void *a
    return buf;
  }
  
@@ -4046,7 +4056,7 @@ index b8e2f67..49873e2 100644
  static void audio_callback(void *userdata, uint8_t *stream, int len) {
    int aptr = *(int *)userdata;
    sdl_audio_buffer_t *abuf;
-@@ -1568,22 +2009,28 @@ static int audio_action(void *_arg) {
+@@ -1568,22 +2017,28 @@ static int audio_action(void *_arg) {
    int aptr;
    unsigned char *msg;
    unsigned int msglen;
@@ -4078,7 +4088,7 @@ index b8e2f67..49873e2 100644
    wait = 2000;
  
    for (; !thread_must_end();) {
-@@ -1596,9 +2043,9 @@ static int audio_action(void *_arg) {
+@@ -1596,9 +2051,9 @@ static int audio_action(void *_arg) {
      if (r == 1) {
        if (dev == 0) {
          switch (arg->pcm) {
@@ -4091,7 +4101,7 @@ index b8e2f67..49873e2 100644
          }
          desired.freq = arg->rate;          // DSP frequency -- samples per second
          desired.channels = arg->channels;  // Number of channels: 1 mono, 2 stereo
-@@ -1608,12 +2055,22 @@ static int audio_action(void *_arg) {
+@@ -1608,12 +2063,22 @@ static int audio_action(void *_arg) {
          desired.callback = audio_callback; // Callback that feeds the audio device (NULL to use SDL_QueueAudio())
          desired.userdata = &aptr;          // Userdata passed to callback (ignored for NULL callbacks)
  
@@ -4117,7 +4127,7 @@ index b8e2f67..49873e2 100644
        }
  
        if (msg) {
-@@ -1633,6 +2090,10 @@ static int audio_action(void *_arg) {
+@@ -1633,6 +2098,10 @@ static int audio_action(void *_arg) {
            }
            
            // empty the buffer
@@ -4128,7 +4138,7 @@ index b8e2f67..49873e2 100644
            if ((abuf = ptr_lock(aptr, TAG_ABUF)) != NULL) {
              if (abuf->len > 0) {
                debug(DEBUG_TRACE, "SDL", "emptying %u bytes", abuf->len);
-@@ -1643,7 +2104,10 @@ static int audio_action(void *_arg) {
+@@ -1643,7 +2112,10 @@ static int audio_action(void *_arg) {
            wait = 0;
            debug(DEBUG_TRACE, "SDL", "set wait=%u", wait);
          } else {
@@ -4139,7 +4149,7 @@ index b8e2f67..49873e2 100644
          }
          sys_free(msg);
        } else {
-@@ -1654,22 +2118,81 @@ static int audio_action(void *_arg) {
+@@ -1654,22 +2126,81 @@ static int audio_action(void *_arg) {
        wait = 2000;
        if (ptr) {
          if ((audio = ptr_lock(ptr, TAG_AUDIO)) != NULL) {
@@ -4232,7 +4242,7 @@ index b8e2f67..49873e2 100644
            }
          } else {
            debug(DEBUG_TRACE, "SDL", "ptr %d deleted", ptr);
-@@ -1687,7 +2210,7 @@ static int audio_action(void *_arg) {
+@@ -1687,7 +2218,7 @@ static int audio_action(void *_arg) {
  
    if (dev > 0) {
      debug(DEBUG_INFO, "SDL", "close device %d", dev);
@@ -4241,7 +4251,7 @@ index b8e2f67..49873e2 100644
    }
  
    if (buf) {
-@@ -1754,6 +2277,9 @@ int liblsdl2_load(void) {
+@@ -1754,6 +2285,9 @@ int liblsdl2_load(void) {
    window_provider.draw_texture_rect = libsdl_window_draw_texture_rect;
    window_provider.update_texture_rect = libsdl_window_update_texture_rect;
    window_provider.show_cursor = libsdl_window_show_cursor;
@@ -4253,10 +4263,10 @@ index b8e2f67..49873e2 100644
  #endif
 diff --git a/src/liblsdl2/liblsdl2_mac.h b/src/liblsdl2/liblsdl2_mac.h
 new file mode 100644
-index 0000000..8bf21be
+index 0000000..77dc736
 --- /dev/null
 +++ b/src/liblsdl2/liblsdl2_mac.h
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,85 @@
 +#ifndef LIBLSDL2_MAC_H
 +#define LIBLSDL2_MAC_H
 +
@@ -4264,12 +4274,27 @@ index 0000000..8bf21be
 + * liblsdl2_mac.m. Both are called on the thread that owns the window. */
 +
 +/* Adds the level controls to this window's title bar, the Level menu to the
-+ * menu bar, and the level pack sheet. */
++ * menu bar, the level pack sheet, the sheet that draws the game's dialogs and
++ * the pause menu. liblsdl2_mac_attach_window() is the same for a Cocoa window
++ * that SDL did not make. */
 +void liblsdl2_mac_attach(SDL_Window *window);
++void liblsdl2_mac_attach_window(void *nswindow);
 +
 +/* Whether a key pressed now is for those controls rather than for the game:
-+ * the level pack sheet is up and its search field is being typed into. */
++ * one of the sheets is up. */
 +int liblsdl2_mac_wants_keys(void);
++
++/* Escape, pressed for the game (liblsdl2.c): puts the pause menu up, and says
++ * whether it did -- in which case the key is the window's, not the game's. */
++int liblsdl2_mac_escape(void);
++
++/* SDL takes a key before the sheet it was typed into does, and hands it over
++ * later, when the sheet may already have gone -- Escape on the pause menu
++ * resumes, and the same Escape must not then pause again. So a sheet says when
++ * it comes down, and a key whose SDL event is from no later than that was the
++ * sheet's (liblsdl2_mac.m). */
++void liblsdl2_mac_sheet_closed(void);
++int liblsdl2_mac_wants_key(uint32_t timestamp);
 +
 +/* debug() for the Objective-C side, which does not include PumpkinOS. */
 +void liblsdl2_log(const char *msg);
@@ -4283,6 +4308,42 @@ index 0000000..8bf21be
 + * the game's level and pack lists belong to it and not to the form sheet. */
 +int liblsdl2_mac_pack_busy(void);
 +
++/* The level controls, for the pause menu (liblsdl2_mac.m): an item of the
++ * game's Game menu by its label, the level pack sheet, the name of the pack
++ * the game is on, the Screen setting chosen and kept, and the Pause button
++ * told whether the game is paused. */
++void liblsdl2_mac_game_menu(const char *label);
++void liblsdl2_mac_open_packs(void);
++const char *liblsdl2_mac_pack_title(void);
++void liblsdl2_mac_screen_choose(int mode);
++void liblsdl2_mac_pause_changed(int paused);
++
++/* The channel to the game's own UI (liblsdl2_mac_form.m): a command, queued
++ * so that one never takes the place of another on the way; the pause, which
++ * goes at once; the game's menu bar as it publishes it, "" until then; and a
++ * dialog asked for on purpose, to be shown as soon as it is up. */
++void liblsdl2_mac_ui_send(const char *cmd);
++void liblsdl2_mac_ui_pause(int on);
++const char *liblsdl2_mac_ui_menubar(void);
++void liblsdl2_mac_form_expect(void);
++int liblsdl2_mac_form_shown(void);
++
++/* The pause menu (liblsdl2_mac_pause.m). */
++void liblsdl2_mac_pause_attach(void *nswindow);
++int  liblsdl2_mac_pause_wants_keys(void);   /* its sheet is up */
++int  liblsdl2_mac_pause_session(void);      /* the game is held for it */
++void liblsdl2_mac_pause_open(void);
++void liblsdl2_mac_pause_resume(void);
++/* Another sheet is coming up over the game, and the menu makes way: for one of
++ * the game's dialogs, after which dialog_closed() says whether it was
++ * dismissed -- back to the menu -- or left some other way, which ends the
++ * pause; or for the level pack sheet, after which back_from_packs() is the way
++ * back if no pack was chosen. */
++void liblsdl2_mac_pause_step_aside(void);
++void liblsdl2_mac_pause_dialog_closed(int dismissed);
++void liblsdl2_mac_pause_hide_for_packs(void);
++void liblsdl2_mac_pause_back_from_packs(void);
++
 +/* The Screen setting, for the View menu (liblsdl2.c): SCREEN_PIXELS,
 + * SCREEN_SMOOTH or SCREEN_XBR from liblsdl2_screen.h. Setting it shows the
 + * frame again at once. from_env says BOD_SCREEN chose it for this run. */
@@ -4293,11 +4354,13 @@ index 0000000..8bf21be
 +#endif
 diff --git a/src/liblsdl2/liblsdl2_mac.m b/src/liblsdl2/liblsdl2_mac.m
 new file mode 100644
-index 0000000..423bcec
+index 0000000..94111cd
 --- /dev/null
 +++ b/src/liblsdl2/liblsdl2_mac.m
-@@ -0,0 +1,871 @@
-+/* Bike or Die's levels and level packs, from the macOS window itself.
+@@ -0,0 +1,968 @@
++/* Bike or Die's levels and level packs, from the macOS window itself, and the
++ * Pause button that brings the pause menu down over the game
++ * (liblsdl2_mac_pause.m).
 + *
 + * The browser build has a row of controls above the screen -- Level pack,
 + * Levels..., Previous / Restart / Next -- that drives the game's own Game menu
@@ -4457,12 +4520,18 @@ index 0000000..423bcec
 +- (void)attachTo:(NSWindow *)window;
 +- (BOOL)wantsKeys;
 +- (BOOL)busy;
++- (IBAction)openPacks:(id)sender;
++- (void)sendGameMenu:(NSString *)label;
++- (NSString *)gameTitle;
++- (void)chooseScreen:(int)mode;
++- (void)pauseChanged:(BOOL)paused;
 +@end
 +
 +@implementation BODLevelControls {
 +  __weak NSWindow *_window;
 +
 +  /* the row under the title bar */
++  NSButton *_pauseButton;
 +  NSButton *_packButton;
 +  NSButton *_levelsButton;
 +  NSSegmentedControl *_stepper;
@@ -4482,6 +4551,7 @@ index 0000000..423bcec
 +  NSMutableArray<NSNumber *> *_shown;   /* indexes into _names that pass the filter */
 +  NSInteger _current;                   /* the pack the game is on, or -1 */
 +  BOOL _listed;                         /* the names are in and the game's pack list is up behind */
++  BOOL _fromPause;                      /* opened from the pause menu, and going back to it */
 +
 +  /* the command under way */
 +  NSTimer *_poll;
@@ -4512,6 +4582,8 @@ index 0000000..423bcec
 +  _packButton.toolTip = @"Choose a level pack";
 +  _levelsButton = [NSButton buttonWithTitle:@"Levels…" target:self action:@selector(levels:)];
 +  _levelsButton.toolTip = @"Choose a level in this pack";
++  _pauseButton = [NSButton buttonWithTitle:@"Pause" target:self action:@selector(pause:)];
++  _pauseButton.toolTip = @"Pause: levels, packs, controls and settings (Esc)";
 +
 +  _info = [NSTextField labelWithString:@""];
 +  _info.textColor = NSColor.secondaryLabelColor;
@@ -4540,14 +4612,15 @@ index 0000000..423bcec
 +  _packButton.refusesFirstResponder = YES;
 +  _levelsButton.refusesFirstResponder = YES;
 +  _stepper.refusesFirstResponder = YES;
++  _pauseButton.refusesFirstResponder = YES;
 +
 +  /* The pack's name takes up the slack, which puts Previous / Restart / Next
 +   * at the right edge, where the browser's row has them. */
-+  for (NSView *view in @[ _packButton, _levelsButton, _stepper ]) {
++  for (NSView *view in @[ _packButton, _levelsButton, _stepper, _pauseButton ]) {
 +    [view setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
 +    [view setContentCompressionResistancePriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
 +  }
-+  stack = [NSStackView stackViewWithViews:@[ _packButton, _levelsButton, _info, _stepper ]];
++  stack = [NSStackView stackViewWithViews:@[ _packButton, _levelsButton, _info, _stepper, _pauseButton ]];
 +  stack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
 +  stack.distribution = NSStackViewDistributionFill;
 +  stack.alignment = NSLayoutAttributeCenterY;
@@ -4563,7 +4636,7 @@ index 0000000..423bcec
 +  titlebar = NSHeight(window.frame) - NSHeight([window contentRectForFrameRect:window.frame]);
 +  width = NSWidth(window.frame) - TITLEBAR_BUTTONS;
 +  if (width < 560) {
-+    for (NSControl *control in @[ _packButton, _levelsButton, _stepper ]) {
++    for (NSControl *control in @[ _packButton, _levelsButton, _stepper, _pauseButton ]) {
 +      control.controlSize = NSControlSizeSmall;
 +      control.font = [NSFont systemFontOfSize:[NSFont systemFontSizeForControlSize:NSControlSizeSmall]];
 +    }
@@ -4617,6 +4690,10 @@ index 0000000..423bcec
 +  if (bar == nil) return;
 +
 +  menu = [[NSMenu alloc] initWithTitle:@"Level"];
++  /* Escape is its key, in the window: a menu item that took Escape would take
++   * it from every sheet as well. */
++  [self addItem:@"Pause" action:@selector(pause:) key:@"" modifiers:0 to:menu];
++  [menu addItem:[NSMenuItem separatorItem]];
 +  [self addItem:@"Level Pack…" action:@selector(openPacks:) key:@"l" modifiers:NSEventModifierFlagCommand to:menu];
 +  [self addItem:@"Levels…" action:@selector(levels:) key:@"l" modifiers:NSEventModifierFlagCommand | NSEventModifierFlagShift to:menu];
 +  [menu addItem:[NSMenuItem separatorItem]];
@@ -4673,8 +4750,13 @@ index 0000000..423bcec
 +}
 +
 +- (void)setScreen:(NSMenuItem *)sender {
-+  liblsdl2_screen_set((int)sender.tag);
-+  [[[NSUserDefaults alloc] initWithSuiteName:kDefaultsSuite] setObject:@(screen_mode_name((int)sender.tag))
++  [self chooseScreen:(int)sender.tag];
++}
++
++/* The View menu's choice and the pause menu's are the same setting, kept. */
++- (void)chooseScreen:(int)mode {
++  liblsdl2_screen_set(mode);
++  [[[NSUserDefaults alloc] initWithSuiteName:kDefaultsSuite] setObject:@(screen_mode_name(mode))
 +                                                                 forKey:kScreenKey];
 +}
 +
@@ -4807,10 +4889,30 @@ index 0000000..423bcec
 +  if (done) done(status);
 +}
 +
-+/* An item of the game's Game menu, for the game itself. */
++/* An item of the game's Game menu, for the game itself. The level buttons are
++ * for riding, so they end a pause if there is one. */
 +- (void)gameMenu:(NSString *)label {
 +  if (_sheet.sheetParent != nil) return;
++  if (liblsdl2_mac_pause_session()) liblsdl2_mac_pause_resume();
++  [self sendGameMenu:label];
++}
++
++- (void)sendGameMenu:(NSString *)label {
++  if (_sheet.sheetParent != nil) return;
 +  [self send:[@"menu " stringByAppendingString:label] walk:NO done:nil];
++}
++
++- (IBAction)pause:(id)sender {
++  if (liblsdl2_mac_pause_session()) liblsdl2_mac_pause_resume();
++  else liblsdl2_mac_pause_open();
++}
++
++- (void)pauseChanged:(BOOL)paused {
++  _pauseButton.title = paused ? @"Resume" : @"Pause";
++}
++
++- (NSString *)gameTitle {
++  return _title ? _title : @"";
 +}
 +
 +- (IBAction)levels:(id)sender        { [self gameMenu:@"Select Level"]; }
@@ -4914,6 +5016,11 @@ index 0000000..423bcec
 +  NSWindow *window = _window;
 +
 +  if (window == nil || _sheet.sheetParent != nil) return;
++
++  /* From behind the pause menu, the pause goes on: the menu makes way, and
++   * comes back if no pack is chosen. */
++  _fromPause = liblsdl2_mac_pause_session();
++  if (_fromPause) liblsdl2_mac_pause_hide_for_packs();
 +
 +  [self buildSheet];
 +  _names = @[];
@@ -5099,6 +5206,12 @@ index 0000000..423bcec
 +  index = _shown[(NSUInteger)row].integerValue;
 +  name = [_names[(NSUInteger)index] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
 +
++  /* A pack is somewhere to ride: the pause, if there was one, is over. */
++  if (_fromPause) {
++    _fromPause = NO;
++    liblsdl2_mac_pause_resume();
++  }
++
 +  _listed = NO;
 +  _filter.enabled = NO;
 +  _table.enabled = NO;
@@ -5123,8 +5236,14 @@ index 0000000..423bcec
 +  NSWindow *parent = _sheet.sheetParent;
 +
 +  _listed = NO;
++  if (parent || _sheet.isVisible) liblsdl2_mac_sheet_closed();
 +  if (parent) [parent endSheet:_sheet];
 +  [_sheet orderOut:nil];
++
++  if (_fromPause) {
++    _fromPause = NO;
++    liblsdl2_mac_pause_back_from_packs();
++  }
 +}
 +
 +@end
@@ -5132,6 +5251,19 @@ index 0000000..423bcec
 +/* ------------------------------------------------------------ the C side */
 +
 +static BODLevelControls *controls;
++
++void liblsdl2_mac_attach_window(void *window) {
++  NSWindow *nswindow = (__bridge NSWindow *)window;
++
++  if (controls != nil || nswindow == nil) return;
++
++  @autoreleasepool {
++    controls = [[BODLevelControls alloc] init];
++    [controls attachTo:nswindow];
++    liblsdl2_mac_form_attach(window);
++    liblsdl2_mac_pause_attach(window);
++  }
++}
 +
 +void liblsdl2_mac_attach(SDL_Window *window) {
 +  SDL_SysWMinfo info;
@@ -5150,16 +5282,21 @@ index 0000000..423bcec
 +    return;
 +  }
 +  nswindow = info.info.cocoa.window;
-+
-+  @autoreleasepool {
-+    controls = [[BODLevelControls alloc] init];
-+    [controls attachTo:nswindow];
-+    liblsdl2_mac_form_attach((__bridge void *)nswindow);
-+  }
++  liblsdl2_mac_attach_window((__bridge void *)nswindow);
 +}
 +
 +int liblsdl2_mac_wants_keys(void) {
-+  return (controls != nil && [controls wantsKeys]) || liblsdl2_mac_form_wants_keys();
++  return (controls != nil && [controls wantsKeys]) || liblsdl2_mac_form_wants_keys() || liblsdl2_mac_pause_wants_keys();
++}
++
++static Uint32 sheet_closed_at;
++
++void liblsdl2_mac_sheet_closed(void) {
++  sheet_closed_at = SDL_GetTicks();
++}
++
++int liblsdl2_mac_wants_key(uint32_t timestamp) {
++  return liblsdl2_mac_wants_keys() || (sheet_closed_at != 0 && timestamp <= sheet_closed_at);
 +}
 +
 +/* The pack sheet walks the game through its own level and pack dialogs; they
@@ -5168,12 +5305,33 @@ index 0000000..423bcec
 +int liblsdl2_mac_pack_busy(void) {
 +  return controls != nil && [controls busy];
 +}
++
++/* For the pause menu. */
++void liblsdl2_mac_game_menu(const char *label) {
++  if (label) [controls sendGameMenu:[NSString stringWithUTF8String:label]];
++}
++
++void liblsdl2_mac_open_packs(void) {
++  [controls openPacks:nil];
++}
++
++const char *liblsdl2_mac_pack_title(void) {
++  return controls ? [controls gameTitle].UTF8String : "";
++}
++
++void liblsdl2_mac_screen_choose(int mode) {
++  [controls chooseScreen:mode];
++}
++
++void liblsdl2_mac_pause_changed(int paused) {
++  [controls pauseChanged:paused != 0];
++}
 diff --git a/src/liblsdl2/liblsdl2_mac_form.m b/src/liblsdl2/liblsdl2_mac_form.m
 new file mode 100644
-index 0000000..fb4832e
+index 0000000..1b40ed7
 --- /dev/null
 +++ b/src/liblsdl2/liblsdl2_mac_form.m
-@@ -0,0 +1,1035 @@
+@@ -0,0 +1,1368 @@
 +/* The game's menus and dialogs, drawn by the window instead of by the game.
 + *
 + * Bike or Die's own UI is Palm OS 5's, and none of it is drawn any more:
@@ -5206,6 +5364,13 @@ index 0000000..fb4832e
 + * Nothing here knows what any particular form means -- which is what keeps
 + * it working for the forms nobody thought about.
 + *
++ * It is walked with the keyboard, whether or not the system's own keyboard
++ * navigation is on (liblsdl2_mac_keys.m): the arrows move to the control that
++ * is that way on the sheet, Return or Space presses it, left and right change
++ * a pop-up, a segmented control or a slider, and Escape closes the dialog the
++ * way its Cancel would. A dialog opened from the pause menu goes back to it
++ * when it is dismissed (liblsdl2_mac_pause.m).
++ *
 + * All of it runs on the main thread, inside SDL's event pump, like the level
 + * controls next door: the timer that polls, the controls' actions, and the
 + * sheet itself.
@@ -5213,18 +5378,19 @@ index 0000000..fb4832e
 +
 +#import <Cocoa/Cocoa.h>
 +
-+#include <dlfcn.h>
-+#include <mach-o/dyld.h>
 +#include <string.h>
 +#include <unistd.h>
 +
 +#include <SDL2/SDL.h>
 +
 +#include "liblsdl2_mac.h"
++#include "liblsdl2_mac_keys.h"
 +
 +#define POLL_FAST   0.12   /* seconds between looks while a dialog is up */
 +#define POLL_IDLE   0.20   /* and otherwise: this is how fast one appears */
 +#define SETTLE      0.45   /* how long a new dialog must stay up to be shown */
++#define EXPECTED    3.0    /* how long a dialog asked for on purpose is waited for */
++#define CHAIN_END   0.3    /* how long the game must have the screen back for a dialog to be over */
 +
 +/* the flags bodui.c publishes; 16, "drawn as a bitmap", is of no use here */
 +#define BOD_VISIBLE    1
@@ -5246,53 +5412,57 @@ index 0000000..fb4832e
 +
 +/* ------------------------------------------------------- reaching bodui.c */
 +
-+static void (*ui_command)(const char *cmd);
++static uint32_t (*ui_command)(const char *cmd);
++static uint32_t (*ui_taken)(void);
 +static const char *(*ui_state)(void);
 +static uint32_t (*ui_seq)(void);
 +static const char *(*ui_menubar)(void);
 +static uint32_t (*ui_menubar_seq)(void);
 +
-+/* libpumpkin is loaded after this library, by libos, and not necessarily
-+ * into the global namespace; if the plain lookup misses, find it among the
-+ * loaded images by name and ask it directly. */
-+static void *ui_symbol(const char *name) {
-+  static const char suffix[] = "/libpumpkin.dylib";
-+  const char *image;
-+  void *sym, *handle;
-+  size_t n, m = sizeof(suffix) - 1;
-+  uint32_t i;
-+
-+  if ((sym = dlsym(RTLD_DEFAULT, name)) != NULL) return sym;
-+
-+  for (i = 0; i < _dyld_image_count(); i++) {
-+    image = _dyld_get_image_name(i);
-+    n = image ? strlen(image) : 0;
-+    if (n < m || strcmp(image + n - m, suffix) != 0) continue;
-+    if ((handle = dlopen(image, RTLD_LAZY | RTLD_NOLOAD)) != NULL) {
-+      sym = dlsym(handle, name);
-+      dlclose(handle);
-+      if (sym) return sym;
-+    }
-+  }
-+
-+  return NULL;
-+}
-+
 +static BOOL ui_ready(void) {
 +  if (ui_command && ui_state && ui_seq) return YES;
-+  ui_command = ui_symbol("bod_ui_command");
-+  ui_state = ui_symbol("bod_ui_state");
-+  ui_seq = ui_symbol("bod_ui_seq");
-+  ui_menubar = ui_symbol("bod_ui_menubar");
-+  ui_menubar_seq = ui_symbol("bod_ui_menubar_seq");
++  ui_command = liblsdl2_mac_symbol("bod_ui_command");
++  ui_taken = liblsdl2_mac_symbol("bod_ui_taken");
++  ui_state = liblsdl2_mac_symbol("bod_ui_state");
++  ui_seq = liblsdl2_mac_symbol("bod_ui_seq");
++  ui_menubar = liblsdl2_mac_symbol("bod_ui_menubar");
++  ui_menubar_seq = liblsdl2_mac_symbol("bod_ui_menubar_seq");
 +
 +  return ui_command && ui_state && ui_seq;
 +}
 +
++/* The game keeps one command at a time, and one sent before the last was
++ * taken replaces it. So what is sent together goes as one, a line each --
++ * choosing an item and then pressing a button, say -- and what is sent after
++ * waits until the game has taken what went before, for a second at most. */
++static NSMutableArray<NSString *> *ui_queue;
++static uint32_t ui_sent;
++static NSTimeInterval ui_sent_at;
++static BOOL ui_flushing;
++
++static void ui_flush(void) {
++  NSString *command;
++
++  if (ui_taken && ui_taken() < ui_sent && NSDate.timeIntervalSinceReferenceDate - ui_sent_at < 1.0) {
++    bod_keys_after(0.015, ^{ ui_flush(); });
++    return;
++  }
++
++  command = [ui_queue componentsJoinedByString:@"\n"];
++  [ui_queue removeAllObjects];
++  ui_flushing = NO;
++  form_log(@"dialog: %@", [command stringByReplacingOccurrencesOfString:@"\n" withString:@"; "]);
++  ui_sent = ui_command(command.UTF8String);
++  ui_sent_at = NSDate.timeIntervalSinceReferenceDate;
++}
++
 +static void ui_send(NSString *command) {
 +  if (!ui_ready()) return;
-+  form_log(@"dialog: %@", command);
-+  ui_command(command.UTF8String);
++  if (ui_queue == nil) ui_queue = [NSMutableArray array];
++  [ui_queue addObject:command];
++  if (ui_flushing) return;
++  ui_flushing = YES;
++  bod_keys_after(0, ^{ ui_flush(); });
 +}
 +
 +/* The published text, taken whole: the sequence number is odd while the
@@ -5456,15 +5626,29 @@ index 0000000..fb4832e
 +
 +/* ------------------------------------------------------------- the sheet */
 +
-+@interface BODFormSheet : NSObject <NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSMenuItemValidation>
++/* The game's menu bar as it published it, for the pause menu. */
++static NSString *ui_menubar_text;
++
++/* What pressing a button with one of these labels does is leave the dialog
++ * alone -- which decides, if the dialog closes, whether the pause menu it was
++ * opened from comes back. */
++static BOOL ui_way_out(NSString *label) {
++  static NSSet<NSString *> *ways;
++  if (ways == nil) ways = [NSSet setWithArray:@[ @"cancel", @"close", @"done", @"ok", @"no", @"back" ]];
++  return [ways containsObject:[label stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet].lowercaseString];
++}
++
++@interface BODFormSheet : NSObject <NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSMenuItemValidation, BODKeyTarget>
 +- (void)attachTo:(NSWindow *)window;
 +- (BOOL)wantsKeys;
++- (BOOL)shown;
++- (void)expect;
 +@end
 +
 +@implementation BODFormSheet {
 +  __weak NSWindow *_window;
 +
-+  NSPanel *_sheet;
++  BODKeyPanel *_sheet;
 +  NSTextField *_heading;
 +  NSStackView *_body;
 +  NSStackView *_footer;
@@ -5490,6 +5674,15 @@ index 0000000..fb4832e
 +
 +  /* what each field last had, so giving one back unchanged says nothing */
 +  NSMutableDictionary<NSNumber *, NSString *> *_fieldText;
++
++  /* where the keyboard is */
++  __weak NSView *_focus;
++
++  NSDate *_expectedAt;   /* a dialog asked for on purpose, shown as soon as it is up */
++  NSDate *_closedAt;     /* when the sheet last came down */
++  BOOL _chain;           /* a dialog opened over the pause menu is up, or on its way to the next */
++  BOOL _dismissed;       /* what last left a dialog was a way out of it */
++  BOOL _syncing;         /* a list's selection is being put back, not chosen */
 +}
 +
 +- (void)attachTo:(NSWindow *)window {
@@ -5504,6 +5697,14 @@ index 0000000..fb4832e
 +
 +- (BOOL)wantsKeys {
 +  return _sheet != nil && (_sheet.sheetParent != nil || _sheet.isVisible);
++}
++
++- (BOOL)shown {
++  return _shown != nil;
++}
++
++- (void)expect {
++  _expectedAt = [NSDate date];
 +}
 +
 +- (void)schedulePoll:(NSTimeInterval)interval {
@@ -5522,6 +5723,8 @@ index 0000000..fb4832e
 + * it is rather than by what it says. */
 +- (void)buildMenus:(NSString *)text {
 +  NSMenu *bar = NSApp.mainMenu, *menu = nil;
++
++  ui_menubar_text = [text copy];
 +  NSMenuItem *top = nil;
 +  NSInteger at, menus = 0, items = 0;
 +
@@ -5627,6 +5830,13 @@ index 0000000..fb4832e
 +
 +  if (form.formId == 0) {
 +    [self close];
++    /* A dialog opened from the pause menu is over once the game has had the
++     * screen back for a moment: one dialog can close on the way to the next,
++     * and that is not the end of it. */
++    if (_chain && _closedAt != nil && -[_closedAt timeIntervalSinceNow] > CHAIN_END) {
++      _chain = NO;
++      liblsdl2_mac_pause_dialog_closed(_dismissed);
++    }
 +    return;
 +  }
 +
@@ -5643,7 +5853,8 @@ index 0000000..fb4832e
 +   * second -- the registration dialog is answered by Form.c before anyone
 +   * sees it -- and a sheet that appeared for those would be a flash of a
 +   * dialog nobody asked for, over a game that had not started yet. */
-+  if ([[NSDate date] timeIntervalSinceDate:_settlingSince] < SETTLE) return;
++  if ([[NSDate date] timeIntervalSinceDate:_settlingSince] < SETTLE &&
++      (_expectedAt == nil || -[_expectedAt timeIntervalSinceNow] > EXPECTED)) return;
 +
 +  [self present:form];
 +}
@@ -5935,11 +6146,12 @@ index 0000000..fb4832e
 +
 +  if (_sheet) return;
 +
-+  _sheet = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 460, 420)
-+                                      styleMask:NSWindowStyleMaskTitled
-+                                        backing:NSBackingStoreBuffered
-+                                          defer:YES];
++  _sheet = [[BODKeyPanel alloc] initWithContentRect:NSMakeRect(0, 0, 460, 420)
++                                          styleMask:NSWindowStyleMaskTitled
++                                            backing:NSBackingStoreBuffered
++                                              defer:YES];
 +  _sheet.releasedWhenClosed = NO;
++  _sheet.keyTarget = self;
 +
 +  _heading = [NSTextField labelWithString:@""];
 +  _heading.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize + 2];
@@ -5948,6 +6160,8 @@ index 0000000..fb4832e
 +  _body.orientation = NSUserInterfaceLayoutOrientationVertical;
 +  _body.alignment = NSLayoutAttributeLeading;
 +  _body.spacing = 10;
++  /* room for the keyboard's ring round a control at the edge */
++  _body.edgeInsets = NSEdgeInsetsMake(4, 5, 4, 5);
 +  _body.translatesAutoresizingMaskIntoConstraints = NO;
 +  [_body setHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationVertical];
 +
@@ -5992,8 +6206,17 @@ index 0000000..fb4832e
 +- (void)present:(BODFormState *)form {
 +  NSSize content;
 +  CGFloat width, height;
++  NSString *keep = [self focusKey];
 +
 +  if (_window == nil) return;
++
++  /* Over the pause menu, if it is up: a window has one sheet at a time, so the
++   * menu makes way, and comes back when this is over. */
++  if (liblsdl2_mac_pause_session()) {
++    liblsdl2_mac_pause_step_aside();
++    _chain = YES;
++  }
++  _expectedAt = nil;
 +
 +  [self buildSheet];
 +  _heading.stringValue = form.title.length ? form.title : @"Bike or Die";
@@ -6016,25 +6239,234 @@ index 0000000..fb4832e
 +
 +  if (_sheet.sheetParent == nil) [_window beginSheet:_sheet completionHandler:nil];
 +  [self schedulePoll:POLL_FAST];
-+  [self focusFirstField];
++  [self startFocus:keep];
 +}
 +
-+/* Typing into a dialog should land where the game has the caret -- the name
-+ * on the dialog that finishing a level puts up -- and otherwise in whatever
-+ * can be typed into. */
-+- (void)focusFirstField {
-+  NSView *first = nil;
++/* -------------------------------------------------------------- the keys */
++
++/* What the keyboard is on, in a form that survives the sheet being built
++ * again: the kind of control and the object it stands for. */
++- (NSString *)focusKey {
++  NSView *view = _focus;
++
++  if (view == nil || view.window != _sheet) return nil;
++  return [NSString stringWithFormat:@"%@/%ld", NSStringFromClass(view.class), (long)view.tag];
++}
++
++- (void)focus:(NSView *)view {
++  NSView *old = _focus;
++
++  if (old != view) bod_keys_mark(old, NO);
++  _focus = view;
++  if (view == nil) return;
++
++  if ([view isKindOfClass:NSTextField.class]) {
++    /* Somewhere to type has the real focus, and the system's own ring. */
++    [_sheet makeFirstResponder:view];
++  } else {
++    if ([view isKindOfClass:NSTableView.class]) [_sheet makeFirstResponder:view];
++    else [_sheet makeFirstResponder:nil];
++    bod_keys_mark(view, YES);
++  }
++  [view scrollRectToVisible:view.bounds];
++}
++
++/* Where the keyboard starts on a dialog just shown: on the control it was on,
++ * if the dialog was only built again; where the game has the caret, or
++ * anywhere that can be typed into -- the name on the dialog that finishing a
++ * level puts up; the chosen item of a list; or the first control, rather than
++ * the default button, which is Cancel as often as not, and Escape anyway. */
++- (void)startFocus:(NSString *)keep {
++  NSArray<NSView *> *controls = bod_keys_controls(_sheet.contentView);
++  NSView *field = nil, *table = nil;
++
++  _focus = nil;
++  if (keep != nil) {
++    for (NSView *view in controls) {
++      if ([[NSString stringWithFormat:@"%@/%ld", NSStringFromClass(view.class), (long)view.tag] isEqualToString:keep]) {
++        [self focus:view];
++        return;
++      }
++    }
++  }
 +
 +  for (BODObject *o in _form.objects) {
 +    NSView *view = _views[@(o.index)];
 +
-+    if (![o.kind isEqualToString:@"field"] || ![o enabled]) continue;
-+    if (![view isKindOfClass:NSTextField.class]) continue;
-+    if ([o hasFocus]) { [_sheet makeFirstResponder:view]; return; }
-+    if (first == nil) first = view;
++    if (![o.kind isEqualToString:@"field"] || ![o enabled] || ![view isKindOfClass:NSTextField.class]) continue;
++    if ([o hasFocus]) { field = view; break; }
++    if (field == nil) field = view;
++  }
++  if (field) { [self focus:field]; return; }
++
++  for (NSTableView *view in _tables.allValues) {
++    if (view.selectedRow >= 0) { table = view; break; }
++  }
++  if (table) { [self focus:table]; return; }
++
++  [self focus:controls.firstObject];
++}
++
++/* The first button under the dialog that is not a way out of it: what acts on
++ * a choice made in a list -- Play this level. */
++- (NSButton *)affirmative {
++  for (NSView *view in _footer.views) {
++    if ([view isKindOfClass:NSButton.class] && ((NSButton *)view).isEnabled && !ui_way_out(((NSButton *)view).title)) {
++      return (NSButton *)view;
++    }
 +  }
 +
-+  if (first) [_sheet makeFirstResponder:first];
++  return nil;
++}
++
++- (BOOL)panelKeyDown:(NSEvent *)event {
++  NSView *focus = _focus;
++  unsigned short code = event.keyCode;
++  NSInteger direction = bod_keys_direction(code);
++  BOOL typing = [focus isKindOfClass:NSTextField.class];
++  NSArray<NSView *> *controls;
++  NSView *next;
++
++  if (code == BODKeyEscape) {
++    if (!event.isARepeat) [self closeForm:nil];
++    return YES;
++  }
++
++  if (code == BODKeyTab) {
++    controls = bod_keys_controls(_sheet.contentView);
++    if (controls.count) {
++      NSInteger i = focus ? (NSInteger)[controls indexOfObject:focus] : NSNotFound;
++      NSInteger step = (event.modifierFlags & NSEventModifierFlagShift) ? -1 : 1, n = (NSInteger)controls.count;
++      if (i == NSNotFound) i = step > 0 ? -1 : 0;
++      [self focus:controls[(NSUInteger)((i + step + n) % n)]];
++    }
++    return YES;
++  }
++
++  if (focus == nil || focus.window != _sheet) {
++    /* Nothing chosen yet: an arrow chooses where to start, and Return is the
++     * default button's, as it always was. */
++    if (direction < 0) return NO;
++    [self startFocus:nil];
++    return YES;
++  }
++
++  if (direction == BODDirectionLeft || direction == BODDirectionRight) {
++    NSInteger step = direction == BODDirectionRight ? 1 : -1;
++
++    if (typing) return NO;
++    if ([focus isKindOfClass:NSPopUpButton.class]) {
++      NSPopUpButton *popup = (NSPopUpButton *)focus;
++      NSInteger i = popup.indexOfSelectedItem + step;
++      if (popup.tag >= 0 && i >= 0 && i < popup.numberOfItems) {
++        [popup selectItemAtIndex:i];
++        [self hitPopup:popup];
++      }
++      return YES;
++    }
++    if ([focus isKindOfClass:NSSegmentedControl.class]) {
++      NSSegmentedControl *seg = (NSSegmentedControl *)focus;
++      NSInteger i = seg.selectedSegment + step;
++      while (i >= 0 && i < seg.segmentCount && ![seg isEnabledForSegment:i]) i += step;
++      if (i >= 0 && i < seg.segmentCount) {
++        seg.selectedSegment = i;
++        [self hitSegment:seg];
++      }
++      return YES;
++    }
++    if ([focus isKindOfClass:NSSlider.class]) {
++      NSSlider *slider = (NSSlider *)focus;
++      double stepBy = MAX(1, round((slider.maxValue - slider.minValue) / 10));
++      slider.doubleValue = MIN(slider.maxValue, MAX(slider.minValue, slider.doubleValue + step * stepBy));
++      [self hitSlider:slider];
++      return YES;
++    }
++  }
++
++  if (direction == BODDirectionUp || direction == BODDirectionDown) {
++    /* A list takes up and down for itself until they would leave it. */
++    if ([focus isKindOfClass:NSTableView.class]) {
++      NSTableView *table = (NSTableView *)focus;
++      NSInteger row = table.selectedRow + (direction == BODDirectionDown ? 1 : -1);
++      if (row >= 0 && row < table.numberOfRows) {
++        [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
++        [table scrollRowToVisible:row];
++        return YES;
++      }
++    }
++  }
++
++  if (direction >= 0) {
++    controls = bod_keys_controls(_sheet.contentView);
++    next = bod_keys_toward(controls, focus, (BODDirection)direction);
++    if (next == nil && (direction == BODDirectionUp || direction == BODDirectionDown) && controls.count > 1) {
++      next = direction == BODDirectionDown ? controls.firstObject : controls.lastObject;
++    }
++    if (next) [self focus:next];
++    return YES;
++  }
++
++  if (code == BODKeyReturn || code == BODKeyEnter) {
++    if (event.isARepeat) return YES;
++    if (typing) {
++      /* What was typed, and then the button Return would press. */
++      [self hitField:(NSTextField *)focus];
++      [self pressDefault];
++      return YES;
++    }
++    if ([focus isKindOfClass:NSTableView.class]) {
++      [self choose:(NSTableView *)focus row:((NSTableView *)focus).selectedRow twice:NO];
++      return YES;
++    }
++    if ([focus isKindOfClass:NSSegmentedControl.class]) {
++      [self hitSegment:(NSSegmentedControl *)focus];
++      return YES;
++    }
++    if ([focus isKindOfClass:NSButton.class]) {
++      [(NSButton *)focus performClick:nil];
++      return YES;
++    }
++    return NO;
++  }
++
++  if (code == BODKeySpace) {
++    if (typing || event.isARepeat) return typing ? NO : YES;
++    if ([focus isKindOfClass:NSButton.class]) {
++      [(NSButton *)focus performClick:nil];
++      return YES;
++    }
++    return YES;
++  }
++
++  return NO;
++}
++
++- (void)pressDefault {
++  BODObject *o;
++
++  if (_form.defaultIndex < 0 || (o = [self objectAt:_form.defaultIndex]) == nil) return;
++  _dismissed = ui_way_out(o.text);
++  ui_send([NSString stringWithFormat:@"press %ld", (long)o.index]);
++}
++
++/* Choosing an item of a list. Where the dialog's default button is something
++ * to do with the choice -- Select, OK -- the two go together. Where it is a way
++ * out, as it is on the game's level list, pressing it would throw the choice
++ * away: the item is chosen, and the keyboard goes to the button that acts on it
++ * instead, or a double-click presses that button. */
++- (void)choose:(NSTableView *)table row:(NSInteger)row twice:(BOOL)twice {
++  BODObject *o = _form.defaultIndex >= 0 ? [self objectAt:_form.defaultIndex] : nil;
++  NSButton *go;
++
++  if (row < 0) return;
++  ui_send([NSString stringWithFormat:@"select %ld %ld", (long)table.tag, (long)row]);
++
++  if (o != nil && !ui_way_out(o.text)) {
++    [self pressDefault];
++  } else if ((go = [self affirmative]) != nil) {
++    if (twice) [go performClick:nil];
++    else [self focus:go];
++  }
 +}
 +
 +/* The same form again, with something on it changed: the values move, the
@@ -6055,9 +6487,17 @@ index 0000000..fb4832e
 +        if ([seg tagForSegment:i] == o.index && o.value) seg.selectedSegment = i;
 +      }
 +
-+    } else if ([o.kind isEqualToString:@"list"] && [view isKindOfClass:NSPopUpButton.class]) {
++    } else if ([o.kind isEqualToString:@"push"] && [view isKindOfClass:NSButton.class]) {
++      ((NSButton *)view).state = o.value ? NSControlStateValueOn : NSControlStateValueOff;
++
++    } else if (([o.kind isEqualToString:@"popup"] || [o.kind isEqualToString:@"selector"]) &&
++               [view isKindOfClass:NSPopUpButton.class]) {
++      /* A pop-up is drawn for its trigger and shows its list's choice. */
 +      NSPopUpButton *popup = (NSPopUpButton *)view;
-+      if (o.selection >= 0 && o.selection < popup.numberOfItems) [popup selectItemAtIndex:o.selection];
++      BODObject *list = [self listForTrigger:o in:form];
++      if (list && list.selection >= 0 && list.selection < popup.numberOfItems && popup.indexOfSelectedItem != list.selection) {
++        [popup selectItemAtIndex:list.selection];
++      }
 +
 +    } else if ([o.kind isEqualToString:@"slider"] && [view isKindOfClass:NSSlider.class]) {
 +      ((NSSlider *)view).doubleValue = o.value;
@@ -6075,13 +6515,34 @@ index 0000000..fb4832e
 +  }
 +
 +  _form = form;
-+  for (NSTableView *table in _tables.allValues) [table reloadData];
++
++  /* Reloading a list lets go of its selection, and the game publishes the form
++   * again for every choice made on it -- so the choice would last only until
++   * the game had heard it. It is put back, quietly: the list's own while there
++   * is one, the game's otherwise. */
++  _syncing = YES;
++  for (NSNumber *index in _tables) {
++    NSTableView *table = _tables[index];
++    BODObject *o = [self objectAt:index.integerValue];
++    NSInteger keep = table.selectedRow;
++
++    [table reloadData];
++    if (keep < 0 && o != nil) keep = o.selection;
++    if (keep >= 0 && keep < table.numberOfRows && table.selectedRow != keep) {
++      [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)keep] byExtendingSelection:NO];
++    }
++  }
++  _syncing = NO;
 +}
 +
 +- (void)close {
 +  NSWindow *parent = _sheet.sheetParent;
 +
 +  if (_sheet == nil) return;
++  if (_shown != nil) _closedAt = [NSDate date];
++  if (parent || _sheet.isVisible) liblsdl2_mac_sheet_closed();
++  bod_keys_mark(_focus, NO);
++  _focus = nil;
 +  if (parent) [parent endSheet:_sheet];
 +  [_sheet orderOut:nil];
 +  _shown = nil;
@@ -6101,6 +6562,18 @@ index 0000000..fb4832e
 +}
 +
 +- (IBAction)hit:(NSControl *)sender {
++  BODObject *o = [self objectAt:sender.tag];
++
++  /* A button that closes the dialog either dismisses it or does something;
++   * a checkbox or a toggle does neither. */
++  if ([o.kind isEqualToString:@"button"] || [o.kind isEqualToString:@"repeat"] || [o.kind isEqualToString:@"popup"] ||
++      [o.kind isEqualToString:@"selector"]) {
++    _dismissed = ui_way_out(o.text);
++  }
++  if ([sender isKindOfClass:NSView.class] && ((NSView *)sender).window == _sheet &&
++      ![sender isKindOfClass:NSTextField.class] && sender != _focus) {
++    [self focus:sender];
++  }
 +  ui_send([NSString stringWithFormat:@"press %ld", (long)sender.tag]);
 +}
 +
@@ -6129,19 +6602,14 @@ index 0000000..fb4832e
 +  ui_send([NSString stringWithFormat:@"text %ld %@", (long)sender.tag, sender.stringValue]);
 +}
 +
++/* A double-click is the choice made, and acted on. */
 +- (IBAction)hitTableTwice:(NSTableView *)sender {
-+  BODObject *o;
-+
 +  if (sender.clickedRow < 0) return;
-+  ui_send([NSString stringWithFormat:@"select %ld %ld", (long)sender.tag, (long)sender.clickedRow]);
-+
-+  /* A double-click is the choice made: press what Return would press. */
-+  if (_form.defaultIndex >= 0 && (o = [self objectAt:_form.defaultIndex]) != nil) {
-+    ui_send([NSString stringWithFormat:@"press %ld", (long)o.index]);
-+  }
++  [self choose:sender row:sender.clickedRow twice:YES];
 +}
 +
 +- (IBAction)closeForm:(id)sender {
++  _dismissed = YES;
 +  ui_send(@"close");
 +}
 +
@@ -6184,7 +6652,7 @@ index 0000000..fb4832e
 +- (void)tableViewSelectionDidChange:(NSNotification *)notification {
 +  NSTableView *table = notification.object;
 +
-+  if (table.selectedRow >= 0) {
++  if (!_syncing && table.selectedRow >= 0) {
 +    ui_send([NSString stringWithFormat:@"select %ld %ld", (long)table.tag, (long)table.selectedRow]);
 +  }
 +}
@@ -6208,6 +6676,1372 @@ index 0000000..fb4832e
 +
 +int liblsdl2_mac_form_wants_keys(void) {
 +  return sheet != nil && [sheet wantsKeys];
++}
++
++int liblsdl2_mac_form_shown(void) {
++  return sheet != nil && [sheet shown];
++}
++
++void liblsdl2_mac_form_expect(void) {
++  [sheet expect];
++}
++
++void liblsdl2_mac_ui_send(const char *cmd) {
++  if (cmd) ui_send([NSString stringWithUTF8String:cmd]);
++}
++
++/* Not queued: a pause goes at once, and never takes a command's place. */
++void liblsdl2_mac_ui_pause(int on) {
++  if (!ui_ready()) return;
++  form_log(@"dialog: pause %d", on ? 1 : 0);
++  ui_command(on ? "pause 1" : "pause 0");
++}
++
++const char *liblsdl2_mac_ui_menubar(void) {
++  return ui_menubar_text ? ui_menubar_text.UTF8String : "";
++}
+diff --git a/src/liblsdl2/liblsdl2_mac_keys.h b/src/liblsdl2/liblsdl2_mac_keys.h
+new file mode 100644
+index 0000000..f834b70
+--- /dev/null
++++ b/src/liblsdl2/liblsdl2_mac_keys.h
+@@ -0,0 +1,55 @@
++#ifndef LIBLSDL2_MAC_KEYS_H
++#define LIBLSDL2_MAC_KEYS_H
++
++/* Walking a sheet with the keyboard, whatever is on it (liblsdl2_mac_keys.m).
++ * Shared by the pause menu and the sheet that draws the game's dialogs. */
++
++#import <Cocoa/Cocoa.h>
++
++/* A sheet that offers every key press to its owner before anything on it
++ * sees it, so that the arrow keys can walk from control to control without
++ * the system's own keyboard navigation turning on. */
++@protocol BODKeyTarget <NSObject>
++- (BOOL)panelKeyDown:(NSEvent *)event;
++@end
++
++@interface BODKeyPanel : NSPanel
++@property (nonatomic, weak) id<BODKeyTarget> keyTarget;
++@end
++
++typedef NS_ENUM(NSInteger, BODDirection) {
++  BODDirectionUp,
++  BODDirectionDown,
++  BODDirectionLeft,
++  BODDirectionRight
++};
++
++/* The key codes these care about. */
++enum {
++  BODKeyReturn = 36, BODKeyTab = 48, BODKeySpace = 49, BODKeyDelete = 51,
++  BODKeyEscape = 53, BODKeyEnter = 76, BODKeyForwardDelete = 117,
++  BODKeyLeft = 123, BODKeyRight = 124, BODKeyDown = 125, BODKeyUp = 126
++};
++
++/* The arrow a key code is, or -1. */
++NSInteger bod_keys_direction(unsigned short keyCode);
++
++/* The controls under `root` that the keyboard can stop at, in reading order. */
++NSArray<NSView *> *bod_keys_controls(NSView *root);
++
++/* The nearest of `items` in `direction` from `from`: for up and down the
++ * nearest row that way and the control in it closest across, for left and
++ * right the nearest on the same line. nil if there is none. */
++NSView *bod_keys_toward(NSArray<NSView *> *items, NSView *from, BODDirection direction);
++
++/* Draws, or takes away, the ring that says where the keyboard is. */
++void bod_keys_mark(NSView *view, BOOL on);
++
++/* A symbol of libpumpkin's, which is loaded after this library. */
++void *liblsdl2_mac_symbol(const char *name);
++
++/* Runs `block` on the main thread after `delay` seconds, from inside SDL's
++ * event pump like everything else here. */
++void bod_keys_after(NSTimeInterval delay, void (^block)(void));
++
++#endif
+diff --git a/src/liblsdl2/liblsdl2_mac_keys.m b/src/liblsdl2/liblsdl2_mac_keys.m
+new file mode 100644
+index 0000000..3529bc9
+--- /dev/null
++++ b/src/liblsdl2/liblsdl2_mac_keys.m
+@@ -0,0 +1,257 @@
++/* Walking a sheet with the keyboard, whatever is on it.
++ *
++ * The pause menu and the sheet that draws the game's dialogs are both walked
++ * the same way as their counterparts in the browser: the arrow keys move to
++ * the control that is that way on the screen, Return or Space presses it, and
++ * Escape goes back. macOS will only move the keyboard between buttons at all
++ * if Keyboard navigation is turned on in System Settings, and then only with
++ * Tab, so none of this is the system's: the sheet hands each key press to its
++ * owner before anything on it sees one (BODKeyPanel), and the owner decides
++ * where the keyboard is and draws the ring that says so.
++ *
++ * Where the controls are is where they are drawn, so a dialog nobody laid out
++ * by hand is walked the same way as the menu.
++ */
++
++#import <Cocoa/Cocoa.h>
++
++#include <dlfcn.h>
++#include <mach-o/dyld.h>
++#include <string.h>
++
++#include "liblsdl2_mac_keys.h"
++
++/* ------------------------------------------------------------ the panel */
++
++@implementation BODKeyPanel {
++  NSMutableSet<NSNumber *> *_down;   /* keys pressed since this panel had the keyboard */
++}
++
++- (BOOL)canBecomeKeyWindow {
++  return YES;
++}
++
++- (void)becomeKeyWindow {
++  [_down removeAllObjects];
++  [super becomeKeyWindow];
++}
++
++- (void)sendEvent:(NSEvent *)event {
++  if (event.type == NSEventTypeKeyUp) {
++    [_down removeObject:@(event.keyCode)];
++
++  } else if (event.type == NSEventTypeKeyDown) {
++    if (_down == nil) _down = [NSMutableSet set];
++    if (!event.isARepeat) {
++      [_down addObject:@(event.keyCode)];
++    } else if (![_down containsObject:@(event.keyCode)]) {
++      /* Held from before this sheet came up -- pedalling as a level ends and
++       * the game asks for a name. Those repeats were meant for the bike. */
++      return;
++    }
++
++    /* A Command chord is the menu bar's. */
++    if ((event.modifierFlags & NSEventModifierFlagCommand) == 0 &&
++        self.keyTarget != nil && [self.keyTarget panelKeyDown:event]) {
++      return;
++    }
++  }
++
++  [super sendEvent:event];
++}
++
++@end
++
++/* ----------------------------------------------------------- the controls */
++
++NSInteger bod_keys_direction(unsigned short keyCode) {
++  switch (keyCode) {
++    case BODKeyUp:    return BODDirectionUp;
++    case BODKeyDown:  return BODDirectionDown;
++    case BODKeyLeft:  return BODDirectionLeft;
++    case BODKeyRight: return BODDirectionRight;
++  }
++
++  return -1;
++}
++
++static BOOL bod_keys_stop(NSView *view) {
++  if (view.isHiddenOrHasHiddenAncestor || NSIsEmptyRect(view.bounds)) return NO;
++
++  if ([view isKindOfClass:NSTableView.class]) return YES;
++  if ([view isKindOfClass:NSTextField.class]) {
++    NSTextField *field = (NSTextField *)view;
++    return field.isEditable && field.isEnabled;
++  }
++  if ([view isKindOfClass:NSButton.class] || [view isKindOfClass:NSSegmentedControl.class] ||
++      [view isKindOfClass:NSSlider.class]) {
++    return ((NSControl *)view).isEnabled;
++  }
++  if ([view respondsToSelector:@selector(bodKeyStop)]) {
++    return ((BOOL (*)(id, SEL))[view methodForSelector:@selector(bodKeyStop)])(view, @selector(bodKeyStop));
++  }
++
++  return NO;
++}
++
++/* Where a view is, top-down, in its window. */
++typedef struct { CGFloat left, right, top, bottom; } bod_box;
++
++static bod_box bod_keys_box(NSView *view) {
++  NSRect r = [view convertRect:view.bounds toView:nil];
++  bod_box b = { NSMinX(r), NSMaxX(r), -NSMaxY(r), -NSMinY(r) };
++
++  return b;
++}
++
++static void bod_keys_collect(NSView *view, NSMutableArray<NSView *> *out) {
++  if (view.isHidden) return;
++  if (bod_keys_stop(view)) {
++    [out addObject:view];
++    return;
++  }
++  /* A control is one stop, and so is a table, not the cells in it. */
++  if ([view isKindOfClass:NSControl.class] || [view isKindOfClass:NSTableView.class]) return;
++
++  for (NSView *sub in view.subviews) bod_keys_collect(sub, out);
++}
++
++NSArray<NSView *> *bod_keys_controls(NSView *root) {
++  NSMutableArray<NSView *> *out = [NSMutableArray array];
++
++  if (root == nil) return out;
++  for (NSView *sub in root.subviews) bod_keys_collect(sub, out);
++
++  [out sortWithOptions:NSSortStable usingComparator:^NSComparisonResult(NSView *a, NSView *b) {
++    bod_box x = bod_keys_box(a), y = bod_keys_box(b);
++    if (fabs(x.top - y.top) > 4) return x.top < y.top ? NSOrderedAscending : NSOrderedDescending;
++    if (x.left != y.left) return x.left < y.left ? NSOrderedAscending : NSOrderedDescending;
++    return NSOrderedSame;
++  }];
++
++  return out;
++}
++
++NSView *bod_keys_toward(NSArray<NSView *> *items, NSView *from, BODDirection direction) {
++  BOOL vertical = direction == BODDirectionUp || direction == BODDirectionDown;
++  BOOL forward = direction == BODDirectionDown || direction == BODDirectionRight;
++  bod_box a = bod_keys_box(from), r;
++  CGFloat acx = (a.left + a.right) / 2, acy = (a.top + a.bottom) / 2;
++  CGFloat cx, cy, edge, across, score, bestEdge = 0, bestScore = CGFLOAT_MAX;
++  BOOL haveEdge = NO;
++  NSView *best = nil;
++
++  for (NSView *view in items) {
++    if (view == from) continue;
++    r = bod_keys_box(view);
++    cx = (r.left + r.right) / 2;
++    cy = (r.top + r.bottom) / 2;
++
++    if (vertical) {
++      if (forward ? !(cy > acy + 2 && r.top > a.top + 2) : !(cy < acy - 2 && r.bottom < a.bottom - 2)) continue;
++      edge = forward ? r.top : -r.bottom;
++      if (haveEdge && edge > bestEdge + 4) continue;
++      if (!haveEdge || edge < bestEdge - 4) {
++        bestEdge = edge;
++        haveEdge = YES;
++        bestScore = CGFLOAT_MAX;
++      }
++      across = MAX(0, MAX(r.left - a.right, a.left - r.right)) * 1000 + fabs(cx - acx);
++      if (across < bestScore) {
++        bestScore = across;
++        best = view;
++      }
++    } else {
++      if (forward ? !(cx > acx + 2 && r.left > a.left + 2) : !(cx < acx - 2 && r.right < a.right - 2)) continue;
++      if (r.bottom <= a.top || r.top >= a.bottom) continue;
++      score = (forward ? r.left - a.right : a.left - r.right) + fabs(cy - acy) * 4;
++      if (score < bestScore) {
++        bestScore = score;
++        best = view;
++      }
++    }
++  }
++
++  return best;
++}
++
++/* The ring is a view of its own, laid over the control just outside it, rather
++ * than a border on the control: a checkbox's box sits right at its edge, and a
++ * border drawn inside would cover it. It lets every click through. */
++@interface BODFocusRing : NSView
++@property (nonatomic, weak) NSView *target;
++@end
++
++@implementation BODFocusRing
++
++- (NSView *)hitTest:(NSPoint)point {
++  return nil;
++}
++
++- (void)drawRect:(NSRect)dirty {
++  NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 1.5, 1.5) xRadius:6 yRadius:6];
++
++  path.lineWidth = 3;
++  [[NSColor.controlAccentColor colorWithAlphaComponent:0.85] setStroke];
++  [path stroke];
++}
++
++@end
++
++void bod_keys_mark(NSView *view, BOOL on) {
++  static BODFocusRing *ring;
++  NSView *target = view;
++
++  if (view == nil) return;
++  if ([view isKindOfClass:NSTableView.class] && view.enclosingScrollView != nil) target = view.enclosingScrollView;
++  if (ring == nil) ring = [[BODFocusRing alloc] initWithFrame:NSZeroRect];
++
++  if (!on) {
++    if (ring.target == target) {
++      [ring removeFromSuperview];
++      ring.target = nil;
++    }
++    return;
++  }
++
++  if (target.superview == nil) return;
++  [target.superview layoutSubtreeIfNeeded];
++  ring.target = target;
++  ring.frame = NSInsetRect(target.frame, -4, -4);
++  [target.superview addSubview:ring positioned:NSWindowAbove relativeTo:target];
++  ring.needsDisplay = YES;
++}
++
++/* ------------------------------------------------------------- plumbing */
++
++/* libpumpkin is loaded after this library, by libos, and not necessarily into
++ * the global namespace; if the plain lookup misses, find it among the loaded
++ * images by name and ask it directly. */
++void *liblsdl2_mac_symbol(const char *name) {
++  static const char suffix[] = "/libpumpkin.dylib";
++  const char *image;
++  void *sym, *handle;
++  size_t n, m = sizeof(suffix) - 1;
++  uint32_t i;
++
++  if ((sym = dlsym(RTLD_DEFAULT, name)) != NULL) return sym;
++
++  for (i = 0; i < _dyld_image_count(); i++) {
++    image = _dyld_get_image_name(i);
++    n = image ? strlen(image) : 0;
++    if (n < m || strcmp(image + n - m, suffix) != 0) continue;
++    if ((handle = dlopen(image, RTLD_LAZY | RTLD_NOLOAD)) != NULL) {
++      sym = dlsym(handle, name);
++      dlclose(handle);
++      if (sym) return sym;
++    }
++  }
++
++  return NULL;
++}
++
++void bod_keys_after(NSTimeInterval delay, void (^block)(void)) {
++  NSTimer *timer = [NSTimer timerWithTimeInterval:delay repeats:NO block:^(NSTimer *t) { block(); }];
++
++  [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
++}
+diff --git a/src/liblsdl2/liblsdl2_mac_pause.m b/src/liblsdl2/liblsdl2_mac_pause.m
+new file mode 100644
+index 0000000..e2ee349
+--- /dev/null
++++ b/src/liblsdl2/liblsdl2_mac_pause.m
+@@ -0,0 +1,1013 @@
++/* The pause menu, in the macOS window.
++ *
++ * Escape, the Pause button in the title bar, or putting the window away, and
++ * the game stops -- really stops: the runtime holds the game's thread and
++ * leaves the time out of its clock ("pause 1", bodui.c), so it carries on from
++ * the moment it stopped. A sheet comes down over it with everything that is
++ * not riding in it, the same as the browser build's pause menu:
++ *
++ *     Resume, Restart / Next / Previous level
++ *     Choose a level...         the game's own level list
++ *     Level packs...            the level pack sheet (liblsdl2_mac.m)
++ *     Controls                  the key each riding action answers to
++ *     Settings                  Screen, and the game's Options menu
++ *     Profiles & records        the rest of the game's Game and Rec menus
++ *     Help                      the game's Help menu
++ *
++ * It is walked with the keyboard: up and down move, left and right change a
++ * row of choices, Return or Space picks, Escape goes back a page and then
++ * resumes. The mouse works too.
++ *
++ * The game's dialogs open from here the way they open from its menu, with the
++ * game still held, drawn by the dialog sheet (liblsdl2_mac_form.m). A window
++ * has one sheet at a time, so this one steps aside for the dialog's and comes
++ * back when the dialog is dismissed -- Escape, Cancel, OK, Close, Done. A
++ * dialog left some other way, Play this level or a replay, ends the pause,
++ * since that is what was asked for. The level pack sheet is the same: back
++ * here without a choice, and riding with one.
++ *
++ * The keys chosen on the Controls page go to the runtime through
++ * pumpkin_set_ride_keys() and are kept in the user defaults, like the Screen
++ * setting; BOD_KEYS, when it is set, is what a run starts with instead.
++ *
++ * Everything here runs on the main thread, inside SDL's event pump.
++ */
++
++#import <Cocoa/Cocoa.h>
++
++#include <stdint.h>
++#include <stdlib.h>
++
++#include <SDL2/SDL.h>
++
++#include "liblsdl2_mac.h"
++#include "liblsdl2_mac_keys.h"
++#include "liblsdl2_screen.h"
++
++#define SHEET_WIDTH      440.0
++#define SHEET_INSET      16.0
++#define ROW_HEIGHT       26.0
++#define WAIT_FOR_DIALOG  1.2    /* how long a game item has to put a dialog up */
++
++static NSString *const kDefaultsSuite = @"local.bikeordie2";
++static NSString *const kKeysKey = @"Keys";
++static NSString *const kDefaultKeys = @"forward=w brake=s left=a right=d flip=space";
++
++static void pause_log(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
++
++static void pause_log(NSString *format, ...) {
++  NSString *text;
++  va_list args;
++
++  va_start(args, format);
++  text = [[NSString alloc] initWithFormat:format arguments:args];
++  va_end(args);
++  liblsdl2_log(text.UTF8String);
++}
++
++/* ------------------------------------------------------------- the keys */
++
++static NSUserDefaults *pause_defaults(void) {
++  return [[NSUserDefaults alloc] initWithSuiteName:kDefaultsSuite];
++}
++
++/* The riding keys as the runtime has them, the way BOD_KEYS writes them. */
++static NSString *keys_spec(void) {
++  char *(*get)(void) = liblsdl2_mac_symbol("pumpkin_get_ride_keys");
++  const char *spec = get ? get() : NULL;
++
++  return spec ? [NSString stringWithUTF8String:spec] : kDefaultKeys;
++}
++
++static BOOL keys_set(NSString *spec) {
++  void (*set)(const char *) = liblsdl2_mac_symbol("pumpkin_set_ride_keys");
++
++  if (set == NULL) return NO;
++  set(spec.UTF8String);
++  [pause_defaults() setObject:keys_spec() forKey:kKeysKey];
++  return YES;
++}
++
++/* The first key `action` answers to, as BOD_KEYS names it; "" for none. */
++static NSString *keys_first(NSString *spec, NSString *action) {
++  NSString *prefix = [action stringByAppendingString:@"="];
++
++  for (NSString *entry in [spec componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet]) {
++    if ([entry hasPrefix:prefix]) {
++      return [[entry substringFromIndex:prefix.length] componentsSeparatedByString:@","].firstObject ?: @"";
++    }
++  }
++
++  return @"";
++}
++
++static NSString *keys_printed(NSString *name) {
++  static NSDictionary<NSString *, NSString *> *named;
++
++  if (named == nil) {
++    named = @{ @"space": @"Space", @"enter": @"Return", @"tab": @"Tab", @"esc": @"Esc",
++               @"backspace": @"⌫", @"up": @"↑", @"down": @"↓", @"left": @"←", @"right": @"→",
++               @"pgup": @"Page Up", @"pgdown": @"Page Down", @"home": @"Home", @"end": @"End",
++               @"ins": @"Ins", @"del": @"⌦" };
++  }
++  if (name.length == 0) return @"—";
++
++  return named[name] ?: name.uppercaseString;
++}
++
++/* What BOD_KEYS calls the key an event is, or nil for one it has no name for. */
++static NSString *keys_name(NSEvent *event) {
++  NSString *c;
++  unichar ch;
++
++  switch (event.keyCode) {
++    case BODKeySpace: return @"space";
++    case BODKeyReturn:
++    case BODKeyEnter: return @"enter";
++    case BODKeyTab:   return @"tab";
++    case 116: return @"pgup";
++    case 121: return @"pgdown";
++    case 115: return @"home";
++    case 119: return @"end";
++    case 114: return @"ins";
++    case 122: return @"f1";
++    case 120: return @"f2";
++    case 99:  return @"f3";
++    case 118: return @"f4";
++    case 96:  return @"f5";
++    case 97:  return @"f6";
++    case 98:  return @"f7";
++    case 100: return @"f8";
++    case 101: return @"f9";
++    case 109: return @"f10";
++    case 103: return @"f11";
++    case 111: return @"f12";
++  }
++
++  c = event.charactersIgnoringModifiers.lowercaseString;
++  if (c.length != 1) return nil;
++  ch = [c characterAtIndex:0];
++
++  return ch > ' ' && ch < 127 ? c : nil;
++}
++
++/* --------------------------------------------------------------- a row */
++
++typedef NS_ENUM(NSInteger, BODRowKind) {
++  BODRowAction,     /* does something */
++  BODRowPage,       /* opens a page of the menu */
++  BODRowChoice,     /* one of a few, changed with left and right */
++  BODRowBinding,    /* a riding action and its key */
++  BODRowHeading,
++  BODRowRule,
++  BODRowNote
++};
++
++@class BODPauseMenu;
++
++@interface BODMenuRow : NSView
++@property (nonatomic) BODRowKind kind;
++@property (nonatomic, copy) NSString *key;       /* what it is remembered by */
++@property (nonatomic, copy) NSString *title;
++@property (nonatomic, copy) NSString *detail;    /* a shortcut, a key, the alternative */
++@property (nonatomic, copy) NSArray<NSString *> *choices;
++@property (nonatomic) NSInteger chosen;
++@property (nonatomic) BOOL focused;
++@property (nonatomic) BOOL listening;
++@property (nonatomic, weak) BODPauseMenu *owner;
++- (BOOL)bodKeyStop;
++@end
++
++@interface BODPauseMenu : NSObject <BODKeyTarget>
++- (void)attachTo:(NSWindow *)window;
++- (BOOL)open;
++- (void)resume;
++- (BOOL)wantsKeys;
++- (BOOL)session;
++- (void)stepAside;
++- (void)dialogClosed:(BOOL)dismissed;
++- (void)hideForPacks;
++- (void)backFromPacks;
++- (void)rowClicked:(BODMenuRow *)row;
++- (void)row:(BODMenuRow *)row choose:(NSInteger)index;
++@end
++
++@implementation BODMenuRow {
++  NSMutableArray<NSValue *> *_segments;   /* where each choice was drawn, for a click */
++}
++
++- (BOOL)isFlipped {
++  return YES;
++}
++
++- (BOOL)acceptsFirstMouse:(NSEvent *)event {
++  return YES;
++}
++
++- (BOOL)bodKeyStop {
++  return self.kind == BODRowAction || self.kind == BODRowPage || self.kind == BODRowChoice || self.kind == BODRowBinding;
++}
++
+++ (NSDictionary *)noteAttributes {
++  NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
++
++  style.lineBreakMode = NSLineBreakByWordWrapping;
++  return @{ NSFontAttributeName: [NSFont systemFontOfSize:NSFont.smallSystemFontSize],
++            NSForegroundColorAttributeName: NSColor.secondaryLabelColor,
++            NSParagraphStyleAttributeName: style };
++}
++
++- (NSSize)intrinsicContentSize {
++  NSRect r;
++
++  switch (self.kind) {
++    case BODRowRule:    return NSMakeSize(NSViewNoIntrinsicMetric, 11);
++    case BODRowHeading: return NSMakeSize(NSViewNoIntrinsicMetric, 26);
++    case BODRowNote:
++      r = [self.title boundingRectWithSize:NSMakeSize(SHEET_WIDTH - 2 * SHEET_INSET - 20, 1000)
++                                   options:NSStringDrawingUsesLineFragmentOrigin
++                                attributes:[BODMenuRow noteAttributes]];
++      return NSMakeSize(NSViewNoIntrinsicMetric, ceil(NSHeight(r)) + 8);
++    default:
++      return NSMakeSize(NSViewNoIntrinsicMetric, ROW_HEIGHT);
++  }
++}
++
++- (void)setFocused:(BOOL)focused {
++  _focused = focused;
++  self.needsDisplay = YES;
++}
++
++- (void)setListening:(BOOL)listening {
++  _listening = listening;
++  self.needsDisplay = YES;
++}
++
++- (void)setChosen:(NSInteger)chosen {
++  _chosen = chosen;
++  self.needsDisplay = YES;
++}
++
++- (void)setDetail:(NSString *)detail {
++  _detail = [detail copy];
++  self.needsDisplay = YES;
++}
++
++- (void)drawText:(NSString *)text at:(CGFloat)x font:(NSFont *)font color:(NSColor *)color {
++  NSDictionary *attributes = @{ NSFontAttributeName: font, NSForegroundColorAttributeName: color };
++  NSSize size = [text sizeWithAttributes:attributes];
++
++  [text drawAtPoint:NSMakePoint(x, floor((NSHeight(self.bounds) - size.height) / 2)) withAttributes:attributes];
++}
++
++- (void)drawRect:(NSRect)dirty {
++  NSRect b = self.bounds, cap;
++  NSFont *font = [NSFont systemFontOfSize:NSFont.systemFontSize];
++  NSFont *small = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
++  NSColor *text = NSColor.labelColor, *soft = NSColor.secondaryLabelColor;
++  NSDictionary *attributes;
++  NSString *label;
++  CGFloat x, w;
++  NSInteger i;
++
++  switch (self.kind) {
++    case BODRowRule:
++      [NSColor.separatorColor setFill];
++      NSRectFill(NSMakeRect(10, floor(NSMidY(b)), NSWidth(b) - 20, 1));
++      return;
++
++    case BODRowHeading:
++      attributes = @{ NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold],
++                      NSForegroundColorAttributeName: NSColor.tertiaryLabelColor };
++      [self.title.uppercaseString drawAtPoint:NSMakePoint(10, 9) withAttributes:attributes];
++      return;
++
++    case BODRowNote:
++      [self.title drawWithRect:NSMakeRect(10, 3, NSWidth(b) - 20, NSHeight(b) - 6)
++                       options:NSStringDrawingUsesLineFragmentOrigin
++                    attributes:[BODMenuRow noteAttributes]];
++      return;
++
++    default:
++      break;
++  }
++
++  if (self.focused) {
++    [NSColor.controlAccentColor setFill];
++    [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(b, 2, 1) xRadius:5 yRadius:5] fill];
++    text = NSColor.alternateSelectedControlTextColor;
++    soft = [NSColor.alternateSelectedControlTextColor colorWithAlphaComponent:0.75];
++  }
++
++  [self drawText:self.title at:10 font:font color:text];
++
++  switch (self.kind) {
++    case BODRowPage:
++      label = @"›";
++      attributes = @{ NSFontAttributeName: [NSFont systemFontOfSize:16], NSForegroundColorAttributeName: soft };
++      [self drawText:label at:NSWidth(b) - 10 - [label sizeWithAttributes:attributes].width
++                font:[NSFont systemFontOfSize:16] color:soft];
++      break;
++
++    case BODRowAction:
++      if (self.detail.length) {
++        attributes = @{ NSFontAttributeName: small };
++        [self drawText:self.detail at:NSWidth(b) - 10 - [self.detail sizeWithAttributes:attributes].width font:small color:soft];
++      }
++      break;
++
++    case BODRowBinding:
++      /* The key, in a cap; what else does the same, on the right. */
++      label = self.listening ? @"Press a key" : self.detail;
++      attributes = @{ NSFontAttributeName: [NSFont monospacedSystemFontOfSize:NSFont.smallSystemFontSize weight:NSFontWeightMedium] };
++      w = MAX(64, [label sizeWithAttributes:attributes].width + 16);
++      cap = NSMakeRect(130, floor((NSHeight(b) - 18) / 2), w, 18);
++      if (self.listening) {
++        [(self.focused ? NSColor.alternateSelectedControlTextColor : NSColor.controlAccentColor) setFill];
++        [[NSBezierPath bezierPathWithRoundedRect:cap xRadius:4 yRadius:4] fill];
++      } else {
++        [soft setStroke];
++        [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(cap, 0.5, 0.5) xRadius:4 yRadius:4] stroke];
++      }
++      attributes = @{ NSFontAttributeName: attributes[NSFontAttributeName],
++                      NSForegroundColorAttributeName: self.listening ? (self.focused ? NSColor.controlAccentColor : NSColor.alternateSelectedControlTextColor) : text };
++      [label drawAtPoint:NSMakePoint(NSMidX(cap) - [label sizeWithAttributes:attributes].width / 2,
++                                     NSMinY(cap) + (18 - [label sizeWithAttributes:attributes].height) / 2)
++          withAttributes:attributes];
++      label = [@"or " stringByAppendingString:self.choices.firstObject ?: @""];
++      [self drawText:label at:NSWidth(b) - 10 - [label sizeWithAttributes:@{ NSFontAttributeName: small }].width font:small color:soft];
++      break;
++
++    case BODRowChoice:
++      /* The choices, right-aligned, the chosen one filled in. */
++      _segments = [NSMutableArray array];
++      x = NSWidth(b) - 8;
++      for (i = (NSInteger)self.choices.count - 1; i >= 0; i--) {
++        attributes = @{ NSFontAttributeName: small };
++        w = [self.choices[i] sizeWithAttributes:attributes].width + 18;
++        x -= w;
++        [_segments insertObject:[NSValue valueWithRect:NSMakeRect(x, 0, w, NSHeight(b))] atIndex:0];
++        cap = NSMakeRect(x, floor((NSHeight(b) - 18) / 2), w - 2, 18);
++        if (i == self.chosen) {
++          [(self.focused ? NSColor.alternateSelectedControlTextColor : NSColor.controlAccentColor) setFill];
++          [[NSBezierPath bezierPathWithRoundedRect:cap xRadius:4 yRadius:4] fill];
++        }
++        [self.choices[i] drawAtPoint:NSMakePoint(NSMinX(cap) + 8, NSMinY(cap) + (18 - [self.choices[i] sizeWithAttributes:attributes].height) / 2)
++                      withAttributes:@{ NSFontAttributeName: small,
++                                        NSForegroundColorAttributeName: i == self.chosen ?
++                                          (self.focused ? NSColor.controlAccentColor : NSColor.alternateSelectedControlTextColor) : soft }];
++      }
++      break;
++
++    default:
++      break;
++  }
++}
++
++- (void)mouseDown:(NSEvent *)event {
++  NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
++  NSInteger i;
++
++  if (![self bodKeyStop]) return;
++
++  if (self.kind == BODRowChoice) {
++    for (i = 0; i < (NSInteger)_segments.count; i++) {
++      if (NSPointInRect(p, _segments[i].rectValue)) {
++        [self.owner row:self choose:i];
++        return;
++      }
++    }
++  }
++  [self.owner rowClicked:self];
++}
++
++@end
++
++/* ------------------------------------------------------------- the menu */
++
++@implementation BODPauseMenu {
++  __weak NSWindow *_window;
++
++  BODKeyPanel *_sheet;
++  NSTextField *_heading;
++  NSTextField *_where;
++  NSScrollView *_scroll;
++  NSStackView *_rows;
++  NSLayoutConstraint *_scrollHeight;
++  BODMenuRow *_screenNote;
++
++  NSString *_page;
++  NSMutableDictionary<NSString *, NSString *> *_memo;   /* the row last chosen on each page */
++  NSDictionary<NSString *, NSString *> *_returnTo;      /* where a dialog comes back to */
++  BOOL _session;                                        /* the game is held */
++  BODMenuRow *_focus;
++  BODMenuRow *_listening;
++  BOOL _waiting;                                        /* for a game item's dialog */
++  NSUInteger _waitToken;
++  NSTimer *_keysTimer;
++}
++
++- (void)attachTo:(NSWindow *)window {
++  _window = window;
++  _page = @"main";
++  _memo = [NSMutableDictionary dictionary];
++
++  /* The keys kept from last time go to the runtime once it is there to take
++   * them -- libpumpkin is loaded after this library. */
++  _keysTimer = [NSTimer timerWithTimeInterval:0.5 target:self selector:@selector(applyKeptKeys:) userInfo:nil repeats:YES];
++  [[NSRunLoop mainRunLoop] addTimer:_keysTimer forMode:NSRunLoopCommonModes];
++
++  /* A window put away with the bike moving is a game left running with nobody
++   * at it. */
++  [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(putAway:)
++                                               name:NSWindowWillMiniaturizeNotification object:window];
++  [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(putAway:)
++                                               name:NSApplicationWillHideNotification object:nil];
++}
++
++- (void)applyKeptKeys:(NSTimer *)timer {
++  const char *env = getenv("BOD_KEYS");
++  NSString *kept = [pause_defaults() stringForKey:kKeysKey];
++  void (*set)(const char *);
++
++  if ((env != NULL && env[0] != 0) || kept.length == 0) {
++    [timer invalidate];
++    return;
++  }
++  if ((set = liblsdl2_mac_symbol("pumpkin_set_ride_keys")) == NULL) return;
++  set(kept.UTF8String);
++  pause_log(@"pause menu: riding keys from last time, %@", kept);
++  [timer invalidate];
++}
++
++- (void)putAway:(NSNotification *)notification {
++  if (!_session && !liblsdl2_mac_wants_keys()) [self open];
++}
++
++- (BOOL)ready {
++  return _window != nil && liblsdl2_mac_symbol("bod_ui_command") != NULL;
++}
++
++- (BOOL)session {
++  return _session;
++}
++
++- (BOOL)wantsKeys {
++  return _sheet != nil && (_sheet.sheetParent != nil || _sheet.isVisible);
++}
++
++- (void)hold:(BOOL)on {
++  if (_session == on) return;
++  _session = on;
++  liblsdl2_mac_ui_pause(on);
++  liblsdl2_mac_pause_changed(on);
++  pause_log(@"pause menu: game %@", on ? @"held" : @"let go");
++}
++
++- (BOOL)open {
++  BOOL fresh = !_session;
++
++  if (![self ready]) return NO;
++  /* A dialog of the game's, or the pack sheet, has the window: the game is
++   * stopped under it already, and a sheet cannot go over a sheet. */
++  if (_window.attachedSheet != nil && _window.attachedSheet != _sheet) return NO;
++  [self hold:YES];
++  /* A new pause starts on Resume, so that Escape twice is always there and back. */
++  [self show:@"main" focus:fresh ? @"resume" : nil];
++
++  return YES;
++}
++
++- (void)resume {
++  _waitToken++;
++  _waiting = NO;
++  _returnTo = nil;
++  [self stopListening];
++  [self endSheet];
++  [self hold:NO];
++}
++
++- (void)back {
++  if ([_page isEqualToString:@"main"]) [self resume];
++  else [self show:@"main" focus:[@"page:" stringByAppendingString:_page]];
++}
++
++/* --------------------------------------------------------- the sheet */
++
++- (void)buildSheet {
++  NSStackView *content, *head;
++  NSTextField *hint;
++
++  if (_sheet) return;
++
++  _sheet = [[BODKeyPanel alloc] initWithContentRect:NSMakeRect(0, 0, SHEET_WIDTH, 420)
++                                          styleMask:NSWindowStyleMaskTitled
++                                            backing:NSBackingStoreBuffered
++                                              defer:YES];
++  _sheet.releasedWhenClosed = NO;
++  _sheet.keyTarget = self;
++
++  _heading = [NSTextField labelWithString:@"Paused"];
++  _heading.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize + 2];
++  _where = [NSTextField labelWithString:@""];
++  _where.textColor = NSColor.secondaryLabelColor;
++  _where.lineBreakMode = NSLineBreakByTruncatingTail;
++  [_where setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
++  head = [NSStackView stackViewWithViews:@[ _heading, _where ]];
++  head.orientation = NSUserInterfaceLayoutOrientationHorizontal;
++  head.alignment = NSLayoutAttributeFirstBaseline;
++  head.spacing = 10;
++
++  _rows = [[NSStackView alloc] init];
++  _rows.orientation = NSUserInterfaceLayoutOrientationVertical;
++  _rows.alignment = NSLayoutAttributeLeading;
++  _rows.spacing = 0;
++  _rows.translatesAutoresizingMaskIntoConstraints = NO;
++
++  _scroll = [[NSScrollView alloc] init];
++  _scroll.documentView = _rows;
++  _scroll.hasVerticalScroller = YES;
++  _scroll.autohidesScrollers = YES;
++  _scroll.drawsBackground = NO;
++  _scroll.borderType = NSNoBorder;
++  [NSLayoutConstraint activateConstraints:@[
++    [_rows.leadingAnchor constraintEqualToAnchor:_scroll.contentView.leadingAnchor],
++    [_rows.trailingAnchor constraintEqualToAnchor:_scroll.contentView.trailingAnchor],
++    [_rows.topAnchor constraintEqualToAnchor:_scroll.contentView.topAnchor] ]];
++
++  hint = [NSTextField labelWithString:@"↑ ↓ choose    ← → change    Return select    Esc back"];
++  hint.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
++  hint.textColor = NSColor.tertiaryLabelColor;
++
++  content = [NSStackView stackViewWithViews:@[ head, _scroll, hint ]];
++  content.orientation = NSUserInterfaceLayoutOrientationVertical;
++  content.alignment = NSLayoutAttributeLeading;
++  content.spacing = 10;
++  content.edgeInsets = NSEdgeInsetsMake(SHEET_INSET, SHEET_INSET, 14, SHEET_INSET);
++  _sheet.contentView = content;
++
++  for (NSView *view in @[ head, _scroll, hint ]) {
++    [view.widthAnchor constraintEqualToAnchor:content.widthAnchor constant:-2 * SHEET_INSET].active = YES;
++  }
++  [content.widthAnchor constraintEqualToConstant:SHEET_WIDTH].active = YES;
++  _scrollHeight = [_scroll.heightAnchor constraintEqualToConstant:300];
++  _scrollHeight.active = YES;
++}
++
++- (void)endSheet {
++  NSWindow *parent = _sheet.sheetParent;
++
++  if (_sheet == nil) return;
++  [self stopListening];
++  if (parent || _sheet.isVisible) liblsdl2_mac_sheet_closed();
++  if (parent) [parent endSheet:_sheet];
++  [_sheet orderOut:nil];
++}
++
++- (void)show:(NSString *)page focus:(NSString *)key {
++  static NSDictionary<NSString *, NSString *> *titles;
++  NSWindow *window = _window;
++  BODMenuRow *target = nil;
++  CGFloat height = 0;
++
++  if (window == nil) return;
++  if (titles == nil) {
++    titles = @{ @"main": @"Paused", @"controls": @"Controls", @"settings": @"Settings",
++                @"records": @"Profiles & records", @"help": @"Help" };
++  }
++  if (titles[page] == nil) page = @"main";
++
++  [self buildSheet];
++  [self stopListening];
++  _waitToken++;
++  _waiting = NO;
++  _rows.alphaValue = 1;
++  _page = page;
++  _heading.stringValue = titles[page];
++  _where.stringValue = [page isEqualToString:@"main"] ? [NSString stringWithUTF8String:liblsdl2_mac_pack_title()] : @"";
++
++  [self buildRows];
++  for (NSView *row in _rows.arrangedSubviews) height += row.intrinsicContentSize.height;
++  _scrollHeight.constant = MIN(height, MAX(160, NSHeight(window.contentView.frame) - 150));
++  [_sheet.contentView layoutSubtreeIfNeeded];
++
++  if (_sheet.sheetParent == nil) [window beginSheet:_sheet completionHandler:nil];
++  [_sheet makeFirstResponder:nil];
++
++  if (key == nil) key = _memo[page];
++  for (BODMenuRow *row in _rows.arrangedSubviews) {
++    if (key && [row.key isEqualToString:key] && [row bodKeyStop]) { target = row; break; }
++  }
++  [self focusRow:target ?: [self stops].firstObject];
++  [_scroll.contentView scrollToPoint:NSZeroPoint];
++  if (_focus) [_focus scrollRectToVisible:_focus.bounds];
++}
++
++/* ------------------------------------------------------------ the pages */
++
++- (BODMenuRow *)add:(BODRowKind)kind key:(NSString *)key title:(NSString *)title detail:(NSString *)detail {
++  BODMenuRow *row = [[BODMenuRow alloc] initWithFrame:NSMakeRect(0, 0, SHEET_WIDTH - 2 * SHEET_INSET, ROW_HEIGHT)];
++
++  row.kind = kind;
++  row.key = key;
++  row.title = title ?: @"";
++  row.detail = detail;
++  row.owner = self;
++  row.translatesAutoresizingMaskIntoConstraints = NO;
++  [_rows addArrangedSubview:row];
++  [row.widthAnchor constraintEqualToAnchor:_rows.widthAnchor].active = YES;
++
++  return row;
++}
++
++- (void)rule {
++  [self add:BODRowRule key:nil title:nil detail:nil];
++}
++
++- (void)buildRows {
++  for (NSView *view in _rows.arrangedSubviews.copy) {
++    [_rows removeArrangedSubview:view];
++    [view removeFromSuperview];
++  }
++  _focus = nil;
++  _screenNote = nil;
++
++  if ([_page isEqualToString:@"main"]) {
++    [self add:BODRowAction key:@"resume" title:@"Resume" detail:@"Esc"];
++    [self add:BODRowAction key:@"restart" title:@"Restart level" detail:@"⌘R"];
++    [self add:BODRowAction key:@"next" title:@"Next level" detail:@"⌘]"];
++    [self add:BODRowAction key:@"prev" title:@"Previous level" detail:@"⌘["];
++    [self rule];
++    [self add:BODRowAction key:@"levels" title:@"Choose a level…" detail:@"⇧⌘L"];
++    [self add:BODRowAction key:@"packs" title:@"Level packs…" detail:@"⌘L"];
++    [self rule];
++    [self add:BODRowPage key:@"page:controls" title:@"Controls" detail:nil];
++    [self add:BODRowPage key:@"page:settings" title:@"Settings" detail:nil];
++    [self add:BODRowPage key:@"page:records" title:@"Profiles & records" detail:nil];
++    [self add:BODRowPage key:@"page:help" title:@"Help" detail:nil];
++
++  } else if ([_page isEqualToString:@"controls"]) {
++    NSString *spec = keys_spec();
++    NSArray<NSArray<NSString *> *> *actions = @[ @[ @"forward", @"Forward", @"↑" ], @[ @"brake", @"Brake", @"↓" ],
++                                                 @[ @"left", @"Balance left", @"←" ], @[ @"right", @"Balance right", @"→" ],
++                                                 @[ @"flip", @"Flip", @"F9" ] ];
++    for (NSArray<NSString *> *a in actions) {
++      BODMenuRow *row = [self add:BODRowBinding key:[@"bind:" stringByAppendingString:a[0]] title:a[1]
++                           detail:keys_printed(keys_first(spec, a[0]))];
++      row.choices = @[ a[2] ];
++    }
++    [self add:BODRowNote key:nil title:@"Choose one and press the key you want. Delete takes it away and Esc leaves it as it was. The arrow keys always ride too." detail:nil];
++    [self rule];
++    [self add:BODRowAction key:@"default-keys" title:@"Default keys" detail:nil];
++    [self add:BODRowAction key:@"game-controls" title:@"The game’s own control options…" detail:nil];
++    [self rule];
++    [self add:BODRowAction key:@"back" title:@"Back" detail:nil];
++
++  } else if ([_page isEqualToString:@"settings"]) {
++    BODMenuRow *screen = [self add:BODRowChoice key:@"screen" title:@"Screen" detail:nil];
++    screen.choices = @[ @"Pixels", @"Smooth", @"xBR" ];
++    screen.chosen = liblsdl2_screen_get();
++    _screenNote = [self add:BODRowNote key:nil title:[self screenNote:screen.chosen] detail:nil];
++    [self gameMenus:@"options"];
++    [self rule];
++    [self add:BODRowAction key:@"back" title:@"Back" detail:nil];
++
++  } else {
++    [self gameMenus:_page];
++    [self rule];
++    [self add:BODRowAction key:@"back" title:@"Back" detail:nil];
++  }
++}
++
++- (NSString *)screenNote:(NSInteger)mode {
++  switch (mode) {
++    case SCREEN_PIXELS: return @"The game’s own 320×320 pixels, each drawn as a square, the way a Palm showed them.";
++    case SCREEN_SMOOTH: return @"Blended between pixels: no stair-steps, and softer everywhere.";
++    default:            return @"Upscaled with xBR to this display’s resolution: edges, wheels and lettering are redrawn as smooth lines, and textures keep their detail.";
++  }
++}
++
++/* The rest of a line after `n` spaces: a label may hold spaces of its own. */
++static NSString *rest_of(NSString *line, NSInteger n) {
++  NSRange r = NSMakeRange(0, line.length);
++  NSInteger i;
++
++  for (i = 0; i < n; i++) {
++    NSRange space = [line rangeOfString:@" " options:0 range:r];
++    if (space.location == NSNotFound) return @"";
++    r = NSMakeRange(space.location + 1, line.length - space.location - 1);
++  }
++
++  return [line substringFromIndex:r.location];
++}
++
++/* The game's own menu, spread over the pages it belongs on: its Options under
++ * Settings, its Help under Help, and the rest -- profiles, statistics,
++ * recordings -- on a page of their own. What is left out has a place already
++ * or none: the level items are on the first page, the game's own Pause is
++ * this, Quit is the application's, and beaming the game to another Palm has
++ * nowhere to go. */
++- (void)gameMenus:(NSString *)page {
++  static NSSet<NSNumber *> *skip;
++  NSString *text = [NSString stringWithUTF8String:liblsdl2_mac_ui_menubar()];
++  NSString *title = nil, *into = nil;
++  NSInteger menu = -1, count = 0;
++  BOOL gap = NO;
++
++  if (skip == nil) skip = [NSSet setWithArray:@[ @100, @101, @102, @110, @120, @198, @199 ]];
++
++  for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
++    NSArray<NSString *> *w = [line componentsSeparatedByString:@" "];
++    NSString *label;
++
++    if (w.count >= 2 && [w[0] isEqualToString:@"menu"]) {
++      menu = w[1].integerValue;
++      title = rest_of(line, 2);
++      into = [title caseInsensitiveCompare:@"Options"] == NSOrderedSame ? @"options" :
++             [title caseInsensitiveCompare:@"Help"] == NSOrderedSame ? @"help" : @"records";
++      count = 0;
++      gap = NO;
++      continue;
++    }
++    if (w.count < 4 || ![w[0] isEqualToString:@"mitem"] || ![into isEqualToString:page]) continue;
++
++    label = rest_of(line, 4);
++    if ([label hasPrefix:@"-"]) { gap = count > 0; continue; }
++    if ([skip containsObject:@(w[3].integerValue)]) continue;
++
++    if (count == 0 && ![page isEqualToString:@"help"]) {
++      [self add:BODRowHeading key:nil
++          title:[title isEqualToString:@"Options"] ? @"The game’s options" : [title isEqualToString:@"Rec"] ? @"Recordings" : title
++         detail:nil];
++    } else if (gap) {
++      [self rule];
++    }
++    gap = NO;
++    [self add:BODRowAction key:[NSString stringWithFormat:@"menu:%ld %@", (long)menu, w[2]] title:label detail:nil];
++    count++;
++  }
++
++  if (text.length == 0) {
++    [self add:BODRowNote key:nil title:@"The game has not put its menu up yet." detail:nil];
++  }
++}
++
++/* The game item with this id, as "menu item" for a pick. */
++- (NSString *)menuItem:(NSInteger)itemId {
++  NSString *text = [NSString stringWithUTF8String:liblsdl2_mac_ui_menubar()];
++
++  for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
++    NSArray<NSString *> *w = [line componentsSeparatedByString:@" "];
++    if (w.count >= 4 && [w[0] isEqualToString:@"mitem"] && w[3].integerValue == itemId) {
++      return [NSString stringWithFormat:@"%@ %@", w[1], w[2]];
++    }
++  }
++
++  return nil;
++}
++
++/* ------------------------------------------------------------- the keys */
++
++- (NSArray<BODMenuRow *> *)stops {
++  NSMutableArray<BODMenuRow *> *out = [NSMutableArray array];
++
++  for (BODMenuRow *row in _rows.arrangedSubviews) {
++    if ([row bodKeyStop]) [out addObject:row];
++  }
++
++  return out;
++}
++
++- (void)focusRow:(BODMenuRow *)row {
++  if (_focus == row) return;
++  _focus.focused = NO;
++  _focus = row;
++  row.focused = YES;
++  if (row) [row scrollRectToVisible:row.bounds];
++}
++
++- (void)moveBy:(NSInteger)step {
++  NSArray<BODMenuRow *> *stops = [self stops];
++  NSInteger n = (NSInteger)stops.count, i;
++
++  if (n == 0) return;
++  i = _focus ? (NSInteger)[stops indexOfObject:_focus] : NSNotFound;
++  if (i == NSNotFound) i = step > 0 ? -1 : 0;
++  [self focusRow:stops[(NSUInteger)((i + step + n) % n)]];
++}
++
++- (BOOL)panelKeyDown:(NSEvent *)event {
++  unsigned short code = event.keyCode;
++  NSInteger direction;
++
++  if (_listening) return [self listenTo:event];
++
++  if (code == BODKeyEscape) {
++    if (!event.isARepeat) [self back];
++    return YES;
++  }
++  if (code == BODKeyTab) {
++    [self moveBy:(event.modifierFlags & NSEventModifierFlagShift) ? -1 : 1];
++    return YES;
++  }
++  if ((direction = bod_keys_direction(code)) >= 0) {
++    if (direction == BODDirectionUp) [self moveBy:-1];
++    else if (direction == BODDirectionDown) [self moveBy:1];
++    else if (_focus.kind == BODRowChoice) [self row:_focus choose:_focus.chosen + (direction == BODDirectionRight ? 1 : -1)];
++    return YES;
++  }
++  if (code == BODKeyReturn || code == BODKeyEnter || code == BODKeySpace) {
++    if (!event.isARepeat && _focus) [self activate:_focus];
++    return YES;
++  }
++
++  /* Nothing else on the menu wants a key, and none of them is the game's. */
++  return YES;
++}
++
++/* -------------------------------------------------------- the bindings */
++
++- (void)listen:(BODMenuRow *)row {
++  [self stopListening];
++  _listening = row;
++  row.listening = YES;
++}
++
++- (void)stopListening {
++  _listening.listening = NO;
++  _listening = nil;
++}
++
++- (BOOL)listenTo:(NSEvent *)event {
++  unsigned short code = event.keyCode;
++  BODMenuRow *row = _listening;
++  NSString *name, *action;
++
++  if (event.isARepeat) return YES;
++  /* The arrows ride whatever is bound, so they are not a binding; they and
++   * Escape leave this one as it was. */
++  if (code == BODKeyEscape || bod_keys_direction(code) >= 0) {
++    [self stopListening];
++    return YES;
++  }
++  if (code == BODKeyDelete || code == BODKeyForwardDelete) name = @"";
++  else if ((name = keys_name(event)) == nil) return YES;
++
++  action = [row.key substringFromIndex:5];
++  if (keys_set([NSString stringWithFormat:@"%@=%@", action, name])) {
++    pause_log(@"pause menu: %@ is %@", action, name.length ? name : @"nothing");
++  }
++  [self stopListening];
++  row.detail = keys_printed(keys_first(keys_spec(), action));
++
++  return YES;
++}
++
++/* ---------------------------------------------------------- the choices */
++
++- (void)rowClicked:(BODMenuRow *)row {
++  [self focusRow:row];
++  [self activate:row];
++}
++
++- (void)row:(BODMenuRow *)row choose:(NSInteger)index {
++  [self focusRow:row];
++  if (index < 0 || index >= (NSInteger)row.choices.count || index == row.chosen) return;
++
++  if ([row.key isEqualToString:@"screen"]) {
++    liblsdl2_mac_screen_choose((int)index);
++    row.chosen = liblsdl2_screen_get();
++    if (_screenNote) {
++      _screenNote.title = [self screenNote:row.chosen];
++      [_screenNote invalidateIntrinsicContentSize];
++      _screenNote.needsDisplay = YES;
++    }
++  }
++}
++
++- (void)activate:(BODMenuRow *)row {
++  NSString *key = row.key, *item;
++
++  if (_waiting) return;
++  if (key.length) _memo[_page] = key;
++
++  switch (row.kind) {
++    case BODRowPage:
++      [self show:[key substringFromIndex:5] focus:nil];
++      return;
++    case BODRowBinding:
++      [self listen:row];
++      return;
++    case BODRowChoice:
++      [self row:row choose:(row.chosen + 1) % (NSInteger)row.choices.count];
++      return;
++    default:
++      break;
++  }
++
++  if ([key isEqualToString:@"resume"]) {
++    [self resume];
++  } else if ([key isEqualToString:@"restart"] || [key isEqualToString:@"next"] || [key isEqualToString:@"prev"]) {
++    [self resume];
++    liblsdl2_mac_game_menu([key isEqualToString:@"restart"] ? "Restart Level" :
++                           [key isEqualToString:@"next"] ? "Next Level" : "Previous Level");
++  } else if ([key isEqualToString:@"levels"]) {
++    [self dialog:^{ liblsdl2_mac_game_menu("Select Level"); }];
++  } else if ([key isEqualToString:@"packs"]) {
++    [self hideForPacks];
++    liblsdl2_mac_open_packs();
++  } else if ([key isEqualToString:@"default-keys"]) {
++    keys_set(kDefaultKeys);
++    [self show:_page focus:key];
++  } else if ([key isEqualToString:@"game-controls"]) {
++    if ((item = [self menuItem:301]) != nil) {      /* Options -> Control */
++      [self dialog:^{ liblsdl2_mac_ui_send([@"pick " stringByAppendingString:item].UTF8String); }];
++    }
++  } else if ([key hasPrefix:@"menu:"]) {
++    item = [key substringFromIndex:5];
++    [self dialog:^{ liblsdl2_mac_ui_send([@"pick " stringByAppendingString:item].UTF8String); }];
++  } else if ([key isEqualToString:@"back"]) {
++    [self back];
++  }
++}
++
++/* ----------------------------------------------------- the game's dialogs */
++
++/* One of the game's dialogs, opened from here. The menu stays up until the
++ * dialog does, so there is never a moment with nothing to press; an item that
++ * opens nothing -- a toggle, a replay -- leaves it where it is. */
++- (void)dialog:(void (^)(void))send {
++  __weak BODPauseMenu *weakSelf = self;
++  NSUInteger token = ++_waitToken;
++
++  _returnTo = @{ @"page": _page, @"key": _memo[_page] ?: @"" };
++  _waiting = YES;
++  _rows.alphaValue = 0.55;
++  liblsdl2_mac_form_expect();
++  send();
++
++  bod_keys_after(WAIT_FOR_DIALOG, ^{
++    BODPauseMenu *me = weakSelf;
++    if (me == nil || token != me->_waitToken) return;
++    me->_waiting = NO;
++    me->_rows.alphaValue = 1;
++    if (!liblsdl2_mac_form_shown()) me->_returnTo = nil;
++  });
++}
++
++- (void)stepAside {
++  _waitToken++;
++  _waiting = NO;
++  _rows.alphaValue = 1;
++  if (!_session) return;
++  if (_returnTo == nil) _returnTo = @{ @"page": _page, @"key": _memo[_page] ?: @"" };
++  [self endSheet];
++}
++
++- (void)dialogClosed:(BOOL)dismissed {
++  NSDictionary<NSString *, NSString *> *r = _returnTo;
++
++  _returnTo = nil;
++  if (r == nil || !_session) return;
++  if (dismissed) [self show:r[@"page"] focus:r[@"key"]];
++  else [self resume];
++}
++
++- (void)hideForPacks {
++  _waitToken++;
++  _waiting = NO;
++  [self endSheet];
++}
++
++- (void)backFromPacks {
++  if (_session) [self show:@"main" focus:@"packs"];
++}
++
++@end
++
++/* ------------------------------------------------------------ the C side */
++
++static BODPauseMenu *menu;
++
++void liblsdl2_mac_pause_attach(void *nswindow) {
++  NSWindow *window = (__bridge NSWindow *)nswindow;
++
++  if (menu != nil || window == nil) return;
++  menu = [[BODPauseMenu alloc] init];
++  [menu attachTo:window];
++}
++
++int liblsdl2_mac_pause_wants_keys(void)  { return menu != nil && [menu wantsKeys]; }
++int liblsdl2_mac_pause_session(void)     { return menu != nil && [menu session]; }
++void liblsdl2_mac_pause_open(void)       { [menu open]; }
++void liblsdl2_mac_pause_resume(void)     { [menu resume]; }
++void liblsdl2_mac_pause_step_aside(void) { [menu stepAside]; }
++void liblsdl2_mac_pause_dialog_closed(int dismissed) { [menu dialogClosed:dismissed != 0]; }
++void liblsdl2_mac_pause_hide_for_packs(void)  { [menu hideForPacks]; }
++void liblsdl2_mac_pause_back_from_packs(void) { [menu backFromPacks]; }
++
++int liblsdl2_mac_escape(void) {
++  if (menu == nil || liblsdl2_mac_wants_keys() || liblsdl2_mac_pack_busy()) return 0;
++
++  return [menu open] ? 1 : 0;
 +}
 diff --git a/src/liblsdl2/liblsdl2_screen.c b/src/liblsdl2/liblsdl2_screen.c
 new file mode 100644
