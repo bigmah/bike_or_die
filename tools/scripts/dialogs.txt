@@ -1,0 +1,107 @@
+# Every dialog the game's menu bar opens, opened and read in turn.
+# Each one should come back as a form with its objects on it, and the
+# shots should show the game the whole way through: nothing the game
+# draws for these reaches the screen.
+wait 12000
+shot d00_game
+ui dump
+# ---- Game / Select Level
+ui pick 0 3
+wait 2500
+shot d01_select_level
+ui dump
+ui close
+wait 1800
+# ---- Game / Player Profiles
+ui pick 0 5
+wait 2500
+shot d02_player_profiles
+ui dump
+ui close
+wait 1800
+# ---- Game / Statistics
+ui pick 0 7
+wait 2500
+shot d03_statistics
+ui dump
+ui close
+wait 1800
+# ---- Rec / Recorded Games
+ui pick 1 0
+wait 2500
+shot d04_recorded_games
+ui dump
+ui close
+wait 1800
+# ---- Options / Bike
+ui pick 2 0
+wait 2500
+shot d05_bike
+ui dump
+ui close
+wait 1800
+# ---- Options / Control
+ui pick 2 1
+wait 2500
+shot d06_control
+ui dump
+ui close
+wait 1800
+# ---- Options / Display
+ui pick 2 2
+wait 2500
+shot d07_display
+ui dump
+ui close
+wait 1800
+# ---- Options / Sound
+ui pick 2 3
+wait 2500
+shot d08_sound
+ui dump
+ui close
+wait 1800
+# ---- Options / Recording
+ui pick 2 4
+wait 2500
+shot d09_recording
+ui dump
+ui close
+wait 1800
+# ---- Options / Hall of Fame
+ui pick 2 5
+wait 2500
+shot d10_hall_of_fame
+ui dump
+ui close
+wait 1800
+# ---- Help / Control
+ui pick 3 0
+wait 2500
+shot d11_control
+ui dump
+ui close
+wait 1800
+# ---- Help / Rules
+ui pick 3 1
+wait 2500
+shot d12_rules
+ui dump
+ui close
+wait 1800
+# ---- Help / Hall of Fame
+ui pick 3 2
+wait 2500
+shot d13_hall_of_fame
+ui dump
+ui close
+wait 1800
+# ---- Help / About
+ui pick 3 4
+wait 2500
+shot d14_about
+ui dump
+ui close
+wait 1800
+ui dump
+shot d99_end

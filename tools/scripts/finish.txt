@@ -1,5 +1,7 @@
 # Finish level 1 while pedalling the whole way, and check what the
 # "Congratulations!" dialog looks like when it lands under the player's hands.
+# Wants BOD_NATIVE_UI=0: with the native UI on that dialog is the host's, and
+# the game is all these frames show.
 # The taps still in flight must not raise a focus ring on it: the last frame
 # should be the plain dialog, with the avatar drawn unboxed.
 wait 10500

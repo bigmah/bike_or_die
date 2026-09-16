@@ -68,6 +68,8 @@ export PUMPKIN_SOUND="${PUMPKIN_SOUND:-1}"
 export PUMPKIN_VOLUME="${PUMPKIN_VOLUME:-64}"
 # HotSync user name; the game's registration code is keyed to it.
 export PUMPKIN_USER="${PUMPKIN_USER:-PalmDB}"
+# The window draws the game's own menus and dialogs; 0 lets the game draw them.
+export BOD_NATIVE_UI="${BOD_NATIVE_UI:-1}"
 # Use the statically recompiled 68k and ARM cores.
 export BOD_RECOMP="${BOD_RECOMP:-1}"
 export BOD_ARM_ENGINE="${BOD_ARM_ENGINE:-recomp}"

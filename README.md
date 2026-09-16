@@ -57,11 +57,10 @@ to be translated too, not just run.
 | **←** / **→**, **A** / **D** | Balance left / right |
 | **Space** | **Flip** -- turn around and ride the other way |
 | F1-F4 | the four Palm hardware buttons |
-| F5 | Palm menu (Game / Rec / Options / Help) |
 
-Those are the game's own defaults, visible and rebindable under **Options → Control**
-(F5, then Options, then Control). Its five actions map to a Palm 5-way navigator:
-Forward=Up, Brake=Down, Balance=Left/Right, Flip=Select.
+Those are the game's own defaults, visible and rebindable under **Options → Control** --
+in the menu bar, or behind **Menu...** on the page. Its five actions map to a Palm 5-way
+navigator: Forward=Up, Brake=Down, Balance=Left/Right, Flip=Select.
 
 WASD rides as well, and the arrow keys still do -- the letters are added to the
 navigator bits the game polls rather than translated into arrow keys, so they keep
@@ -99,8 +98,10 @@ which physical key it was, so the display driver takes the five-way keys from th
 
 ## Menus, from the keyboard
 
-Every menu and dialog is fully navigable without the mouse, which still works exactly as
-it did:
+The game's own menus and dialogs are not drawn any more -- see **The game's own menus and
+dialogs** below -- so this is what `BOD_NATIVE_UI=0` goes back to, and what the port had
+before the host drew them. Every menu and dialog is fully navigable without the mouse,
+which still works exactly as it did:
 
 | key | in a dialog | in the F5 menu |
 |---|---|---|
@@ -175,6 +176,85 @@ which PumpkinOS did not provide. A call it does not provide hands back its first
 untouched, so the game opened the pointer to the pack's name as if it were the pack, was
 refused, and quietly fell back to "BOD - Introduction". `armsyscall.c` answers it now.
 
+## The game's own menus and dialogs
+
+Everything around the riding was Palm OS 5's own UI: a menu bar behind the menu key,
+twenty-five forms, and the alerts the game puts up as it goes. On a Palm that was the
+machine's own look. In a window on a Mac, or on a page, it is a 320x320 postage stamp of
+somebody else's operating system blown up by three, and none of it can be driven the way
+the rest of the machine is.
+
+So none of it is drawn. The forms are still there and the game still runs them -- they
+are what knows what a level pack is, what the sound settings mean, which recording is
+which -- but their windows never reach the screen, and what is on them is published for
+the host, which puts up controls of its own. A press on one of those goes back into the
+form the way the pen would. The macOS window draws them as the game's four menus in the
+menu bar and a sheet over the game; the page draws them as **Menu...** and a panel over
+the screen. The menu key opens nothing now: what was behind it is in the menu bar.
+`BOD_NATIVE_UI=0` puts the game's own back, drawn where they always were.
+
+Three things make that possible, and all three were already true:
+
+- **Every form draws into a bitmap of its own** (`FrmInitFormInternal`), and reaches the
+  screen only by being the active window when something is drawn -- one place,
+  `WinDirtyRegion`. Dropping a hidden form's updates there leaves the game's last frame
+  on the screen, untouched, with the form live behind it. The one part of a form that
+  goes straight into the display rather than into the form's own window is a dialog's
+  border, which would otherwise draw a frame around nothing (`FrmDrawEmptyDialog`).
+- **A form works with nobody looking.** Its handlers run on the game's own thread out of
+  its own event queue, so a control pressed from the host is indistinguishable from one
+  pressed by the pen.
+- **The host was already talking to that side**, to drive the level pack chooser
+  (`bodpack.c`). This is the same arrangement, generalised: a command string in, a
+  description of what the game has on screen out, both across a sequence number so that
+  neither thread has to take a lock (`src/libpumpkin/bodui.c`).
+
+What is published is the form and its objects -- kind, id, label, value, the push button
+group, the list behind a popup trigger, and where each one sits on the form -- with a
+list's items behind it. The items are read the only way they can be: the game draws its
+own list rows, a level's name and its best time made up as the row is drawn, so each is
+drawn once into an offscreen window with `WinDrawChars` watched. The menu bar is
+published once, out of the game's own `MBAR`, and an item is named by where it is rather
+than by what it says: the game has two menus called "Control" and three called "Hall of
+Fame". Text is UTF-8, converted from the game's own character set, which is Latin-1 with
+Windows' punctuation in the middle -- the ellipsis of "About..." is a single byte there.
+
+**One renderer, not twenty-five panels.** Nothing on either host knows what any
+particular form means. A Palm form is laid out in absolute coordinates, so the objects
+that shared a line on its screen are the ones that belong together, and that is how the
+rows are found -- by the geometry the game already has, rather than by a table of forms
+kept in step with it by hand. Buttons become buttons, a group of push buttons becomes one
+segmented control, a popup trigger and its list become a pop-up button, a list becomes a
+list, a field that the game only writes into becomes text rather than somewhere to type,
+and a dialog's bottom row of buttons becomes the row under the sheet where a Mac keeps
+them. A form the game relabels, or one nobody thought about, comes out as controls
+without anything being added. Objects parked off the side of the form are left there:
+that is where a Palm dialog keeps the page it is not showing.
+
+**The dialogs the game puts up by itself** -- finishing a level asks for a name, and a
+level's statistics are an alert -- arrive the same way, so they are drawn the same way. A
+dialog has to stand still for 450ms before it is shown, though: some of the game's own
+are answered on the way in and gone again in a fraction of a second, the registration
+dialog among them (see **Registration**), and a sheet that appeared for those would be a
+dialog nobody asked for over a game that had not started.
+
+**A dialog that waits forever.** `FrmDoDialog` runs its own event loop, and with nothing
+on its way it parks the game's thread inside `EvtPumpEvents` until something arrives from
+the window. Nothing does: the dialog is on the host's screen now, and the answer comes
+from another thread. That wait takes the host's commands too, and anything they put in
+the queue ends it -- otherwise the first alert of a session is a dialog nobody can reach.
+
+**The level pack sheet stays what it was.** It drives the game's own level and pack lists
+from the outside (`bodpack.c`), and those dialogs are hidden like every other; while it
+is doing that they are its business, and the generic sheet leaves them alone.
+
+Two differences worth knowing. The sliders on Sound Options come through as plain buttons
+in the browser and as sliders natively -- a control's style reads differently in
+PumpkinOS's 32-bit build, which is what the WebAssembly one is. And `tools/scripts/*.txt`
+that expect to see a Palm dialog on the screen, `finish.txt` among them, want
+`BOD_NATIVE_UI=0`; `tools/scripts/dialogs.txt` is the one that checks the new arrangement,
+opening every dialog the menu bar can and reading each back.
+
 ## Configuration
 
 The launcher reads `~/.bikeordie.env` if it exists. Useful settings:
@@ -190,6 +270,7 @@ The launcher reads `~/.bikeordie.env` if it exists. Useful settings:
 | `BOD_ARM_ENGINE` | `recomp` | `interp` falls back to the ARM interpreter |
 | `BOD_RESET` | `0` | `1` re-seeds the game data on next launch |
 | `BOD_ZOOM` | `3` | integer window scale; the game itself is 320x320 |
+| `BOD_NATIVE_UI` | `1` | the host draws the game's menus and dialogs; `0` lets the game draw its own |
 | `BOD_KEYS` | WASD | the keys that ride, on top of the arrows; see **Controls** |
 | `BOD_UNLOCK` | `44652` | the registration code to answer the About dialog with; `0` leaves it alone |
 
@@ -307,13 +388,18 @@ builds without synthesising system-wide mouse and keyboard events.
 but the arrow keys and Enter, so its last frame is only reached if every step of the
 menus answered them. `tools/scripts/finish.txt` is its opposite: it pedals all the way
 through the end of a level, where the last frame has to show the "Congratulations!"
-dialog with no focus ring on it. `tools/scripts/keys.txt` rides with the letters
+dialog with no focus ring on it -- both want `BOD_NATIVE_UI=0`, since the dialog they
+are looking at is one the host draws now. `tools/scripts/keys.txt` rides with the letters
 rather than the arrows, so running it under a `BOD_KEYS` that moves them elsewhere
 should leave the bike where it stands. `tools/scripts/packs.txt` switches level packs
 through `bodpack.c` -- a script's `pack` action sends it a command, as the window's
 level controls do -- and logs the chooser's status before each one, including the title
 of the level list the game last showed: after the switch that has to be the new pack's
-name, not "BOD - Introduction".
+name, not "BOD - Introduction". `tools/scripts/dialogs.txt` opens every dialog the game's
+menu bar can and reads each one back -- a script's `ui` action drives `bodui.c` the way
+`pack` drives `bodpack.c`, and `ui dump` writes what the game has on screen into the log
+-- so a form that comes up empty, or takes the game with it, shows up there; the frames
+it takes have to be of the game throughout, since none of those dialogs is drawn.
 
 Useful knobs while debugging the ARM core:
 
@@ -364,8 +450,8 @@ through. `tools/webserver.py` sends them; on a host that will not, the page fall
 the bundled `coi-serviceworker.js`, which installs a service worker that adds them.
 
 Everything the native build does, this does: the recompiled 68k and ARM cores, the
-level packs, the keyboard (including the five-way navigation through menus and dialogs),
-and sound. Progress, settings and best times are kept in the browser's origin private
+level packs, the game's menus and dialogs drawn by the page rather than by the game, the
+keyboard, and sound. Progress, settings and best times are kept in the browser's origin private
 filesystem and restored on the next visit; `bodReset()` from the console throws them away.
 The cog above the screen binds the riding keys, over the game rather than beside it so
 that opening it does not move the screen. What it sets goes to the runtime through
@@ -397,6 +483,14 @@ its results database, and opening that reads its empty index file -- and WasmFS 
 `poll()` for a regular file by whether it has any bytes at all, never blocking, so
 `select()` said "not ready" at once and forever, and `sys_read()` asked forever. A regular
 file is always ready; the browser build no longer asks (`sys_select`).
+
+**Menu...** opens the game's own menu bar -- Game, Rec, Options and Help, in its order,
+with the items under them -- as a panel over the screen, and picking one hands the game
+the menu event it would have got from its own menu. Whatever that opens is drawn by the
+page too, as a second panel of real controls built out of what the form publishes; see
+**The game's own menus and dialogs**. Escape over that panel does what its Cancel would.
+The dialogs the game raises by itself, finishing a level among them, come up the same
+way.
 
 **Pause** sits next to the cog, and there is nothing on the main thread for it to stop:
 `-sPROXY_TO_PTHREAD` put the game's loop on a worker, so the page asks the workers instead

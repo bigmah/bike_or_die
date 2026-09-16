@@ -273,7 +273,7 @@ index d9caea2..b0424e8 100644
  C99=-std=c99
  endif
 diff --git a/src/emscripten/Makefile b/src/emscripten/Makefile
-index 4114db6..263fa9f 100644
+index 4114db6..e46dbe7 100644
 --- a/src/emscripten/Makefile
 +++ b/src/emscripten/Makefile
 @@ -4,16 +4,72 @@ include ../common.mak
@@ -303,7 +303,7 @@ index 4114db6..263fa9f 100644
 +  -s INITIAL_MEMORY=402653184 \
 +  -s STACK_SIZE=8388608 -s DEFAULT_PTHREAD_STACK_SIZE=8388608 \
 +  -s PROXY_TO_PTHREAD=1 -s PTHREAD_POOL_SIZE=8 \
-+  -s EXPORTED_FUNCTIONS=_main,_cexit,_pumpkin_send_deploy,_bod_reset_saves,_pumpkin_set_ride_keys,_pumpkin_get_ride_keys,_bod_pack_command,_bod_pack_state,_bod_pack_seq,_bod_canvas_info \
++  -s EXPORTED_FUNCTIONS=_main,_cexit,_pumpkin_send_deploy,_bod_reset_saves,_pumpkin_set_ride_keys,_pumpkin_get_ride_keys,_bod_pack_command,_bod_pack_state,_bod_pack_seq,_bod_ui_command,_bod_ui_state,_bod_ui_seq,_bod_ui_menubar,_bod_ui_menubar_seq,_bod_canvas_info \
 +  -s EXPORTED_RUNTIME_METHODS=ccall,stringToNewUTF8,FS \
 +  -s INCOMING_MODULE_JS_API=canvas,print,printErr,setStatus,preRun,postRun,onRuntimeInitialized,locateFile,mainScriptUrlOrBlob \
 +  -s EXIT_RUNTIME \
@@ -879,10 +879,10 @@ index ea74bb2..6fe5735 100644
    return 0;
  }
 diff --git a/src/emscripten/template.html b/src/emscripten/template.html
-index 216dea4..1b831ed 100644
+index 216dea4..ed0beab 100644
 --- a/src/emscripten/template.html
 +++ b/src/emscripten/template.html
-@@ -2,37 +2,932 @@
+@@ -2,37 +2,1394 @@
  <html>
  <head>
    <meta charset="utf-8">
@@ -964,6 +964,39 @@ index 216dea4..1b831ed 100644
 +    #packs-list button.is-current::after { content: ' \2713'; color: #8b94a2; font-weight: 400; }
 +    #packs-list .none { color: #6f7885; padding: 4px 8px; }
 +    #packs-note { color: #7d8593; margin: 0; }
++    /* The game's own menus and dialogs, drawn by the page (bodui.c). The
++       rows follow the form's own layout: what shared a line on a Palm screen
++       shares one here. */
++    #menu-list { width: 100%; display: flex; flex-direction: column; gap: 1px; }
++    #menu-list h3 { font-size: 11px; font-weight: 600; margin: 10px 0 2px; letter-spacing: .06em;
++                    text-transform: uppercase; color: #6f7885; }
++    #menu-list h3:first-child { margin-top: 0; }
++    #menu-list button { text-align: left; background: none; border: 0; border-radius: 4px; padding: 4px 8px; }
++    #menu-list button:hover, #menu-list button:focus { background: #262b33; outline: none; }
++    #menu-list hr { border: 0; border-top: 1px solid #262b33; width: 100%; margin: 4px 0; }
++    #dialog { max-height: 100%; }
++    #dialog-body { width: 100%; display: flex; flex-direction: column; gap: 8px;
++                   overflow: auto; min-height: 0; }
++    .dlg__row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
++    .dlg__text { color: #c9ced6; }
++    .dlg__note { color: #8b94a2; }
++    .dlg__group { display: flex; gap: 0; }
++    .dlg__group button { border-radius: 0; margin-left: -1px; }
++    .dlg__group button:first-child { border-radius: 5px 0 0 5px; margin-left: 0; }
++    .dlg__group button:last-child { border-radius: 0 5px 5px 0; }
++    .dlg__group button.is-on { color: #14161a; background: #c9ced6; border-color: #c9ced6; }
++    .dlg__list { width: 100%; max-height: 40vh; overflow: auto; display: flex; flex-direction: column;
++                 gap: 1px; border: 1px solid #333941; border-radius: 5px; padding: 3px; }
++    .dlg__list button { text-align: left; background: none; border: 0; border-radius: 4px; padding: 3px 7px;
++                        white-space: pre; font-variant-numeric: tabular-nums; }
++    .dlg__list button:hover, .dlg__list button:focus { background: #262b33; outline: none; }
++    .dlg__list button.is-on { color: #fff; background: #303741; }
++    #dialog select, #dialog input[type="text"] {
++      font: inherit; color: #c9ced6; background: #20242b;
++      border: 1px solid #333941; border-radius: 5px; padding: 4px 8px;
++    }
++    #dialog select:focus, #dialog input[type="text"]:focus { outline: none; border-color: #5a6371; }
++    #dialog button.is-default { color: #14161a; background: #c9ced6; border-color: #c9ced6; }
 +    #binds { border-collapse: collapse; }
 +    #binds td { padding: 3px 12px 3px 0; }
 +    #binds td:first-child { color: #8b94a2; }
@@ -1126,6 +1159,7 @@ index 216dea4..1b831ed 100644
 +      <span class="lbl">Level pack</span> <span class="cur" id="packs-cur"></span> <span class="caret">&#9660;</span>
 +    </button>
 +    <button id="levels" type="button" title="Choose a level in this pack" disabled>Levels&hellip;</button>
++    <button id="menu-open" type="button" title="The game's own menus" aria-expanded="false" disabled>Menu&hellip;</button>
 +    <span class="tools__group">
 +      <button id="level-prev" type="button" title="Previous level" disabled>&#9664;</button>
 +      <button id="level-restart" type="button" title="Restart level" disabled>&#8635;</button>
@@ -1146,6 +1180,20 @@ index 216dea4..1b831ed 100644
 +        <div class="row">
 +          <button id="packs-cancel">Cancel</button>
 +        </div>
++      </div>
++
++      <div id="menu" class="panel" hidden>
++        <h2>Menu</h2>
++        <div id="menu-list"></div>
++        <div class="row">
++          <button id="menu-close">Close</button>
++        </div>
++      </div>
++
++      <div id="dialog" class="panel" hidden>
++        <h2 id="dialog-head"></h2>
++        <div id="dialog-body"></div>
++        <div class="row" id="dialog-foot"></div>
 +      </div>
 +
 +      <div id="settings" class="panel" hidden>
@@ -1182,7 +1230,6 @@ index 216dea4..1b831ed 100644
 +  <div class="keys">
 +    <div class="legend" id="legend"></div>
 +    <div class="legend">
-+      <span><kbd>F5</kbd> menu</span>
 +      <span><kbd>F1</kbd>&ndash;<kbd>F4</kbd> Palm buttons</span>
 +      <span><kbd>Esc</kbd> back</span>
 +    </div>
@@ -1211,7 +1258,7 @@ index 216dea4..1b831ed 100644
 +      pauseButton.textContent = paused ? 'Resume' : 'Pause';
 +      pauseButton.title = paused ? 'Resume game' : 'Pause game';
 +      pauseButton.setAttribute('aria-pressed', paused ? 'true' : 'false');
-+    }
+     }
 +
 +    // ---------------------------------------------------------- the controls
 +    //
@@ -1327,7 +1374,7 @@ index 216dea4..1b831ed 100644
 +      document.getElementById('cog').setAttribute('aria-expanded', open ? 'true' : 'false');
 +      bodDrawKeys();
 +      if (!open) canvas.focus();
-     }
++    }
 +
 +    (function () {
 +      var stored = null, fromQuery;
@@ -1360,7 +1407,7 @@ index 216dea4..1b831ed 100644
 +          if (window.PThread && Object.keys(PThread.pthreads).length) {
 +            clearInterval(pauseReady);
 +            pauseButton.disabled = false;
-+            ['packs-open', 'levels', 'level-prev', 'level-restart', 'level-next'].forEach(function (id) {
++            ['packs-open', 'levels', 'menu-open', 'level-prev', 'level-restart', 'level-next'].forEach(function (id) {
 +              document.getElementById(id).disabled = false;
 +            });
 +          }
@@ -1419,6 +1466,17 @@ index 216dea4..1b831ed 100644
 +      if (!document.getElementById('settings').hidden) {
 +        e.stopPropagation();
 +        if (e.key === 'Escape') bodSettings(false);
++      }
++      if (!document.getElementById('menu').hidden) {
++        e.stopPropagation();
++        if (e.key === 'Escape') bodUI.openMenu(false);
++        return;
++      }
++      if (!document.getElementById('dialog').hidden) {
++        e.stopPropagation();
++        // Escape leaves the game's dialog the way its own Cancel would.
++        if (e.key === 'Escape') bodUI.send('close');
++        return;
 +      }
 +
 +      if (claimed.indexOf(e.code) >= 0 || claimed.indexOf(e.key) >= 0) e.preventDefault();
@@ -1762,6 +1820,410 @@ index 216dea4..1b831ed 100644
 +    document.getElementById('level-next').addEventListener('click', function () { bodPack.menu('Next Level'); });
 +    document.getElementById('level-restart').addEventListener('click', function () { bodPack.menu('Restart Level'); });
 +
++    // ------------------------------------------------- the game's own UI
++    //
++    // None of the game's menus and dialogs is drawn any more: bodui.c keeps
++    // every form off the screen and publishes what is on it, and this draws
++    // it in the page instead. One renderer for all of them, built out of what
++    // each form says about itself -- its objects, their kinds and where they
++    // sit -- so a dialog nobody thought about comes out as controls too. A
++    // Palm form is laid out in absolute coordinates, so the objects that
++    // shared a line on its screen share a row here.
++    //
++    // Everything done to those controls goes back as a command: press,
++    // select, text, slider, close. The page never decides what a form means.
++    var bodUI = {
++      panel: document.getElementById('dialog'),
++      head: document.getElementById('dialog-head'),
++      body: document.getElementById('dialog-body'),
++      foot: document.getElementById('dialog-foot'),
++      menuPanel: document.getElementById('menu'),
++      menuList: document.getElementById('menu-list'),
++      menuButton: document.getElementById('menu-open'),
++      seq: -1, form: null, shown: null, settling: 0, since: 0, menus: false,
++      SETTLE: 450,
++
++      ready: function () {
++        return !!(window.Module && Module.ccall && !pauseButton.disabled);
++      },
++
++      send: function (cmd) {
++        try { Module.ccall('bod_ui_command', null, ['string'], [cmd]); } catch (e) {
++          console.warn('could not send to the game:', e);
++        }
++      },
++
++      // Read twice around the sequence number, so a change under the read is
++      // noticed and read again.
++      read: function (state, seq) {
++        var s1, s2, text, tries;
++        for (tries = 0; tries < 5; tries++) {
++          s1 = Module.ccall(seq, 'number', [], []);
++          text = Module.ccall(state, 'string', [], []);
++          s2 = Module.ccall(seq, 'number', [], []);
++          if (s1 === s2) return { text: text || '', seq: s1 };
++        }
++        return null;
++      },
++
++      // The rest of a line after `n` spaces: the text of an object may hold
++      // spaces of its own, so it is never split.
++      rest: function (line, n) {
++        var at = 0, i;
++        for (i = 0; i < n; i++) {
++          at = line.indexOf(' ', at);
++          if (at < 0) return '';
++          at++;
++        }
++        return line.slice(at);
++      },
++
++      parse: function (text) {
++        var form = { id: 0, modal: false, w: 160, h: 160, title: '', def: -1, objects: [], sig: '' },
++            byIndex = {}, sig = [], self = this;
++        text.split('\n').forEach(function (line) {
++          var w = line.split(' '), o;
++          if (!line) return;
++          if (w[0] === 'form') {
++            form.id = +w[1] || 0;
++            form.modal = +w[2] === 1;
++            form.w = +w[3] || 160;
++            form.h = +w[4] || 160;
++          } else if (w[0] === 'title') {
++            form.title = self.rest(line, 1);
++          } else if (w[0] === 'default') {
++            form.def = +w[1];
++          } else if (w[0] === 'obj' && w.length >= 12) {
++            o = { idx: +w[1], kind: w[2], id: +w[3], flags: +w[4], value: +w[5], group: +w[6],
++                  link: +w[7], x: +w[8], y: +w[9], w: +w[10], h: +w[11],
++                  text: self.rest(line, 12), items: [], sel: -1, low: 0, high: 1 };
++            form.objects.push(o);
++            byIndex[o.idx] = o;
++            sig.push(o.idx + ':' + o.kind + ':' + o.id + ':' + (o.flags & 3) + ':' + o.text);
++          } else if (w[0] === 'items' && byIndex[+w[1]]) {
++            byIndex[+w[1]].sel = +w[3];
++          } else if (w[0] === 'item' && byIndex[+w[1]]) {
++            byIndex[+w[1]].items.push(self.rest(line, 3));
++            sig.push('i');
++          } else if (w[0] === 'slider' && byIndex[+w[1]]) {
++            o = byIndex[+w[1]];
++            o.value = +w[2]; o.low = +w[3]; o.high = +w[4];
++            sig.push('s' + o.low + '-' + o.high);
++          }
++        });
++        form.sig = form.id + '/' + form.title + '/' + sig.join('|');
++        return form;
++      },
++
++      visible: function (o) { return (o.flags & 1) !== 0; },
++      enabled: function (o) { return (o.flags & 2) !== 0; },
++
++      tick: function () {
++        var r;
++        if (!bodUI.ready()) return;
++
++        if (!bodUI.menus) {
++          r = bodUI.read('bod_ui_menubar', 'bod_ui_menubar_seq');
++          if (r && r.text) bodUI.buildMenus(r.text);
++        }
++
++        r = bodUI.read('bod_ui_state', 'bod_ui_seq');
++        if (!r) return;
++        if (r.seq !== bodUI.seq) {
++          bodUI.seq = r.seq;
++          var form = bodUI.parse(r.text);
++          if (!bodUI.form || form.id !== bodUI.form.id) {
++            bodUI.settling = form.id;
++            bodUI.since = Date.now();
++          }
++          bodUI.form = form;
++        }
++        bodUI.reconcile();
++      },
++
++      reconcile: function () {
++        var form = bodUI.form;
++        if (!form) return;
++
++        // The level pack panel drives the game's own level and pack lists
++        // from the outside; while it is doing that they are its business.
++        if (!bodPack.panel.hidden || bodPack.poll) { bodUI.close(); return; }
++        if (!form.id) { bodUI.close(); return; }
++
++        if (!bodUI.panel.hidden) {
++          if (form.sig !== bodUI.shown) bodUI.present(form); else bodUI.update(form);
++          return;
++        }
++
++        // A dialog that has only just come up waits a moment: some of the
++        // game's own are answered on the way in and gone again in a fraction
++        // of a second, and a panel that flashed for those would be a dialog
++        // nobody asked for.
++        if (Date.now() - bodUI.since < bodUI.SETTLE) return;
++        bodUI.present(form);
++      },
++
++      // What is worth drawing, in the form's own reading order.
++      layout: function (form) {
++        var out = [];
++        form.objects.forEach(function (o) {
++          var text = (o.text || '').trim();
++          if (!bodUI.visible(o)) return;
++          if (['title', 'bitmap', 'gadget', 'scroll', 'other'].indexOf(o.kind) >= 0) return;
++          if (o.kind === 'list' && o.link) return;            // a popup's own
++          if ((o.kind === 'label' || o.kind === 'button' || o.kind === 'push') && !text) return;
++          // Parked off the side of the form: a Palm dialog keeps the controls
++          // of the page it is not showing out there rather than hiding them.
++          if (o.x >= form.w || o.y >= form.h) return;
++          out.push(o);
++        });
++        out.sort(function (a, b) {
++          if (Math.abs(a.y - b.y) > 5) return a.y - b.y;
++          return a.x - b.x;
++        });
++        return out;
++      },
++
++      listFor: function (form, trigger) {
++        var found = null;
++        form.objects.forEach(function (o) {
++          if (o.kind === 'list' && o.id === trigger.link) found = o;
++        });
++        return found;
++      },
++
++      control: function (form, o, group) {
++        var el, i;
++
++        if (o.kind === 'label' || (o.kind === 'field' && !bodUI.enabled(o))) {
++          el = document.createElement('span');
++          el.className = o.kind === 'label' ? 'dlg__text' : 'dlg__note';
++          el.textContent = o.text;
++          return el;
++        }
++
++        if (o.kind === 'check') {
++          el = document.createElement('button');
++          el.type = 'button';
++          el.textContent = (o.value ? '☑ ' : '☐ ') + o.text;
++          el.disabled = !bodUI.enabled(o);
++          el.onclick = function () { bodUI.send('press ' + o.idx); };
++          return el;
++        }
++
++        if (o.kind === 'push' && group.length > 1) {
++          el = document.createElement('span');
++          el.className = 'dlg__group';
++          group.forEach(function (g) {
++            var b = document.createElement('button');
++            b.type = 'button';
++            b.textContent = g.text;
++            if (g.value) b.className = 'is-on';
++            b.disabled = !bodUI.enabled(g);
++            b.onclick = function () { bodUI.send('press ' + g.idx); };
++            el.appendChild(b);
++          });
++          return el;
++        }
++
++        if (o.kind === 'popup' || o.kind === 'selector') {
++          var list = bodUI.listFor(form, o);
++          if (!list) {
++            el = document.createElement('button');
++            el.type = 'button';
++            el.textContent = o.text || '…';
++            el.onclick = function () { bodUI.send('press ' + o.idx); };
++            return el;
++          }
++          el = document.createElement('select');
++          list.items.forEach(function (name, n) {
++            var opt = document.createElement('option');
++            opt.textContent = name;
++            opt.value = String(n);
++            el.appendChild(opt);
++          });
++          if (list.sel >= 0) el.selectedIndex = list.sel;
++          el.disabled = !bodUI.enabled(o);
++          el.onchange = function () { bodUI.send('select ' + list.idx + ' ' + el.selectedIndex); };
++          return el;
++        }
++
++        if (o.kind === 'field') {
++          el = document.createElement('input');
++          el.type = 'text';
++          el.value = o.text;
++          el.dataset.idx = o.idx;
++          el.onchange = function () { bodUI.send('text ' + o.idx + ' ' + el.value); };
++          return el;
++        }
++
++        if (o.kind === 'slider') {
++          el = document.createElement('input');
++          el.type = 'range';
++          el.min = o.low; el.max = o.high > o.low ? o.high : o.low + 1; el.value = o.value;
++          el.disabled = !bodUI.enabled(o);
++          // One event when it is let go of, not one per pixel: the game
++          // answers a slider by redrawing the form it is on.
++          el.onchange = function () { bodUI.send('slider ' + o.idx + ' ' + el.value); };
++          return el;
++        }
++
++        if (o.kind === 'list' || o.kind === 'table') {
++          el = document.createElement('div');
++          el.className = 'dlg__list';
++          el.dataset.idx = o.idx;
++          o.items.forEach(function (name, n) {
++            var b = document.createElement('button');
++            b.type = 'button';
++            b.textContent = name;
++            if (n === o.sel) b.className = 'is-on';
++            b.onclick = function () {
++              bodUI.send('select ' + o.idx + ' ' + n);
++              if (form.def >= 0) bodUI.send('press ' + form.def);
++            };
++            el.appendChild(b);
++          });
++          if (!o.items.length) el.textContent = '';
++          return el;
++        }
++
++        el = document.createElement('button');   // button, repeat, anything else
++        el.type = 'button';
++        el.textContent = o.text;
++        el.disabled = !bodUI.enabled(o);
++        if (o.flags & 4) el.className = 'is-default';
++        el.onclick = function () { bodUI.send('press ' + o.idx); };
++        return el;
++      },
++
++      present: function (form) {
++        var objects = bodUI.layout(form), rows = [], row = [], y = -1000, bottom = 0, done = {};
++
++        bodSettings(false);
++        bodUI.head.textContent = form.title || 'Bike or Die';
++        bodUI.body.innerHTML = '';
++        bodUI.foot.innerHTML = '';
++
++        objects.forEach(function (o) {
++          if (o.y > y + 5 && row.length) { rows.push(row); row = []; }
++          if (!row.length) y = o.y;
++          row.push(o);
++          bottom = Math.max(bottom, o.y);
++        });
++        if (row.length) rows.push(row);
++
++        rows.forEach(function (line) {
++          // The bottom row of a Palm dialog is its buttons; here they belong
++          // under the panel, where a page keeps them.
++          var action = line[0].y >= bottom - 5 && line.every(function (o) { return o.kind === 'button'; }),
++              div = action ? bodUI.foot : document.createElement('div');
++
++          if (!action) div.className = 'dlg__row';
++          line.forEach(function (o) {
++            var group = [];
++            if (done[o.idx]) return;
++            if (o.kind === 'push' && o.group) {
++              objects.forEach(function (g) {
++                if (g.kind === 'push' && g.group === o.group) { group.push(g); done[g.idx] = 1; }
++              });
++            } else {
++              done[o.idx] = 1;
++            }
++            div.appendChild(bodUI.control(form, o, group));
++          });
++          if (!action && div.childNodes.length) bodUI.body.appendChild(div);
++        });
++
++        // Every dialog needs a way out, even one whose buttons the game has
++        // taken away while it thinks.
++        if (!bodUI.foot.childNodes.length) {
++          var close = document.createElement('button');
++          close.type = 'button';
++          close.textContent = 'Close';
++          close.onclick = function () { bodUI.send('close'); };
++          bodUI.foot.appendChild(close);
++        }
++
++        bodUI.shown = form.sig;
++        bodUI.panel.hidden = false;
++        var field = bodUI.body.querySelector('input[type="text"]');
++        if (field) field.focus();
++      },
++
++      // The same form again with something on it changed: the values move and
++      // the controls stay where they are, so what is being typed is not lost.
++      update: function (form) {
++        form.objects.forEach(function (o) {
++          var el;
++          if (o.kind === 'field' && bodUI.enabled(o)) {
++            el = bodUI.body.querySelector('input[data-idx="' + o.idx + '"]');
++            if (el && document.activeElement !== el && el.value !== o.text) el.value = o.text;
++          } else if (o.kind === 'list' && !o.link) {
++            el = bodUI.body.querySelector('.dlg__list[data-idx="' + o.idx + '"]');
++            if (el) {
++              Array.prototype.forEach.call(el.children, function (b, n) {
++                b.className = n === o.sel ? 'is-on' : '';
++              });
++            }
++          }
++        });
++        bodUI.form = form;
++      },
++
++      close: function () {
++        if (bodUI.panel.hidden) return;
++        bodUI.panel.hidden = true;
++        bodUI.shown = null;
++        canvas.focus();
++      },
++
++      // The game's own menu bar, in its own order. An item is picked by where
++      // it is rather than by what it says: the game has two menus called
++      // "Control" and three called "Hall of Fame".
++      buildMenus: function (text) {
++        var items = 0;
++        bodUI.menuList.innerHTML = '';
++        text.split('\n').forEach(function (line) {
++          var w = line.split(' '), label, el;
++          if (w[0] === 'menu') {
++            el = document.createElement('h3');
++            el.textContent = bodUI.rest(line, 2);
++            bodUI.menuList.appendChild(el);
++          } else if (w[0] === 'mitem' && w.length >= 4) {
++            label = bodUI.rest(line, 4);
++            if (label.charAt(0) === '-') {
++              bodUI.menuList.appendChild(document.createElement('hr'));
++              return;
++            }
++            el = document.createElement('button');
++            el.type = 'button';
++            el.textContent = label;
++            el.onclick = function () {
++              bodUI.menuPanel.hidden = true;
++              bodUI.menuButton.setAttribute('aria-expanded', 'false');
++              bodUI.send('pick ' + w[1] + ' ' + w[2]);
++            };
++            bodUI.menuList.appendChild(el);
++            items++;
++          }
++        });
++        if (items) bodUI.menus = true;
++      },
++
++      openMenu: function (open) {
++        if (open) bodSettings(false);
++        bodUI.menuPanel.hidden = !open;
++        bodUI.menuButton.setAttribute('aria-expanded', open ? 'true' : 'false');
++        if (!open) canvas.focus();
++      }
++    };
++
++    bodUI.menuButton.addEventListener('click', function () {
++      bodUI.openMenu(bodUI.menuPanel.hidden);
++    });
++    document.getElementById('menu-close').addEventListener('click', function () { bodUI.openMenu(false); });
++    setInterval(function () { try { bodUI.tick(); } catch (e) { /* not loaded yet */ } }, 200);
++
 +    // Safari parks an AudioContext in "interrupted" -- not the "suspended"
 +    // that SDL's own autoplay recovery looks for, so neither its resume-on-
 +    // gesture handler nor its silence fallback ever fires, and the game plays
@@ -1889,10 +2351,10 @@ index 069638e..f8adbda 100644
 +  launcher = app
  }
 diff --git a/src/liblsdl2/Makefile b/src/liblsdl2/Makefile
-index a8b7c26..c5f6c7b 100644
+index a8b7c26..c8e577c 100644
 --- a/src/liblsdl2/Makefile
 +++ b/src/liblsdl2/Makefile
-@@ -16,6 +16,17 @@ STATIC=1
+@@ -16,6 +16,18 @@ STATIC=1
  else ifeq ($(OSNAME),Emscripten)
  STATIC=2
  CUSTOMFLAGS=-s USE_SDL=2
@@ -1901,8 +2363,9 @@ index a8b7c26..c5f6c7b 100644
 +else ifeq ($(OSNAME),Darwin)
 +SDL_PREFIX := $(shell sdl2-config --prefix)
 +CUSTOMFLAGS=$(MIXER_FLAGS) $(OPENGL_FLAGS) -I$(SDL_PREFIX)/include
-+# The window's own level controls are Objective-C (liblsdl2_mac.m).
-+MAC_OBJS=liblsdl2_mac.o
++# The window's own level controls and the sheet that draws the game's dialogs
++# are Objective-C (liblsdl2_mac.m, liblsdl2_mac_form.m).
++MAC_OBJS=liblsdl2_mac.o liblsdl2_mac_form.o
 +EXTDEPS=$(MAC_OBJS)
 +EXTCLEAN=$(MAC_OBJS)
 +LIBS=$(MAC_OBJS) -L$(SDL_PREFIX)/lib -lSDL2 $(MIXER_LIBS) -framework OpenGL -framework Cocoa
@@ -1910,7 +2373,7 @@ index a8b7c26..c5f6c7b 100644
  else ifeq ($(OSNAME),Msys)
  CUSTOMFLAGS=$(MIXER_FLAGS) $(OPENGL_FLAGS)
  LIBS=-lSDL2 -lversion -limm32 -lgdi32 -lsetupapi -lwinmm -lole32 -loleaut32 $(MIXER_LIBS)
-@@ -25,3 +36,10 @@ LIBS=-lSDL2 $(MIXER_LIBS) $(OPENGL_LIBS)
+@@ -25,3 +37,10 @@ LIBS=-lSDL2 $(MIXER_LIBS) $(OPENGL_LIBS)
  endif
  
  include ../lib.mak
@@ -2550,10 +3013,10 @@ index b8e2f67..ed177da 100644
  #endif
 diff --git a/src/liblsdl2/liblsdl2_mac.h b/src/liblsdl2/liblsdl2_mac.h
 new file mode 100644
-index 0000000..bfd9b35
+index 0000000..3a3118a
 --- /dev/null
 +++ b/src/liblsdl2/liblsdl2_mac.h
-@@ -0,0 +1,18 @@
+@@ -0,0 +1,27 @@
 +#ifndef LIBLSDL2_MAC_H
 +#define LIBLSDL2_MAC_H
 +
@@ -2571,13 +3034,22 @@ index 0000000..bfd9b35
 +/* debug() for the Objective-C side, which does not include PumpkinOS. */
 +void liblsdl2_log(const char *msg);
 +
++/* The game's own menus and dialogs, drawn by the window (liblsdl2_mac_form.m).
++ * liblsdl2_mac_attach() puts these up with the rest. */
++void liblsdl2_mac_form_attach(void *nswindow);
++int liblsdl2_mac_form_wants_keys(void);
++
++/* Whether the level pack sheet is up or waiting for the game: while it is,
++ * the game's level and pack lists belong to it and not to the form sheet. */
++int liblsdl2_mac_pack_busy(void);
++
 +#endif
 diff --git a/src/liblsdl2/liblsdl2_mac.m b/src/liblsdl2/liblsdl2_mac.m
 new file mode 100644
-index 0000000..3bc107d
+index 0000000..5eef8d1
 --- /dev/null
 +++ b/src/liblsdl2/liblsdl2_mac.m
-@@ -0,0 +1,798 @@
+@@ -0,0 +1,812 @@
 +/* Bike or Die's levels and level packs, from the macOS window itself.
 + *
 + * The browser build has a row of controls above the screen -- Level pack,
@@ -2730,6 +3202,7 @@ index 0000000..3bc107d
 +@interface BODLevelControls : NSObject <NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSMenuItemValidation>
 +- (void)attachTo:(NSWindow *)window;
 +- (BOOL)wantsKeys;
++- (BOOL)busy;
 +@end
 +
 +@implementation BODLevelControls {
@@ -2909,6 +3382,11 @@ index 0000000..3bc107d
 +
 +- (BOOL)wantsKeys {
 +  return _sheet != nil && (_sheet.sheetParent != nil || _sheet.isVisible);
++}
++
++/* Up, or waiting for the game to answer a command of ours. */
++- (BOOL)busy {
++  return [self wantsKeys] || _pending;
 +}
 +
 +/* ---------------------------------------------------------- the row's text */
@@ -3370,11 +3848,1060 @@ index 0000000..3bc107d
 +  @autoreleasepool {
 +    controls = [[BODLevelControls alloc] init];
 +    [controls attachTo:nswindow];
++    liblsdl2_mac_form_attach((__bridge void *)nswindow);
 +  }
 +}
 +
 +int liblsdl2_mac_wants_keys(void) {
-+  return controls != nil && [controls wantsKeys];
++  return (controls != nil && [controls wantsKeys]) || liblsdl2_mac_form_wants_keys();
++}
++
++/* The pack sheet walks the game through its own level and pack dialogs; they
++ * are hidden like every other form, and while that is going on the form sheet
++ * leaves them alone. */
++int liblsdl2_mac_pack_busy(void) {
++  return controls != nil && [controls busy];
++}
+diff --git a/src/liblsdl2/liblsdl2_mac_form.m b/src/liblsdl2/liblsdl2_mac_form.m
+new file mode 100644
+index 0000000..fb4832e
+--- /dev/null
++++ b/src/liblsdl2/liblsdl2_mac_form.m
+@@ -0,0 +1,1035 @@
++/* The game's menus and dialogs, drawn by the window instead of by the game.
++ *
++ * Bike or Die's own UI is Palm OS 5's, and none of it is drawn any more:
++ * bodui.c keeps every form off the screen and publishes what is on it. This
++ * is the other half -- the menu bar the game's own MBAR describes, and one
++ * sheet that can draw any of its twenty-five forms and the alerts it puts
++ * up, with real controls, and hand what is done to them back to the form.
++ *
++ * It is one renderer rather than twenty-five hand-written panels, and it is
++ * built out of what the form says about itself: its objects, their kinds and
++ * their places on it. A Palm form is laid out in absolute coordinates, so
++ * the objects that share a line on the Palm screen are the ones that belong
++ * together, and that is how the rows here are found -- by the geometry the
++ * game already has, not by a table of forms kept in step with it by hand. A
++ * form whose buttons are relabelled, or which the game has never shown here
++ * before, comes out right without anything being added.
++ *
++ * What the Palm objects become:
++ *
++ *     button, repeat           a push button; the form's default gets Return
++ *     check                    a checkbox
++ *     push (a group of them)   one segmented control
++ *     popup + its list         a pop-up button of the list's items
++ *     list on its own          a table, with Return on the default button
++ *     field                    a text field, given back when it is done
++ *     slider                   a slider
++ *     label, title             text; the title is the sheet's heading
++ *
++ * Everything is a command to bodui.c: press, value, select, text, close.
++ * Nothing here knows what any particular form means -- which is what keeps
++ * it working for the forms nobody thought about.
++ *
++ * All of it runs on the main thread, inside SDL's event pump, like the level
++ * controls next door: the timer that polls, the controls' actions, and the
++ * sheet itself.
++ */
++
++#import <Cocoa/Cocoa.h>
++
++#include <dlfcn.h>
++#include <mach-o/dyld.h>
++#include <string.h>
++#include <unistd.h>
++
++#include <SDL2/SDL.h>
++
++#include "liblsdl2_mac.h"
++
++#define POLL_FAST   0.12   /* seconds between looks while a dialog is up */
++#define POLL_IDLE   0.20   /* and otherwise: this is how fast one appears */
++#define SETTLE      0.45   /* how long a new dialog must stay up to be shown */
++
++/* the flags bodui.c publishes; 16, "drawn as a bitmap", is of no use here */
++#define BOD_VISIBLE    1
++#define BOD_ENABLED    2
++#define BOD_DEFAULT    4
++#define BOD_FOCUS      8
++
++static void form_log(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
++
++static void form_log(NSString *format, ...) {
++  NSString *text;
++  va_list args;
++
++  va_start(args, format);
++  text = [[NSString alloc] initWithFormat:format arguments:args];
++  va_end(args);
++  liblsdl2_log(text.UTF8String);
++}
++
++/* ------------------------------------------------------- reaching bodui.c */
++
++static void (*ui_command)(const char *cmd);
++static const char *(*ui_state)(void);
++static uint32_t (*ui_seq)(void);
++static const char *(*ui_menubar)(void);
++static uint32_t (*ui_menubar_seq)(void);
++
++/* libpumpkin is loaded after this library, by libos, and not necessarily
++ * into the global namespace; if the plain lookup misses, find it among the
++ * loaded images by name and ask it directly. */
++static void *ui_symbol(const char *name) {
++  static const char suffix[] = "/libpumpkin.dylib";
++  const char *image;
++  void *sym, *handle;
++  size_t n, m = sizeof(suffix) - 1;
++  uint32_t i;
++
++  if ((sym = dlsym(RTLD_DEFAULT, name)) != NULL) return sym;
++
++  for (i = 0; i < _dyld_image_count(); i++) {
++    image = _dyld_get_image_name(i);
++    n = image ? strlen(image) : 0;
++    if (n < m || strcmp(image + n - m, suffix) != 0) continue;
++    if ((handle = dlopen(image, RTLD_LAZY | RTLD_NOLOAD)) != NULL) {
++      sym = dlsym(handle, name);
++      dlclose(handle);
++      if (sym) return sym;
++    }
++  }
++
++  return NULL;
++}
++
++static BOOL ui_ready(void) {
++  if (ui_command && ui_state && ui_seq) return YES;
++  ui_command = ui_symbol("bod_ui_command");
++  ui_state = ui_symbol("bod_ui_state");
++  ui_seq = ui_symbol("bod_ui_seq");
++  ui_menubar = ui_symbol("bod_ui_menubar");
++  ui_menubar_seq = ui_symbol("bod_ui_menubar_seq");
++
++  return ui_command && ui_state && ui_seq;
++}
++
++static void ui_send(NSString *command) {
++  if (!ui_ready()) return;
++  form_log(@"dialog: %@", command);
++  ui_command(command.UTF8String);
++}
++
++/* The published text, taken whole: the sequence number is odd while the
++ * game's thread is writing it and moves on when it is done, so a copy made
++ * under a write is noticed and made again. */
++static NSString *ui_read(const char *(*text)(void), uint32_t (*seq)(void), uint32_t *out) {
++  NSString *copy = nil;
++  uint32_t s1 = 0;
++  int tries;
++
++  if (text == NULL || seq == NULL) return nil;
++
++  for (tries = 0; tries < 50 && copy == nil; tries++) {
++    s1 = seq();
++    if ((s1 & 1) == 0) {
++      copy = [NSString stringWithUTF8String:text()];
++      if (seq() != s1) copy = nil;
++    }
++    if (copy == nil) usleep(100);
++  }
++  if (out) *out = s1;
++
++  return copy;
++}
++
++/* ------------------------------------------------------------- the model */
++
++@interface BODObject : NSObject
++@property (nonatomic) NSInteger index;
++@property (nonatomic) NSInteger objId;
++@property (nonatomic, copy) NSString *kind;
++@property (nonatomic) NSInteger flags;
++@property (nonatomic) NSInteger value;
++@property (nonatomic) NSInteger group;
++@property (nonatomic) NSInteger link;
++@property (nonatomic) NSRect frame;
++@property (nonatomic, copy) NSString *text;
++@property (nonatomic, strong) NSMutableArray<NSString *> *items;
++@property (nonatomic) NSInteger selection;
++@property (nonatomic) NSInteger low;
++@property (nonatomic) NSInteger high;
++- (BOOL)visible;
++- (BOOL)enabled;
++- (BOOL)isDefault;
++- (BOOL)hasFocus;
++@end
++
++@implementation BODObject
++- (BOOL)visible { return (self.flags & BOD_VISIBLE) != 0; }
++- (BOOL)enabled { return (self.flags & BOD_ENABLED) != 0; }
++- (BOOL)isDefault { return (self.flags & BOD_DEFAULT) != 0; }
++- (BOOL)hasFocus { return (self.flags & BOD_FOCUS) != 0; }
++@end
++
++@interface BODFormState : NSObject
++@property (nonatomic) NSInteger formId;
++@property (nonatomic) BOOL modal;
++@property (nonatomic) NSSize size;
++@property (nonatomic, copy) NSString *title;
++@property (nonatomic) NSInteger defaultIndex;
++@property (nonatomic, strong) NSMutableArray<BODObject *> *objects;
++@property (nonatomic, copy) NSString *signature;
++@end
++
++@implementation BODFormState
++@end
++
++/* One line, "obj 7 push 20 3 0 1 0 39 16 28 12 Mute": the columns are
++ * fixed and the text is the rest of the line, so it may hold spaces. */
++static BODObject *parse_object(NSArray<NSString *> *words, NSString *line) {
++  BODObject *o;
++  NSRange rest;
++  NSInteger i;
++
++  if (words.count < 12) return nil;
++
++  o = [[BODObject alloc] init];
++  o.index = words[1].integerValue;
++  o.kind = words[2];
++  o.objId = words[3].integerValue;
++  o.flags = words[4].integerValue;
++  o.value = words[5].integerValue;
++  o.group = words[6].integerValue;
++  o.link = words[7].integerValue;
++  o.frame = NSMakeRect(words[8].doubleValue, words[9].doubleValue, words[10].doubleValue, words[11].doubleValue);
++  o.items = [NSMutableArray array];
++  o.selection = -1;
++
++  /* the text is whatever follows the twelfth word */
++  rest.location = 0;
++  for (i = 0; i < 12; i++) {
++    NSRange space = [line rangeOfString:@" " options:0 range:NSMakeRange(rest.location, line.length - rest.location)];
++    if (space.location == NSNotFound) { rest.location = line.length; break; }
++    rest.location = space.location + 1;
++  }
++  o.text = rest.location < line.length ? [line substringFromIndex:rest.location] : @"";
++
++  return o;
++}
++
++static BODFormState *parse_form(NSString *text) {
++  NSArray<NSString *> *lines = [text componentsSeparatedByString:@"\n"];
++  NSMutableDictionary<NSNumber *, BODObject *> *byIndex = [NSMutableDictionary dictionary];
++  NSMutableString *signature = [NSMutableString string];
++  BODFormState *form = [[BODFormState alloc] init];
++  BODObject *o;
++
++  form.objects = [NSMutableArray array];
++  form.defaultIndex = -1;
++  form.title = @"";
++
++  for (NSString *line in lines) {
++    NSArray<NSString *> *w = [line componentsSeparatedByString:@" "];
++    if (w.count == 0 || line.length == 0) continue;
++
++    if ([w[0] isEqualToString:@"form"]) {
++      form.formId = w.count > 1 ? w[1].integerValue : 0;
++      form.modal = w.count > 2 && w[2].integerValue != 0;
++      form.size = w.count > 4 ? NSMakeSize(w[3].doubleValue, w[4].doubleValue) : NSMakeSize(160, 160);
++      if (form.formId == 0) return form;
++
++    } else if ([w[0] isEqualToString:@"title"]) {
++      form.title = line.length > 6 ? [line substringFromIndex:6] : @"";
++
++    } else if ([w[0] isEqualToString:@"default"] && w.count > 1) {
++      form.defaultIndex = w[1].integerValue;
++
++    } else if ([w[0] isEqualToString:@"obj"]) {
++      if ((o = parse_object(w, line)) != nil) {
++        [form.objects addObject:o];
++        byIndex[@(o.index)] = o;
++        [signature appendFormat:@"%ld:%@:%ld:%ld:%@|", (long)o.index, o.kind, (long)o.objId, (long)(o.flags & (BOD_VISIBLE | BOD_ENABLED)), o.text];
++      }
++
++    } else if ([w[0] isEqualToString:@"slider"] && w.count > 4) {
++      if ((o = byIndex[@(w[1].integerValue)]) != nil) {
++        o.value = w[2].integerValue;
++        o.low = w[3].integerValue;
++        o.high = w[4].integerValue;
++        [signature appendFormat:@"s%ld-%ld|", (long)o.low, (long)o.high];
++      }
++
++    } else if ([w[0] isEqualToString:@"items"] && w.count > 3) {
++      if ((o = byIndex[@(w[1].integerValue)]) != nil) o.selection = w[3].integerValue;
++
++    } else if ([w[0] isEqualToString:@"item"] && w.count > 2) {
++      if ((o = byIndex[@(w[1].integerValue)]) != nil) {
++        NSRange r = [line rangeOfString:@" " options:0 range:NSMakeRange(0, line.length)];
++        r = [line rangeOfString:@" " options:0 range:NSMakeRange(r.location + 1, line.length - r.location - 1)];
++        r = [line rangeOfString:@" " options:0 range:NSMakeRange(r.location + 1, line.length - r.location - 1)];
++        [o.items addObject:r.location == NSNotFound ? @"" : [line substringFromIndex:r.location + 1]];
++        [signature appendFormat:@"i%ld|", (long)o.items.count];
++      }
++    }
++  }
++
++  form.signature = [NSString stringWithFormat:@"%ld/%@/%@", (long)form.formId, form.title, signature];
++
++  return form;
++}
++
++/* ------------------------------------------------------------- the sheet */
++
++@interface BODFormSheet : NSObject <NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSMenuItemValidation>
++- (void)attachTo:(NSWindow *)window;
++- (BOOL)wantsKeys;
++@end
++
++@implementation BODFormSheet {
++  __weak NSWindow *_window;
++
++  NSPanel *_sheet;
++  NSTextField *_heading;
++  NSStackView *_body;
++  NSStackView *_footer;
++  NSScrollView *_scroll;
++
++  BODFormState *_form;
++  NSString *_shown;                                  /* the signature on screen */
++  NSMutableDictionary<NSNumber *, NSView *> *_views; /* object index -> its control */
++  NSMutableDictionary<NSNumber *, NSTableView *> *_tables;
++  NSMutableArray<NSMenuItem *> *_menuItems;
++
++  NSTimer *_poll;
++  uint32_t _seq;
++  BOOL _menusBuilt;
++
++  /* Since when the game has had this form up, so that one it puts up and
++   * answers itself is never shown. */
++  NSDate *_settlingSince;
++
++  NSLayoutConstraint *_widthConstraint;
++  NSLayoutConstraint *_heightConstraint;
++  CGFloat _bodyHeight;
++
++  /* what each field last had, so giving one back unchanged says nothing */
++  NSMutableDictionary<NSNumber *, NSString *> *_fieldText;
++}
++
++- (void)attachTo:(NSWindow *)window {
++  _window = window;
++  _views = [NSMutableDictionary dictionary];
++  _tables = [NSMutableDictionary dictionary];
++  _menuItems = [NSMutableArray array];
++  _fieldText = [NSMutableDictionary dictionary];
++  _seq = 0xFFFFFFFF;
++  [self schedulePoll:POLL_IDLE];
++}
++
++- (BOOL)wantsKeys {
++  return _sheet != nil && (_sheet.sheetParent != nil || _sheet.isVisible);
++}
++
++- (void)schedulePoll:(NSTimeInterval)interval {
++  if (_poll && _poll.timeInterval == interval) return;
++  [_poll invalidate];
++  _poll = [NSTimer timerWithTimeInterval:interval target:self selector:@selector(tick:) userInfo:nil repeats:YES];
++  _poll.tolerance = interval / 4;
++  [[NSRunLoop mainRunLoop] addTimer:_poll forMode:NSRunLoopCommonModes];
++}
++
++/* --------------------------------------------------- the game's menu bar */
++
++/* The menus the game has, in its own order, as the menu bar's own menus.
++ * Picking one is "pick <menu> <item>": the game has two menus called
++ * "Control" and three called "Hall of Fame", so an item is named by where
++ * it is rather than by what it says. */
++- (void)buildMenus:(NSString *)text {
++  NSMenu *bar = NSApp.mainMenu, *menu = nil;
++  NSMenuItem *top = nil;
++  NSInteger at, menus = 0, items = 0;
++
++  if (bar == nil || text.length == 0) return;
++
++  at = NSApp.windowsMenu ? [bar indexOfItemWithSubmenu:NSApp.windowsMenu] : -1;
++  if (at < 0) at = bar.numberOfItems;
++
++  for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
++    NSArray<NSString *> *w = [line componentsSeparatedByString:@" "];
++    if (w.count < 2) continue;
++
++    if ([w[0] isEqualToString:@"menu"]) {
++      NSString *title = line.length > 7 ? [line substringFromIndex:7] : @"";
++      menu = [[NSMenu alloc] initWithTitle:title];
++      menu.autoenablesItems = NO;
++      top = [[NSMenuItem alloc] initWithTitle:title action:NULL keyEquivalent:@""];
++      top.submenu = menu;
++      [bar insertItem:top atIndex:at++];
++      menus++;
++
++    } else if ([w[0] isEqualToString:@"mitem"] && w.count >= 4 && menu != nil) {
++      NSRange r = NSMakeRange(0, line.length);
++      NSString *label;
++      NSMenuItem *item;
++      NSInteger i;
++
++      for (i = 0; i < 4; i++) {
++        NSRange space = [line rangeOfString:@" " options:0 range:r];
++        if (space.location == NSNotFound) { r.location = line.length; break; }
++        r = NSMakeRange(space.location + 1, line.length - space.location - 1);
++      }
++      label = r.location < line.length ? [line substringFromIndex:r.location] : @"";
++
++      if ([label hasPrefix:@"-"]) {
++        [menu addItem:[NSMenuItem separatorItem]];
++        continue;
++      }
++
++      item = [[NSMenuItem alloc] initWithTitle:label action:@selector(pickMenu:) keyEquivalent:@""];
++      item.target = self;
++      item.tag = w[1].integerValue * 100 + w[2].integerValue;
++      [menu addItem:item];
++      [_menuItems addObject:item];
++      items++;
++    }
++  }
++
++  _menusBuilt = YES;
++  form_log(@"menu bar: %ld of the game's menus, %ld items", (long)menus, (long)items);
++}
++
++- (IBAction)pickMenu:(NSMenuItem *)sender {
++  ui_send([NSString stringWithFormat:@"pick %ld %ld", (long)(sender.tag / 100), (long)(sender.tag % 100)]);
++}
++
++/* The game takes a menu item only when it has the screen itself, and the
++ * level controls' own sheet is a dialog like any other. */
++- (BOOL)validateMenuItem:(NSMenuItem *)item {
++  return ![self wantsKeys] && !liblsdl2_mac_pack_busy();
++}
++
++/* ------------------------------------------------------------ the polling */
++
++- (void)tick:(NSTimer *)timer {
++  BODFormState *form;
++  NSString *text;
++  uint32_t seq = 0;
++
++  if (!ui_ready()) return;
++
++  if (!_menusBuilt && ui_menubar && ui_menubar_seq) {
++    if ((text = ui_read(ui_menubar, ui_menubar_seq, NULL)) != nil && text.length) [self buildMenus:text];
++  }
++
++  /* Reading is cheap; parsing is not, so that is done only when the game has
++   * published something new. What to do about it is decided every time --
++   * a dialog that comes up and then says nothing more still has to be shown
++   * once it has stood still long enough. */
++  if ((text = ui_read(ui_state, ui_seq, &seq)) == nil) return;
++  if (seq != _seq) {
++    _seq = seq;
++    form = parse_form(text);
++    if (form.formId != _form.formId) _settlingSince = [NSDate date];
++    _form = form;
++  }
++
++  [self reconcile];
++}
++
++/* What the window should be showing, given what the game has up. */
++- (void)reconcile {
++  BODFormState *form = _form;
++
++  if (form == nil) return;
++
++  /* The level pack sheet drives the game's own level and pack lists from the
++   * outside; while it is doing that, those dialogs are its business. */
++  if (liblsdl2_mac_pack_busy()) {
++    if (_shown != nil) [self close];
++    return;
++  }
++
++  if (form.formId == 0) {
++    [self close];
++    return;
++  }
++
++  /* A form already on screen follows the game at once: what it says has
++   * changed because something was pressed on it. */
++  if (_shown != nil) {
++    if (![form.signature isEqualToString:_shown]) [self present:form];
++    else [self update:form];
++    return;
++  }
++
++  /* One that has only just come up waits a moment first. Some of the game's
++   * dialogs are answered on the way in and are gone again in a fraction of a
++   * second -- the registration dialog is answered by Form.c before anyone
++   * sees it -- and a sheet that appeared for those would be a flash of a
++   * dialog nobody asked for, over a game that had not started yet. */
++  if ([[NSDate date] timeIntervalSinceDate:_settlingSince] < SETTLE) return;
++
++  [self present:form];
++}
++
++/* -------------------------------------------------------- building a row */
++
++/* The objects that are worth drawing, top to bottom and left to right --
++ * which on a Palm form is reading order. */
++- (NSArray<BODObject *> *)layoutObjects:(BODFormState *)form {
++  NSMutableArray<BODObject *> *out = [NSMutableArray array];
++
++  for (BODObject *o in form.objects) {
++    NSString *text = [o.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
++
++    if (![o visible]) continue;
++    if ([o.kind isEqualToString:@"title"]) continue;          /* the heading */
++    if ([o.kind isEqualToString:@"bitmap"]) continue;
++    if ([o.kind isEqualToString:@"gadget"]) continue;
++    if ([o.kind isEqualToString:@"scroll"]) continue;
++    if ([o.kind isEqualToString:@"other"]) continue;
++    if ([o.kind isEqualToString:@"list"] && o.link != 0) continue;   /* a popup's */
++    if ([o.kind isEqualToString:@"label"] && text.length == 0) continue;
++    if (([o.kind isEqualToString:@"button"] || [o.kind isEqualToString:@"push"]) && text.length == 0) continue;
++
++    /* Parked off the side of the form: Palm dialogs keep the controls of
++     * the page they are not showing out there rather than hiding them. */
++    if (NSMinX(o.frame) >= form.size.width || NSMinY(o.frame) >= form.size.height) continue;
++
++    [out addObject:o];
++  }
++
++  [out sortUsingComparator:^NSComparisonResult(BODObject *a, BODObject *b) {
++    if (fabs(NSMinY(a.frame) - NSMinY(b.frame)) > 5) return NSMinY(a.frame) < NSMinY(b.frame) ? NSOrderedAscending : NSOrderedDescending;
++    if (NSMinX(a.frame) != NSMinX(b.frame)) return NSMinX(a.frame) < NSMinX(b.frame) ? NSOrderedAscending : NSOrderedDescending;
++    return NSOrderedSame;
++  }];
++
++  return out;
++}
++
++- (NSFont *)labelFont {
++  return [NSFont systemFontOfSize:NSFont.systemFontSize];
++}
++
++- (BODObject *)listForTrigger:(BODObject *)trigger in:(BODFormState *)form {
++  for (BODObject *o in form.objects) {
++    if ([o.kind isEqualToString:@"list"] && o.objId == trigger.link) return o;
++  }
++
++  return nil;
++}
++
++/* A control for one object, or for a whole group of push buttons. */
++- (NSView *)viewFor:(BODObject *)o in:(BODFormState *)form group:(NSArray<BODObject *> *)group {
++  if ([o.kind isEqualToString:@"label"]) {
++    NSTextField *label = [NSTextField wrappingLabelWithString:o.text];
++    label.font = [self labelFont];
++    label.textColor = NSColor.labelColor;
++    label.selectable = NO;
++    return label;
++  }
++
++  if ([o.kind isEqualToString:@"check"]) {
++    NSButton *check = [NSButton checkboxWithTitle:o.text target:self action:@selector(hit:)];
++    check.tag = o.index;
++    check.state = o.value ? NSControlStateValueOn : NSControlStateValueOff;
++    check.enabled = [o enabled];
++    return check;
++  }
++
++  if ([o.kind isEqualToString:@"push"] && group.count > 1) {
++    NSSegmentedControl *seg = [[NSSegmentedControl alloc] init];
++    NSInteger i;
++
++    seg.segmentCount = group.count;
++    seg.trackingMode = NSSegmentSwitchTrackingSelectOne;
++    seg.segmentStyle = NSSegmentStyleRounded;
++    for (i = 0; i < (NSInteger)group.count; i++) {
++      [seg setLabel:group[i].text forSegment:i];
++      [seg setTag:group[i].index forSegment:i];
++      if (group[i].value) seg.selectedSegment = i;
++    }
++    seg.target = self;
++    seg.action = @selector(hitSegment:);
++    seg.enabled = [o enabled];
++    return seg;
++  }
++
++  if ([o.kind isEqualToString:@"push"]) {
++    NSButton *push = [NSButton buttonWithTitle:o.text target:self action:@selector(hit:)];
++    push.tag = o.index;
++    push.bezelStyle = NSBezelStyleRounded;
++    [push setButtonType:NSButtonTypePushOnPushOff];
++    push.state = o.value ? NSControlStateValueOn : NSControlStateValueOff;
++    push.enabled = [o enabled];
++    return push;
++  }
++
++  if ([o.kind isEqualToString:@"popup"] || [o.kind isEqualToString:@"selector"]) {
++    BODObject *list = [self listForTrigger:o in:form];
++    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
++
++    if (list) {
++      [popup addItemsWithTitles:list.items.count ? list.items : @[ o.text.length ? o.text : @"—" ]];
++      if (list.selection >= 0 && list.selection < (NSInteger)popup.numberOfItems) [popup selectItemAtIndex:list.selection];
++      popup.tag = list.index;
++    } else {
++      /* A trigger with no list of its own: the game fills its label in and
++       * opens something else when it is pressed. */
++      [popup addItemWithTitle:o.text.length ? o.text : @"…"];
++      popup.tag = -1;
++    }
++    popup.target = self;
++    popup.action = @selector(hitPopup:);
++    popup.enabled = [o enabled];
++    [popup setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
++    return popup;
++  }
++
++  if ([o.kind isEqualToString:@"field"] && ![o enabled]) {
++    /* A field the game writes and nobody types into: what it says, as text. */
++    NSTextField *label = [NSTextField wrappingLabelWithString:o.text];
++    label.font = [self labelFont];
++    label.textColor = NSColor.labelColor;
++    label.selectable = YES;
++    return label;
++  }
++
++  if ([o.kind isEqualToString:@"field"]) {
++    NSTextField *field = [NSTextField textFieldWithString:o.text];
++    field.tag = o.index;
++    _fieldText[@(o.index)] = o.text;
++    field.delegate = self;
++    field.target = self;
++    field.action = @selector(hitField:);
++    [field.widthAnchor constraintGreaterThanOrEqualToConstant:MAX(120, o.frame.size.width * 1.6)].active = YES;
++    return field;
++  }
++
++  if ([o.kind isEqualToString:@"slider"]) {
++    NSSlider *slider = [NSSlider sliderWithValue:o.value minValue:o.low maxValue:o.high > o.low ? o.high : o.low + 1
++                                          target:self action:@selector(hitSlider:)];
++    slider.tag = o.index;
++    slider.enabled = [o enabled];
++    /* One event when it is let go of, not one per pixel: the game answers a
++     * slider by redrawing the form it is on. */
++    slider.continuous = NO;
++    [slider.widthAnchor constraintGreaterThanOrEqualToConstant:160].active = YES;
++    return slider;
++  }
++
++  if ([o.kind isEqualToString:@"list"] || [o.kind isEqualToString:@"table"]) {
++    NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"item"];
++    NSTableView *table = [[NSTableView alloc] initWithFrame:NSZeroRect];
++    NSScrollView *scroll = [[NSScrollView alloc] init];
++
++    column.resizingMask = NSTableColumnAutoresizingMask;
++    [table addTableColumn:column];
++    table.headerView = nil;
++    table.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingStyle;
++    table.style = NSTableViewStyleFullWidth;
++    table.rowHeight = 20;
++    table.tag = o.index;
++    table.dataSource = self;
++    table.delegate = self;
++    table.target = self;
++    table.doubleAction = @selector(hitTableTwice:);
++    if (o.selection >= 0 && o.selection < (NSInteger)o.items.count) {
++      [table selectRowIndexes:[NSIndexSet indexSetWithIndex:o.selection] byExtendingSelection:NO];
++    }
++    _tables[@(o.index)] = table;
++
++    scroll.documentView = table;
++    scroll.hasVerticalScroller = YES;
++    scroll.autohidesScrollers = YES;
++    scroll.borderType = NSBezelBorder;
++    [scroll.heightAnchor constraintEqualToConstant:MIN(260, MAX(80, o.items.count * 20 + 8))].active = YES;
++    return scroll;
++  }
++
++  /* button, repeat, and anything else with a label */
++  {
++    NSButton *button = [NSButton buttonWithTitle:o.text target:self action:@selector(hit:)];
++    button.tag = o.index;
++    button.enabled = [o enabled];
++    if ([o isDefault]) button.keyEquivalent = @"\r";
++    return button;
++  }
++}
++
++/* The bottom row of a Palm dialog is its buttons; here they belong under the
++ * sheet, where a Mac keeps them. */
++- (BOOL)isActionRow:(NSArray<BODObject *> *)row of:(NSArray<BODObject *> *)all {
++  CGFloat bottom = 0;
++
++  if (row.count == 0) return NO;
++  for (BODObject *o in all) bottom = MAX(bottom, NSMinY(o.frame));
++  if (NSMinY(row.firstObject.frame) < bottom - 5) return NO;
++
++  for (BODObject *o in row) {
++    if (![o.kind isEqualToString:@"button"]) return NO;
++  }
++
++  return YES;
++}
++
++- (void)buildBody:(BODFormState *)form {
++  NSArray<BODObject *> *objects = [self layoutObjects:form];
++
++  _bodyHeight = 0;
++  NSMutableArray<BODObject *> *row = [NSMutableArray array];
++  NSMutableArray<NSArray<BODObject *> *> *rows = [NSMutableArray array];
++  CGFloat y = -1000;
++
++  [_views removeAllObjects];
++  [_tables removeAllObjects];
++  for (NSView *view in _body.views.copy) [_body removeView:view];
++  for (NSView *view in _footer.views.copy) [_footer removeView:view];
++
++  for (BODObject *o in objects) {
++    if (NSMinY(o.frame) > y + 5 && row.count) {
++      [rows addObject:row.copy];
++      [row removeAllObjects];
++    }
++    if (row.count == 0) y = NSMinY(o.frame);
++    [row addObject:o];
++  }
++  if (row.count) [rows addObject:row.copy];
++
++  for (NSArray<BODObject *> *line in rows) {
++    NSStackView *stack = [[NSStackView alloc] init];
++    BOOL action = [self isActionRow:line of:objects];
++    NSMutableSet<NSNumber *> *done = [NSMutableSet set];
++
++    stack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
++    stack.alignment = NSLayoutAttributeCenterY;
++    stack.spacing = 8;
++    stack.distribution = NSStackViewDistributionFill;
++
++    for (BODObject *o in line) {
++      NSMutableArray<BODObject *> *group = [NSMutableArray array];
++      NSView *view;
++
++      if ([done containsObject:@(o.index)]) continue;
++
++      /* push buttons of one group are one control, wherever they sit */
++      if ([o.kind isEqualToString:@"push"] && o.group) {
++        for (BODObject *g in objects) {
++          if ([g.kind isEqualToString:@"push"] && g.group == o.group && [g visible]) {
++            [group addObject:g];
++            [done addObject:@(g.index)];
++          }
++        }
++      } else {
++        [done addObject:@(o.index)];
++      }
++
++      view = [self viewFor:o in:form group:group];
++      if (view == nil) continue;
++      _views[@(o.index)] = view;
++      for (BODObject *g in group) _views[@(g.index)] = view;
++      [stack addView:view inGravity:action ? NSStackViewGravityTrailing : NSStackViewGravityLeading];
++    }
++
++      if (stack.views.count == 0) continue;
++    if (action) {
++      for (NSView *view in stack.views.copy) {
++        [stack removeView:view];
++        [_footer addView:view inGravity:NSStackViewGravityTrailing];
++      }
++    } else {
++      [_body addView:stack inGravity:NSStackViewGravityTop];
++      [stack.widthAnchor constraintLessThanOrEqualToAnchor:_body.widthAnchor].active = YES;
++      _bodyHeight += MAX(stack.fittingSize.height, 22) + _body.spacing;
++    }
++  }
++
++  /* Every dialog needs a way out, even one whose buttons the game has taken
++   * away while it thinks. */
++  if (_footer.views.count == 0) {
++    NSButton *close = [NSButton buttonWithTitle:@"Close" target:self action:@selector(closeForm:)];
++    close.keyEquivalent = @"\033";
++    [_footer addView:close inGravity:NSStackViewGravityTrailing];
++  }
++}
++
++- (void)buildSheet {
++  NSStackView *content;
++
++  if (_sheet) return;
++
++  _sheet = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 460, 420)
++                                      styleMask:NSWindowStyleMaskTitled
++                                        backing:NSBackingStoreBuffered
++                                          defer:YES];
++  _sheet.releasedWhenClosed = NO;
++
++  _heading = [NSTextField labelWithString:@""];
++  _heading.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize + 2];
++
++  _body = [[NSStackView alloc] init];
++  _body.orientation = NSUserInterfaceLayoutOrientationVertical;
++  _body.alignment = NSLayoutAttributeLeading;
++  _body.spacing = 10;
++  _body.translatesAutoresizingMaskIntoConstraints = NO;
++  [_body setHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationVertical];
++
++  /* A form longer than the window scrolls rather than being cut off. The
++   * stack is the scroll view's document, which means pinning it to the clip
++   * view: its width is the clip's, and its height is its own, which is what
++   * gives the scroller something to scroll. */
++  _scroll = [[NSScrollView alloc] init];
++  _scroll.documentView = _body;
++  _scroll.hasVerticalScroller = YES;
++  _scroll.autohidesScrollers = YES;
++  _scroll.drawsBackground = NO;
++  _scroll.borderType = NSNoBorder;
++  [NSLayoutConstraint activateConstraints:@[
++    [_body.leadingAnchor constraintEqualToAnchor:_scroll.contentView.leadingAnchor],
++    [_body.trailingAnchor constraintEqualToAnchor:_scroll.contentView.trailingAnchor],
++    [_body.topAnchor constraintEqualToAnchor:_scroll.contentView.topAnchor] ]];
++
++  _footer = [[NSStackView alloc] init];
++  _footer.orientation = NSUserInterfaceLayoutOrientationHorizontal;
++  _footer.spacing = 10;
++
++  content = [NSStackView stackViewWithViews:@[ _heading, _scroll, _footer ]];
++  content.orientation = NSUserInterfaceLayoutOrientationVertical;
++  content.alignment = NSLayoutAttributeLeading;
++  content.spacing = 12;
++  content.edgeInsets = NSEdgeInsetsMake(18, 20, 18, 20);
++  _sheet.contentView = content;
++
++  for (NSView *view in @[ _scroll, _footer ]) {
++    [view.widthAnchor constraintEqualToAnchor:content.widthAnchor constant:-40].active = YES;
++  }
++  /* The sheet is as wide as it is told and no wider: left to work it out for
++   * itself it takes the width of the widest control, which for a dialog of
++   * buttons is nothing like a window. */
++  _widthConstraint = [content.widthAnchor constraintEqualToConstant:460];
++  _heightConstraint = [_scroll.heightAnchor constraintEqualToConstant:240];
++  _widthConstraint.active = YES;
++  _heightConstraint.active = YES;
++}
++
++- (void)present:(BODFormState *)form {
++  NSSize content;
++  CGFloat width, height;
++
++  if (_window == nil) return;
++
++  [self buildSheet];
++  _heading.stringValue = form.title.length ? form.title : @"Bike or Die";
++  [self buildBody:form];
++  _shown = form.signature;
++
++  content = _window.contentView.frame.size;
++  width = MAX(340, MIN(560, content.width - 80));
++  _widthConstraint.constant = width;
++
++  /* Long explanations wrap rather than making the sheet as wide as they are. */
++  for (NSView *view in _views.allValues) {
++    if ([view isKindOfClass:NSTextField.class]) ((NSTextField *)view).preferredMaxLayoutWidth = width - 60;
++  }
++  [_sheet.contentView layoutSubtreeIfNeeded];
++  height = MIN(content.height - 140, MAX(40, _bodyHeight + 4));
++  _heightConstraint.constant = height;
++  [_sheet.contentView layoutSubtreeIfNeeded];
++  form_log(@"dialog: form %ld (%@), %.0fx%.0f", (long)form.formId, form.title, width, height);
++
++  if (_sheet.sheetParent == nil) [_window beginSheet:_sheet completionHandler:nil];
++  [self schedulePoll:POLL_FAST];
++  [self focusFirstField];
++}
++
++/* Typing into a dialog should land where the game has the caret -- the name
++ * on the dialog that finishing a level puts up -- and otherwise in whatever
++ * can be typed into. */
++- (void)focusFirstField {
++  NSView *first = nil;
++
++  for (BODObject *o in _form.objects) {
++    NSView *view = _views[@(o.index)];
++
++    if (![o.kind isEqualToString:@"field"] || ![o enabled]) continue;
++    if (![view isKindOfClass:NSTextField.class]) continue;
++    if ([o hasFocus]) { [_sheet makeFirstResponder:view]; return; }
++    if (first == nil) first = view;
++  }
++
++  if (first) [_sheet makeFirstResponder:first];
++}
++
++/* The same form again, with something on it changed: the values move, the
++ * controls stay where they are, so what is being typed is not disturbed. */
++- (void)update:(BODFormState *)form {
++  for (BODObject *o in form.objects) {
++    NSView *view = _views[@(o.index)];
++
++    if (view == nil) continue;
++
++    if ([o.kind isEqualToString:@"check"] && [view isKindOfClass:NSButton.class]) {
++      ((NSButton *)view).state = o.value ? NSControlStateValueOn : NSControlStateValueOff;
++
++    } else if ([o.kind isEqualToString:@"push"] && [view isKindOfClass:NSSegmentedControl.class]) {
++      NSSegmentedControl *seg = (NSSegmentedControl *)view;
++      NSInteger i;
++      for (i = 0; i < seg.segmentCount; i++) {
++        if ([seg tagForSegment:i] == o.index && o.value) seg.selectedSegment = i;
++      }
++
++    } else if ([o.kind isEqualToString:@"list"] && [view isKindOfClass:NSPopUpButton.class]) {
++      NSPopUpButton *popup = (NSPopUpButton *)view;
++      if (o.selection >= 0 && o.selection < popup.numberOfItems) [popup selectItemAtIndex:o.selection];
++
++    } else if ([o.kind isEqualToString:@"slider"] && [view isKindOfClass:NSSlider.class]) {
++      ((NSSlider *)view).doubleValue = o.value;
++
++    } else if ([o.kind isEqualToString:@"field"] && ![o enabled] && [view isKindOfClass:NSTextField.class]) {
++      ((NSTextField *)view).stringValue = o.text;
++
++    } else if ([o.kind isEqualToString:@"field"] && [view isKindOfClass:NSTextField.class]) {
++      NSTextField *field = (NSTextField *)view;
++      if (_sheet.firstResponder != field.currentEditor && ![field.stringValue isEqualToString:o.text]) {
++        field.stringValue = o.text;
++        _fieldText[@(o.index)] = o.text;
++      }
++    }
++  }
++
++  _form = form;
++  for (NSTableView *table in _tables.allValues) [table reloadData];
++}
++
++- (void)close {
++  NSWindow *parent = _sheet.sheetParent;
++
++  if (_sheet == nil) return;
++  if (parent) [parent endSheet:_sheet];
++  [_sheet orderOut:nil];
++  _shown = nil;
++  [_views removeAllObjects];
++  [_tables removeAllObjects];
++  [self schedulePoll:POLL_IDLE];
++}
++
++/* ------------------------------------------------------------ the actions */
++
++- (BODObject *)objectAt:(NSInteger)index {
++  for (BODObject *o in _form.objects) {
++    if (o.index == index) return o;
++  }
++
++  return nil;
++}
++
++- (IBAction)hit:(NSControl *)sender {
++  ui_send([NSString stringWithFormat:@"press %ld", (long)sender.tag]);
++}
++
++- (IBAction)hitSegment:(NSSegmentedControl *)sender {
++  if (sender.selectedSegment < 0) return;
++  ui_send([NSString stringWithFormat:@"press %ld", (long)[sender tagForSegment:sender.selectedSegment]]);
++}
++
++- (IBAction)hitPopup:(NSPopUpButton *)sender {
++  if (sender.tag < 0) return;
++  ui_send([NSString stringWithFormat:@"select %ld %ld", (long)sender.tag, (long)sender.indexOfSelectedItem]);
++}
++
++- (IBAction)hitSlider:(NSSlider *)sender {
++  ui_send([NSString stringWithFormat:@"slider %ld %ld", (long)sender.tag, (long)llround(sender.doubleValue)]);
++}
++
++/* Only when it has really changed: the field is given the focus when the
++ * sheet opens, and ending that editing must not type the game's own text
++ * back into its form. */
++- (IBAction)hitField:(NSTextField *)sender {
++  NSString *was = _fieldText[@(sender.tag)];
++
++  if (was != nil && [was isEqualToString:sender.stringValue]) return;
++  _fieldText[@(sender.tag)] = sender.stringValue;
++  ui_send([NSString stringWithFormat:@"text %ld %@", (long)sender.tag, sender.stringValue]);
++}
++
++- (IBAction)hitTableTwice:(NSTableView *)sender {
++  BODObject *o;
++
++  if (sender.clickedRow < 0) return;
++  ui_send([NSString stringWithFormat:@"select %ld %ld", (long)sender.tag, (long)sender.clickedRow]);
++
++  /* A double-click is the choice made: press what Return would press. */
++  if (_form.defaultIndex >= 0 && (o = [self objectAt:_form.defaultIndex]) != nil) {
++    ui_send([NSString stringWithFormat:@"press %ld", (long)o.index]);
++  }
++}
++
++- (IBAction)closeForm:(id)sender {
++  ui_send(@"close");
++}
++
++- (void)controlTextDidEndEditing:(NSNotification *)notification {
++  NSTextField *field = notification.object;
++
++  if ([field isKindOfClass:NSTextField.class] && field.tag >= 0) [self hitField:field];
++}
++
++- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
++  BODObject *o = [self objectAt:tableView.tag];
++
++  return o ? (NSInteger)o.items.count : 0;
++}
++
++- (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
++  NSTableCellView *cell = [tableView makeViewWithIdentifier:@"item" owner:self];
++  BODObject *o = [self objectAt:tableView.tag];
++  NSTextField *label;
++
++  if (cell == nil) {
++    cell = [[NSTableCellView alloc] initWithFrame:NSMakeRect(0, 0, 100, 20)];
++    cell.identifier = @"item";
++    label = [NSTextField labelWithString:@""];
++    label.lineBreakMode = NSLineBreakByTruncatingTail;
++    label.translatesAutoresizingMaskIntoConstraints = NO;
++    [cell addSubview:label];
++    cell.textField = label;
++    [NSLayoutConstraint activateConstraints:@[
++      [label.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:6],
++      [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-6],
++      [label.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor] ]];
++  }
++
++  cell.textField.stringValue = (o && row >= 0 && row < (NSInteger)o.items.count) ? o.items[row] : @"";
++
++  return cell;
++}
++
++- (void)tableViewSelectionDidChange:(NSNotification *)notification {
++  NSTableView *table = notification.object;
++
++  if (table.selectedRow >= 0) {
++    ui_send([NSString stringWithFormat:@"select %ld %ld", (long)table.tag, (long)table.selectedRow]);
++  }
++}
++
++@end
++
++/* -------------------------------------------------------------- the C side */
++
++static BODFormSheet *sheet;
++
++void liblsdl2_mac_form_attach(void *nswindow) {
++  NSWindow *window = (__bridge NSWindow *)nswindow;
++
++  if (sheet != nil || window == nil) return;
++
++  @autoreleasepool {
++    sheet = [[BODFormSheet alloc] init];
++    [sheet attachTo:window];
++  }
++}
++
++int liblsdl2_mac_form_wants_keys(void) {
++  return sheet != nil && [sheet wantsKeys];
 +}
 diff --git a/src/liblsdl2/liblsdl2_web.c b/src/liblsdl2/liblsdl2_web.c
 new file mode 100644
@@ -4195,15 +5722,16 @@ index a2b5b1f..07adc57 100644
    if (logLenP) *logLenP = 0;
  
 diff --git a/src/libpumpkin/Event.c b/src/libpumpkin/Event.c
-index fd1eb40..25f5c1f 100644
+index fd1eb40..d359ec8 100644
 --- a/src/libpumpkin/Event.c
 +++ b/src/libpumpkin/Event.c
-@@ -6,10 +6,16 @@
+@@ -6,10 +6,17 @@
  #include "vfs.h"
  #include "pumpkin.h"
  #include "navigator.h"
 +#include "navkeys.h"
 +#include "bodpack.h"
++#include "bodui.h"
  #include "xalloc.h"
  #include "debug.h"
  
@@ -4215,7 +5743,7 @@ index fd1eb40..25f5c1f 100644
  
  #define PALMOS_MODULE "Event"
  
-@@ -25,7 +31,11 @@ typedef struct {
+@@ -25,7 +32,11 @@ typedef struct {
    Coord screenX, screenY;
    Int32 needNullTickCount;
    Int32 lastPenMove;
@@ -4227,7 +5755,7 @@ index fd1eb40..25f5c1f 100644
    UInt32 repeatingButtonTime;
    UInt16 repeatingButtonID;
    void *repeatingButtonP;
-@@ -239,6 +249,55 @@ static void adjustCoords(Coord *x, Coord *y) {
+@@ -239,6 +250,55 @@ static void adjustCoords(Coord *x, Coord *y) {
     }
  }
  
@@ -4283,7 +5811,7 @@ index fd1eb40..25f5c1f 100644
  static int sendKeyDown(UInt16 eType, UInt16 chr, UInt16 keyCode, UInt16 modifiers) {
    EventType event;
  
-@@ -252,6 +311,18 @@ static int sendKeyDown(UInt16 eType, UInt16 chr, UInt16 keyCode, UInt16 modifier
+@@ -252,6 +312,18 @@ static int sendKeyDown(UInt16 eType, UInt16 chr, UInt16 keyCode, UInt16 modifier
    return 1;
  }
  
@@ -4302,7 +5830,36 @@ index fd1eb40..25f5c1f 100644
  int EvtPumpEvents(Int32 timeoutUs) {
    evt_module_t *module = (evt_module_t *)pumpkin_get_local_storage(evt_key);
    EventType event;
-@@ -441,10 +512,14 @@ int EvtPumpEvents(Int32 timeoutUs) {
+@@ -352,7 +424,16 @@ int EvtPumpEvents(Int32 timeoutUs) {
+     }
+ 
+     if (ev) break;
+-    if (forever) continue;
++    if (forever) {
++      // A dialog of the game's own waits here, with evtWaitForever and
++      // nothing on its way: it is the host that has that dialog on screen
++      // now, and the host's answer arrives on another thread. Take it here
++      // as well, or a dialog nobody can reach keeps the game (bodui.c).
++      bod_pack_idle();
++      bod_ui_idle();
++      if (module->numEvents > 0) break;
++      continue;
++    }
+     t = sys_get_clock();
+     dt = t - t0;
+     if (timeoutUs <= dt) break;
+@@ -413,7 +494,9 @@ int EvtPumpEvents(Int32 timeoutUs) {
+         case WINDOW_KEY_F5:
+           if (native) {
+             event.data.keyDown.chr = vchrHard5;
+-          } else {
++          } else if (!bod_ui_swallow_menu_key()) {
++            // With the native menu bar up, the Palm menu behind this key
++            // would only be the same items, drawn small (bodui.c).
+             event.data.keyDown.chr = vchrMenu;
+           }
+           event.data.keyDown.modifiers |= commandKeyMask;
+@@ -441,10 +524,14 @@ int EvtPumpEvents(Int32 timeoutUs) {
            event.data.keyDown.modifiers |= commandKeyMask;
            break;
          case WINDOW_KEY_UP:
@@ -4317,7 +5874,7 @@ index fd1eb40..25f5c1f 100644
            break;
          case WINDOW_KEY_INS:
            event.data.keyDown.chr = vchrNativeInsert;
-@@ -653,16 +728,24 @@ int EvtPumpEvents(Int32 timeoutUs) {
+@@ -653,16 +740,24 @@ int EvtPumpEvents(Int32 timeoutUs) {
        } else {
          if (module->penDown) {
            module->penDown = 0;
@@ -4352,7 +5909,7 @@ index fd1eb40..25f5c1f 100644
          }
        }
        break;
-@@ -800,8 +883,23 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
+@@ -800,8 +895,25 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
    evt_module_t *module = (evt_module_t *)pumpkin_get_local_storage(evt_key);
  
    MemSet(event, sizeof(EventType), 0);
@@ -4368,15 +5925,17 @@ index fd1eb40..25f5c1f 100644
 +    FrmFinishPenUp();
 +  }
 +
-+  // The host's level pack chooser acts between the application's events.
++  // The host's side of the UI acts between the application's events: the
++  // level pack chooser, and whatever the native window is showing.
 +  if (module->numEvents == 0) {
 +    bod_pack_idle();
++    bod_ui_idle();
 +  }
 +
    if (module->numEvents == 0) {
      if (EvtPumpEvents(timeoutUs) == -1) {
        debug(DEBUG_INFO, PALMOS_MODULE, "EvtGetEvent appStopEvent (event failed)");
-@@ -830,6 +928,29 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
+@@ -830,6 +942,29 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
      xmemcpy(event, &module->events[module->idxOut++], sizeof(EventType));
      if (module->idxOut == MAX_EVENTS) module->idxOut = 0;
      module->numEvents--;
@@ -4482,19 +6041,20 @@ index 149052f..7db930f 100644
    }
  
 diff --git a/src/libpumpkin/Form.c b/src/libpumpkin/Form.c
-index 1e9cef5..166dbfb 100644
+index 1e9cef5..5d1b413 100644
 --- a/src/libpumpkin/Form.c
 +++ b/src/libpumpkin/Form.c
-@@ -11,6 +11,8 @@
+@@ -11,6 +11,9 @@
  #include "pumpkin.h"
  #include "storage.h"
  #include "debug.h"
 +#include "navkeys.h"
 +#include "bodpack.h"
++#include "bodui.h"
  #include "xalloc.h"
  
  #define MAX_STACK  8
-@@ -24,8 +26,25 @@ typedef struct {
+@@ -24,8 +27,25 @@ typedef struct {
    FormType *currentForm;
    FormList *list;
    Boolean centerDialogs;
@@ -4520,7 +6080,7 @@ index 1e9cef5..166dbfb 100644
  static const char *frmObjType[] = {
    "frmFieldObj",
    "frmControlObj",
-@@ -175,7 +194,12 @@ static Err FrmInitFormInternal(FormType *formP) {
+@@ -175,7 +195,12 @@ static Err FrmInitFormInternal(FormType *formP) {
  
    w = width = formP->window.windowBounds.extent.x;
    h = height = formP->window.windowBounds.extent.y;
@@ -4533,7 +6093,7 @@ index 1e9cef5..166dbfb 100644
    WinAdjustCoords(&w, &h);
  
    wh = WinGetDisplayWindow();
-@@ -184,7 +208,15 @@ static Err FrmInitFormInternal(FormType *formP) {
+@@ -184,7 +209,15 @@ static Err FrmInitFormInternal(FormType *formP) {
    WinScreenGetAttribute(winScreenDensity, &density);
    WinScreenMode(winScreenModeGet, NULL, NULL, &depth, NULL);
    colorTable = WinGetColorTable(depth);
@@ -4549,7 +6109,14 @@ index 1e9cef5..166dbfb 100644
    formP->window.density = density;
    BmpSetLittleEndianBits(formP->window.bitmapP, littleEndian);
  
-@@ -196,6 +228,7 @@ static Err FrmInitFormInternal(FormType *formP) {
+@@ -193,9 +226,14 @@ static Err FrmInitFormInternal(FormType *formP) {
+ 
+   WinDirectAccessHack(&formP->window, 0, 0, width, height);
+ 
++  // Before anything is drawn into it: everything but the playfield is the
++  // host's to draw now, so this form's window never reaches the screen.
++  bod_ui_form_init(formP);
++
    formP->selectedObject = -1;
    formP->activeList = -1;
    formP->activeField = -1;
@@ -4557,7 +6124,7 @@ index 1e9cef5..166dbfb 100644
    formP->mbar = formP->menuRscId ? MenuInit(formP->menuRscId) : NULL;
    formP->diaPolicy = frmDIAPolicyStayOpen;
  
-@@ -349,6 +382,7 @@ void FrmEraseObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+@@ -349,6 +387,7 @@ void FrmEraseObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
  
    if (formP && objIndex < formP->numObjects) {
      pumpkin_dirty_region_mode(dirtyRegionBegin);
@@ -4565,7 +6132,7 @@ index 1e9cef5..166dbfb 100644
  
      obj = formP->objects[objIndex].object;
  
-@@ -456,6 +490,7 @@ void FrmEraseObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+@@ -456,6 +495,7 @@ void FrmEraseObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
        WinSetBackColor(oldb);
      }
  
@@ -4573,7 +6140,7 @@ index 1e9cef5..166dbfb 100644
      pumpkin_dirty_region_mode(dirtyRegionEnd);
    }
  }
-@@ -474,6 +509,7 @@ void FrmDrawObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+@@ -474,6 +514,7 @@ void FrmDrawObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
  
    if (formP && objIndex < formP->numObjects) {
      pumpkin_dirty_region_mode(dirtyRegionBegin);
@@ -4581,7 +6148,7 @@ index 1e9cef5..166dbfb 100644
  
      obj = formP->objects[objIndex].object;
      formTitle = UIColorGetTableEntryIndex(UIObjectSelectedForeground);
-@@ -642,6 +678,7 @@ void FrmDrawObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
+@@ -642,6 +683,7 @@ void FrmDrawObject(FormType *formP, UInt16 objIndex, Boolean setUsable) {
          break;
      }
  
@@ -4589,7 +6156,7 @@ index 1e9cef5..166dbfb 100644
      pumpkin_dirty_region_mode(dirtyRegionEnd);
    }
  }
-@@ -822,6 +859,572 @@ Boolean FrmTrackPenUp(UInt32 x, UInt32 y) {
+@@ -822,6 +864,572 @@ Boolean FrmTrackPenUp(UInt32 x, UInt32 y) {
    return handled;
  }
  
@@ -5162,15 +6729,29 @@ index 1e9cef5..166dbfb 100644
  // Handle the event that has occurred in the form.
  // Never call this function directly. Call FrmDispatchEvent instead.
  // FrmDispatchEvent passes events to a form’s custom event
-@@ -1127,6 +1730,7 @@ static void FrmDeleteFormInternal(FormType *formP) {
+@@ -1127,6 +1735,8 @@ static void FrmDeleteFormInternal(FormType *formP) {
    frm_module_t *module = (frm_module_t *)pumpkin_get_local_storage(frm_key);
  
    debug(DEBUG_TRACE, "Form", "FrmDeleteFormInternal form %d", formP->formId);
++  bod_ui_form_delete(formP);
 +  FrmNavFinish(formP);
  
    if (formP == module->currentForm) {
      WinSetActiveWindow(NULL);
-@@ -1210,6 +1814,116 @@ void FrmDrawEmptyDialog(FormType *formP, RectangleType *rect, Int16 margin, WinH
+@@ -1184,7 +1794,11 @@ void FrmDrawEmptyDialog(FormType *formP, RectangleType *rect, Int16 margin, WinH
+   WinHandle oldDraw, oldActive;
+ 
+   // draw dialog border
+-  if (formP->window.windowFlags.modal) {
++  // A dialog's border is the one part of a form that is drawn straight into
++  // the display rather than into the form's own window. For a form the host
++  // is drawing instead, that would put a frame around nothing over the game
++  // (bodui.c).
++  if (formP->window.windowFlags.modal && !bod_ui_form_hidden(formP)) {
+     oldActive = WinGetActiveWindow();
+     oldDraw = WinSetDrawWindow(wh);
+     WinSetActiveWindow(wh);
+@@ -1210,6 +1824,116 @@ void FrmDrawEmptyDialog(FormType *formP, RectangleType *rect, Int16 margin, WinH
    WinSetBackColor(old);
  }
  
@@ -5287,7 +6868,7 @@ index 1e9cef5..166dbfb 100644
  void FrmDrawForm(FormType *formP) {
    WinHandle oldd, olda;
    RGBColorType rgb;
-@@ -1232,8 +1946,12 @@ void FrmDrawForm(FormType *formP) {
+@@ -1232,8 +1956,12 @@ void FrmDrawForm(FormType *formP) {
  
      margin = WinGetBorderRect(&formP->window, &rect);
  
@@ -5301,18 +6882,19 @@ index 1e9cef5..166dbfb 100644
      }
  
      olda = WinGetActiveWindow();
-@@ -1258,6 +1976,10 @@ void FrmDrawForm(FormType *formP) {
+@@ -1258,6 +1986,11 @@ void FrmDrawForm(FormType *formP) {
      WinSetDrawWindow(oldd);
      WinSetActiveWindow(olda);
  
 +    FrmNavShow(formP);
 +    bod_auto_unlock(formP);
 +    bod_pack_form_drawn(formP);
++    bod_ui_form_drawn(formP);
 +
      pumpkin_dirty_region_mode(dirtyRegionEnd);
    }
  }
-@@ -1277,9 +1999,10 @@ void FrmEraseForm(FormType *formP) {
+@@ -1277,9 +2010,10 @@ void FrmEraseForm(FormType *formP) {
        rect.extent.x += 4;
        rect.extent.y += 4;
      }
@@ -5324,7 +6906,7 @@ index 1e9cef5..166dbfb 100644
    }
  }
  
-@@ -3699,6 +4422,7 @@ void pumpkin_destroy_form(FormType *formP) {
+@@ -3699,6 +4433,7 @@ void pumpkin_destroy_form(FormType *formP) {
      if (formP->rsrc) {
        pumpkin_heap_free(formP->rsrc, "form_rsrc");
      }
@@ -5351,7 +6933,7 @@ index 7ab63d3..29570b1 100644
  }
  
 diff --git a/src/libpumpkin/Makefile b/src/libpumpkin/Makefile
-index f60f65d..9d7fde8 100644
+index f60f65d..9617baa 100644
 --- a/src/libpumpkin/Makefile
 +++ b/src/libpumpkin/Makefile
 @@ -18,7 +18,9 @@ endif
@@ -5370,7 +6952,7 @@ index f60f65d..9d7fde8 100644
  GLUE_SOURCE=BmpGlue.c CtlGlue.c DateGlue.c FldGlue.c FntGlue.c FrmGlue.c LstGlue.c MemGlue.c TblGlue.c TxtGlue.c WinGlue.c
  
 -SOURCE=notif_serde.c launch_serde.c build.c pumpkin.c deploy.o storage.c script.c fill.c AboutBox.c AddressSortLib.c AlarmMgr.c AttentionMgr.c Bitmap.c CharAttr.c ColorTable.c BtLib.c Category.c Clipboard.c ConnectionMgr.c ConsoleMgr.c Control.c CPMLib68KInterface.c SonyLib.c Crc.c DateTime.c Day.c DebugMgr.c DLServer.c Encrypt.c md5.c sha1.c ErrorBase.c Event.c ExgLib.c ExgMgr.c ExpansionMgr.c FatalAlert.c FeatureMgr.c Field.c FileStream.c Find.c FixedMath.c FloatMgr.c Font.c FontSelect.c Form.c FSLib.c Graffiti.c GraffitiReference.c GraffitiShift.c HAL.c HostControl.c IMCUtils.c INetMgr.c InsPoint.c IntlMgr.c IrLib.c Keyboard.c KeyMgr.c Launcher.c List.c LocaleMgr.c Localize.c Lz77Mgr.c Menu.c ModemMgr.c NetBitUtils.c NetMgr.c OverlayMgr.c Password.c PceNativeCall.c PdiLib.c PenInputMgr.c PenMgr.c PhoneLookup.c Preferences.c PrivateRecords.c Progress.c Rect.c ScrollBar.c SelTime.c SelDay.c SelTimeZone.c SerialLinkMgr.c SerialMgr.c SerialMgrOld.c SerialSdrv.c SerialVdrv.c SlotDrvrLib.c SoundMgr.c SslLib.c StringMgr.c SysEvtMgr.c SystemMgr.c SysUtils.c Table.c TelephonyMgr.c TextMgr.c TextServicesMgr.c TimeMgr.c UDAMgr.c UIColor.c UIControls.c UIResources.c VFSMgr.c VFSExplorer.c FileBrowser.c Window.c Chat.c cmheap.c grail.c wav.c dia.c taskbar.o wman.c peditor.c syntax.c edit.c RegistryMgr.c language.c calibrate.c unzip.c junzip.c puff.c plibc.c dosbox.c ssfn_font.c logtrap.c $(GLUE_SOURCE) $(GPSLIB_SOURCE) $(GPDLIB_SOURCE) $(EMU_SOURCE) $(TOS_SOURCE) kdtree.c
-+SOURCE=notif_serde.c launch_serde.c build.c pumpkin.c deploy.c storage.c script.c fill.c bodpack.c AboutBox.c AddressSortLib.c AlarmMgr.c AttentionMgr.c Bitmap.c CharAttr.c ColorTable.c BtLib.c Category.c Clipboard.c ConnectionMgr.c ConsoleMgr.c Control.c CPMLib68KInterface.c SonyLib.c Crc.c DateTime.c Day.c DebugMgr.c DLServer.c Encrypt.c md5.c sha1.c ErrorBase.c Event.c ExgLib.c ExgMgr.c ExpansionMgr.c FatalAlert.c FeatureMgr.c Field.c FileStream.c Find.c FixedMath.c FloatMgr.c Font.c FontSelect.c Form.c FSLib.c Graffiti.c GraffitiReference.c GraffitiShift.c HAL.c HostControl.c IMCUtils.c INetMgr.c InsPoint.c IntlMgr.c IrLib.c Keyboard.c KeyMgr.c Launcher.c List.c LocaleMgr.c Localize.c Lz77Mgr.c Menu.c ModemMgr.c NetBitUtils.c NetMgr.c OverlayMgr.c Password.c PceNativeCall.c PdiLib.c PenInputMgr.c PenMgr.c PhoneLookup.c Preferences.c PrivateRecords.c Progress.c Rect.c ScrollBar.c SelTime.c SelDay.c SelTimeZone.c SerialLinkMgr.c SerialMgr.c SerialMgrOld.c SerialSdrv.c SerialVdrv.c SlotDrvrLib.c SoundMgr.c SslLib.c StringMgr.c SysEvtMgr.c SystemMgr.c SysUtils.c Table.c TelephonyMgr.c TextMgr.c TextServicesMgr.c TimeMgr.c UDAMgr.c UIColor.c UIControls.c UIResources.c VFSMgr.c VFSExplorer.c FileBrowser.c Window.c Chat.c cmheap.c grail.c wav.c dia.c taskbar.c wman.c peditor.c syntax.c edit.c RegistryMgr.c language.c calibrate.c unzip.c junzip.c puff.c plibc.c dosbox.c ssfn_font.c logtrap.c $(GLUE_SOURCE) $(GPSLIB_SOURCE) $(GPDLIB_SOURCE) $(EMU_SOURCE) $(TOS_SOURCE) kdtree.c
++SOURCE=notif_serde.c launch_serde.c build.c pumpkin.c deploy.c storage.c script.c fill.c bodpack.c bodui.c AboutBox.c AddressSortLib.c AlarmMgr.c AttentionMgr.c Bitmap.c CharAttr.c ColorTable.c BtLib.c Category.c Clipboard.c ConnectionMgr.c ConsoleMgr.c Control.c CPMLib68KInterface.c SonyLib.c Crc.c DateTime.c Day.c DebugMgr.c DLServer.c Encrypt.c md5.c sha1.c ErrorBase.c Event.c ExgLib.c ExgMgr.c ExpansionMgr.c FatalAlert.c FeatureMgr.c Field.c FileStream.c Find.c FixedMath.c FloatMgr.c Font.c FontSelect.c Form.c FSLib.c Graffiti.c GraffitiReference.c GraffitiShift.c HAL.c HostControl.c IMCUtils.c INetMgr.c InsPoint.c IntlMgr.c IrLib.c Keyboard.c KeyMgr.c Launcher.c List.c LocaleMgr.c Localize.c Lz77Mgr.c Menu.c ModemMgr.c NetBitUtils.c NetMgr.c OverlayMgr.c Password.c PceNativeCall.c PdiLib.c PenInputMgr.c PenMgr.c PhoneLookup.c Preferences.c PrivateRecords.c Progress.c Rect.c ScrollBar.c SelTime.c SelDay.c SelTimeZone.c SerialLinkMgr.c SerialMgr.c SerialMgrOld.c SerialSdrv.c SerialVdrv.c SlotDrvrLib.c SoundMgr.c SslLib.c StringMgr.c SysEvtMgr.c SystemMgr.c SysUtils.c Table.c TelephonyMgr.c TextMgr.c TextServicesMgr.c TimeMgr.c UDAMgr.c UIColor.c UIControls.c UIResources.c VFSMgr.c VFSExplorer.c FileBrowser.c Window.c Chat.c cmheap.c grail.c wav.c dia.c taskbar.c wman.c peditor.c syntax.c edit.c RegistryMgr.c language.c calibrate.c unzip.c junzip.c puff.c plibc.c dosbox.c ssfn_font.c logtrap.c $(GLUE_SOURCE) $(GPSLIB_SOURCE) $(GPDLIB_SOURCE) $(EMU_SOURCE) $(TOS_SOURCE) kdtree.c
  #pumpkin_syscall.c
  
  ifeq ($(OSNAME),Emscripten)
@@ -5893,14 +7475,15 @@ index 6715831..92552f5 100644
    }
  
 diff --git a/src/libpumpkin/Window.c b/src/libpumpkin/Window.c
-index e595948..f1e0fe7 100644
+index e595948..53fe192 100644
 --- a/src/libpumpkin/Window.c
 +++ b/src/libpumpkin/Window.c
-@@ -12,10 +12,22 @@
+@@ -12,10 +12,23 @@
  #include "rgb.h"
  #include "bytes.h"
  #include "pumpkin.h"
 +#include "bodpack.h"
++#include "bodui.h"
  #include "language.h"
  #include "sys.h"
  #include "debug.h"
@@ -5919,7 +7502,7 @@ index e595948..f1e0fe7 100644
  
  #define LEGACY_SCREEN_SIZE 160 * 160
  
-@@ -387,6 +399,9 @@ WinHandle WinCreateBitmapWindow(BitmapType *bitmapP, UInt16 *error) {
+@@ -387,6 +400,9 @@ WinHandle WinCreateBitmapWindow(BitmapType *bitmapP, UInt16 *error) {
  }
  
  void WinDeleteWindow(WinHandle winHandle, Boolean eraseIt) {
@@ -5929,7 +7512,7 @@ index e595948..f1e0fe7 100644
    win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
    BitmapType *bitmapP;
    char buf[64];
-@@ -629,7 +644,15 @@ void WinSetBounds(WinHandle winHandle, const RectangleType *rP) {
+@@ -629,7 +645,15 @@ void WinSetBounds(WinHandle winHandle, const RectangleType *rP) {
      WinScreenGetAttribute(winScreenDensity, &density);
      WinScreenMode(winScreenModeGetDefaults, NULL, NULL, &depth, NULL);
      old = winHandle->bitmapP;
@@ -5945,7 +7528,18 @@ index e595948..f1e0fe7 100644
      if (bmp) {
        BmpSetLittleEndianBits(bmp, module->littleEndian);
        winHandle->bitmapP = bmp;
-@@ -1002,6 +1025,134 @@ static UInt32 getPattern(win_module_t *module, WinHandle wh, Coord x, Coord y, P
+@@ -877,6 +901,10 @@ void WinAdjustCoordsInv(Coord *x, Coord *y) {
+ }
+ 
+ static void WinDirtyRegion(WinHandle wh, Coord x1, Coord y1, Coord x2, Coord y2) {
++  // The game's own menus and dialogs are live but never seen: what they
++  // draw stops here, and the game's last frame stays on the screen behind
++  // them (bodui.c).
++  if (bod_ui_window_hidden(wh)) return;
+   pumpkin_screen_dirty(wh, x1, y1, x2 - x1 + 1, y2 - y1 + 1);
+ }
+ 
+@@ -1002,6 +1030,134 @@ static UInt32 getPattern(win_module_t *module, WinHandle wh, Coord x, Coord y, P
    return c;
  }
  
@@ -6080,7 +7674,7 @@ index e595948..f1e0fe7 100644
  static void draw_hline(win_module_t *module, Coord x1, Coord x2, Coord y, PatternType pattern) {
    Coord x, aux;
    UInt32 c, d;
-@@ -1012,6 +1163,8 @@ static void draw_hline(win_module_t *module, Coord x1, Coord x2, Coord y, Patter
+@@ -1012,6 +1168,8 @@ static void draw_hline(win_module_t *module, Coord x1, Coord x2, Coord y, Patter
      x2 = aux;
    }
  
@@ -6089,7 +7683,7 @@ index e595948..f1e0fe7 100644
    for (x = x1; x <= x2; x++) {
      c = getPattern(module, module->drawWindow, x, y, pattern);
      d = getPattern(module, module->displayWindow, x, y, pattern);
-@@ -1029,6 +1182,8 @@ static void draw_vline(win_module_t *module, Coord x, Coord y1, Coord y2, Patter
+@@ -1029,6 +1187,8 @@ static void draw_vline(win_module_t *module, Coord x, Coord y1, Coord y2, Patter
      y2 = aux;
    }
  
@@ -6098,7 +7692,7 @@ index e595948..f1e0fe7 100644
    for (y = y1; y <= y2; y++) {
      c = getPattern(module, module->drawWindow, x, y, pattern);
      d = getPattern(module, module->displayWindow, x, y, pattern);
-@@ -1215,7 +1370,123 @@ void WinInvertLine(Coord x1, Coord y1, Coord x2, Coord y2) {
+@@ -1215,7 +1375,123 @@ void WinInvertLine(Coord x1, Coord y1, Coord x2, Coord y2) {
  
  // fill=true : draw filled retangle inside rP (including limits)
  // fill=false: draw retangle border around rP (ouside limits)
@@ -6222,7 +7816,7 @@ index e595948..f1e0fe7 100644
    Coord x1, y1, x2, y2, y, d, aux;
    Int16 i;
  
-@@ -1724,6 +1995,135 @@ void WinCopyWindow(WinHandle src, WinHandle dst, RectangleType *srcRect, Coord d
+@@ -1724,6 +2000,135 @@ void WinCopyWindow(WinHandle src, WinHandle dst, RectangleType *srcRect, Coord d
    }
  }
  
@@ -6358,7 +7952,7 @@ index e595948..f1e0fe7 100644
  void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect, Coord x, Coord y, WinDrawOperation mode, Boolean text) {
    win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
    BitmapType *windowBitmap, *displayBitmap;
-@@ -1747,6 +2147,9 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
+@@ -1747,6 +2152,9 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
      displayDensity = BmpGetDensity(displayBitmap);
      displayEndianness = BmpGetLittleEndianBits(displayBitmap);
      blitDisplay = wh == module->activeWindow && wh != module->displayWindow;
@@ -6368,7 +7962,7 @@ index e595948..f1e0fe7 100644
  
      scaleBitmapOff = (module->drawState.scalingMode & kBitmapScalingOff) != 0;
  
-@@ -1754,8 +2157,24 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
+@@ -1754,8 +2162,24 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
      delete = false;
  
      if (compression != BitmapCompressionTypeNone) {
@@ -6393,7 +7987,7 @@ index e595948..f1e0fe7 100644
      }
  
      bitmapDensity = BmpGetDensity(bitmapP);
-@@ -1836,6 +2255,24 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
+@@ -1836,6 +2260,24 @@ void WinBlitBitmap(BitmapType *bitmapP, WinHandle wh, const RectangleType *rect,
        return;
      }
  
@@ -6418,7 +8012,7 @@ index e595948..f1e0fe7 100644
      x1 = wh->clippingBounds.left;
      x2 = wh->clippingBounds.right;
      y1 = wh->clippingBounds.top;
-@@ -1964,6 +2401,35 @@ void WinConvertToDisplay(WinHandle wh, Coord *x, Coord *y) {
+@@ -1964,6 +2406,35 @@ void WinConvertToDisplay(WinHandle wh, Coord *x, Coord *y) {
  }
  
  void WinCopyRectangle(WinHandle srcWin, WinHandle dstWin, const RectangleType *srcRect, Coord dstX, Coord dstY, WinDrawOperation mode) {
@@ -6454,17 +8048,18 @@ index e595948..f1e0fe7 100644
    win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
    char sbuf[64], dbuf[64];
  
-@@ -2048,6 +2514,9 @@ void WinSetAsciiText(Boolean asciiText) {
+@@ -2048,6 +2519,10 @@ void WinSetAsciiText(Boolean asciiText) {
  
  static void WinDrawCharsC(uint8_t *chars, Int16 len, Coord x, Coord y, int max) {
    win_module_t *module = (win_module_t *)pumpkin_get_local_storage(win_key);
 +
-+  // A list item being read rather than shown (bodpack.c).
++  // A list item being read rather than shown (bodpack.c, bodui.c).
 +  if (bod_pack_capturing) bod_pack_capture(chars, len);
++  if (bod_ui_capturing) bod_ui_capture(chars, len);
    FontType *f;
    FontID font;
    UInt16 density;
-@@ -2972,8 +3441,15 @@ WinHandle WinCreateOffscreenWindow(Coord width, Coord height, WindowFormatType f
+@@ -2972,8 +3447,15 @@ WinHandle WinCreateOffscreenWindow(Coord width, Coord height, WindowFormatType f
    WinHandle wh = NULL;
    char buf[64];
    Err err = sysErrNoFreeResource;
@@ -6480,7 +8075,7 @@ index e595948..f1e0fe7 100644
      RctSetRectangle(&wh->windowBounds, 0, 0, width, height);
  
      switch (format) {
-@@ -3075,6 +3551,10 @@ Err WinPalette(UInt8 operation, Int16 startIndex, UInt16 paletteEntries, RGBColo
+@@ -3075,6 +3557,10 @@ Err WinPalette(UInt8 operation, Int16 startIndex, UInt16 paletteEntries, RGBColo
    if (wh) {
      debug(DEBUG_TRACE, "Window", "WinPalette drawWindow %s", WinGetDescr(wh, buf, sizeof(buf)));
      colorTable = BmpGetColortable(WinGetBitmap(wh));
@@ -6491,7 +8086,7 @@ index e595948..f1e0fe7 100644
      if (colorTable == NULL) {
        debug(DEBUG_ERROR, "Window", "WinPalette drawWindow colorTable is NULL");
        return winErrPalette;
-@@ -3131,6 +3611,9 @@ Err WinPalette(UInt8 operation, Int16 startIndex, UInt16 paletteEntries, RGBColo
+@@ -3131,6 +3617,9 @@ Err WinPalette(UInt8 operation, Int16 startIndex, UInt16 paletteEntries, RGBColo
              //broadcastDisplayChange(module->depth, module->depth);
              pumpkin_dirty_region_mode(dirtyRegionReset);
              WinDirtyRegion(module->displayWindow, 0, 0, module->width-1, module->height-1);
@@ -6999,6 +8594,874 @@ index 0000000..5f4705d
 +/* Text being drawn while a list item is read; see WinDrawChars. */
 +extern volatile int bod_pack_capturing;
 +void bod_pack_capture(const UInt8 *chars, Int16 len);
++
++#endif
+diff --git a/src/libpumpkin/bodui.c b/src/libpumpkin/bodui.c
+new file mode 100644
+index 0000000..cd4aece
+--- /dev/null
++++ b/src/libpumpkin/bodui.c
+@@ -0,0 +1,810 @@
++#include <PalmOS.h>
++
++#include "sys.h"
++#include "pumpkin.h"
++#include "bodui.h"
++#include "debug.h"
++
++/* The game's own UI, kept off the screen and drawn by the host instead.
++ *
++ * Bike or Die is a Palm OS 5 application, and everything around the riding
++ * is Palm OS 5 UI: a menu bar behind the menu key, twenty-five forms, and
++ * the alerts the game puts up as it goes. On a Palm that was the machine's
++ * own look. In a window on a Mac, or on a page, it is a 320x320 postage
++ * stamp of somebody else's operating system blown up by three, and none of
++ * it can be driven the way the rest of the machine is.
++ *
++ * So none of it is drawn. The forms are still there and the game still
++ * runs them -- they are what knows what a level pack is, what the sound
++ * settings mean, which recording is which -- but their windows never reach
++ * the screen, and what is on them is published for the host, which puts up
++ * a window of its own with real controls in it. A press on one of those
++ * comes back here and goes into the form the way the pen would.
++ *
++ * Three things make that possible, and all three are already true:
++ *
++ *   - Every form draws into a bitmap of its own (FrmInitFormInternal), and
++ *     reaches the screen only by being the active window when something is
++ *     drawn -- one place, WinDirtyRegion. Dropping the form's updates there
++ *     leaves the game's last frame on the screen, untouched, with the form
++ *     live behind it.
++ *   - The form keeps working with nobody looking: the game's handlers run
++ *     on its own thread out of its own event queue, so a control pressed
++ *     from here is indistinguishable from one pressed by the pen.
++ *   - The host is already talking to this side (bodpack.c) to drive the
++ *     level pack chooser. This is the same arrangement, generalised: a
++ *     command string in, a description of what the game has on screen out,
++ *     both across a sequence number so neither thread has to take a lock.
++ *
++ * What is published, line by line. The first line is "busy" or "ready";
++ * everything after it describes the form that is up, and is a snapshot, so
++ * a host that reads it while the game is in the middle of a redraw simply
++ * reads it again (the sequence number is odd while it is being written).
++ *
++ *   form <id> <0|1 modal> <w> <h>
++ *                             the form and its size, or "form 0" when the
++ *                             game itself has the screen and there is
++ *                             nothing to show. The size matters: a Palm
++ *                             form parks the objects it is not using
++ *                             outside itself rather than hiding them
++ *   title <text>              the form's title
++ *   default <objIndex>        the button Return should press, or -1
++ *   obj <objIndex> <kind> <id> <flags> <value> <group> <link> <x> <y> <w> <h> <text>
++ *   items <objIndex> <count> <selection>
++ *   item <objIndex> <n> <text>
++ *   slider <objIndex> <value> <min> <max>
++ *
++ * `kind` is what the host draws: button, repeat, push, check, popup,
++ * selector, slider, field, list, table, label, title, gadget, scroll,
++ * bitmap or other. `flags` is 1 visible, 2 enabled, 4 the default button,
++ * 8 has the focus, 16 graphical (a control drawn as a bitmap, whose label
++ * is not worth showing). `group` is the push button group, so the host can
++ * draw a group as one control, and `link` ties a popup trigger to its list
++ * and a list back to its trigger. Text is UTF-8, converted from the game's
++ * Latin-1.
++ *
++ * The menu bar is published once, separately, since it never changes:
++ *
++ *   menu <n> <title>
++ *   mitem <n> <m> <id> <label>
++ *
++ * The commands, which arrive from the host's thread and are taken between
++ * the application's events:
++ *
++ *   refresh              publish the form again
++ *   press <objIndex>     press a control, exactly as CtlHitControl does
++ *   value <objIndex> <n> set a checkbox or push button without pressing it
++ *   select <objIndex> <n>  choose item n of a list, or of a popup's list
++ *   text <objIndex> <s>  replace a field's text
++ *   slider <objIndex> <n>  leave a slider at n
++ *   pick <menu> <item>   pick a menu item, by its place in the menu bar
++ *   close                the form's Cancel, or its default button
++ *
++ * BOD_NATIVE_UI=0 turns all of it off: the forms draw where they always
++ * did, the menu key opens the Palm menu, and the host's window is the game
++ * with a title bar, as it was.
++ */
++
++#define UI_GAME_FORM   1001    /* the playfield: the one form that is drawn */
++#define UI_MENU_BAR    1000    /* the game's menu bar resource */
++
++#define UI_MAX_HIDDEN  16
++#define UI_MAX_ITEMS   256
++#define UI_ITEM_LEN    64
++#define UI_CMD_LEN     256
++#define UI_STATUS_LEN  49152
++#define UI_MENUS_LEN   4096
++
++/* flags, as published */
++#define UI_VISIBLE     1
++#define UI_ENABLED     2
++#define UI_DEFAULT     4
++#define UI_FOCUS       8
++#define UI_GRAPHICAL   16
++
++/* ------------------------------------------------------------- on or off */
++
++static int ui_enabled = -1;
++
++int bod_ui_on(void) {
++  char *e;
++
++  if (ui_enabled < 0) {
++    e = sys_getenv("BOD_NATIVE_UI");
++    ui_enabled = (e && sys_atoi(e) == 0) ? 0 : 1;
++    debug(DEBUG_INFO, "BOD", "native UI %s", ui_enabled ? "on: the game's own menus and dialogs are not drawn" : "off");
++  }
++
++  return ui_enabled;
++}
++
++/* --------------------------------------------------------- what is hidden */
++
++/* The windows of the forms that are up and not drawn. A form is one of
++ * these from the moment it is initialised, which is before it has drawn
++ * anything, so nothing of it is ever seen. */
++static WinHandle ui_hidden[UI_MAX_HIDDEN];
++static int ui_hidden_n;
++static WinHandle ui_game_win;
++
++int bod_ui_window_hidden(WindowType *wh) {
++  /* Nothing is hidden while the game has the screen to itself, which is
++   * almost always: this is on the path of every drawing operation. */
++  if (ui_hidden_n == 0 || wh == NULL) return 0;
++
++  /* The game's own screen still goes out. So does anything drawn straight
++   * into the display: the ARM blitter's frames land there. */
++  if (wh == ui_game_win || wh == WinGetDisplayWindow()) return 0;
++
++  /* Anything else, while a hidden form is up, belongs to it -- the form
++   * itself, a list popped up over it, the menu, the bits saved behind any
++   * of them. */
++  return 1;
++}
++
++int bod_ui_form_hidden(FormType *formP) {
++  if (formP == NULL) return 0;
++
++  return bod_ui_window_hidden(&formP->window);
++}
++
++/* ------------------------------------------------------------ the channel */
++
++static char ui_cmd[UI_CMD_LEN];
++static volatile uint32_t ui_cmd_seq;
++static uint32_t ui_cmd_seen;
++
++static char ui_status[UI_STATUS_LEN];
++static volatile uint32_t ui_status_seq;
++
++static char ui_menus[UI_MENUS_LEN];
++static volatile uint32_t ui_menus_seq;
++static int ui_menus_read;
++
++static int ui_busy;          /* a command is being carried out */
++
++void bod_ui_command(const char *cmd) {
++  if (cmd == NULL) return;
++  sys_strncpy(ui_cmd, cmd, UI_CMD_LEN - 1);
++  ui_cmd[UI_CMD_LEN - 1] = 0;
++  __atomic_add_fetch(&ui_cmd_seq, 1, __ATOMIC_RELEASE);
++}
++
++const char *bod_ui_state(void) {
++  return ui_status;
++}
++
++uint32_t bod_ui_seq(void) {
++  return __atomic_load_n(&ui_status_seq, __ATOMIC_ACQUIRE);
++}
++
++const char *bod_ui_menubar(void) {
++  return ui_menus;
++}
++
++uint32_t bod_ui_menubar_seq(void) {
++  return __atomic_load_n(&ui_menus_seq, __ATOMIC_ACQUIRE);
++}
++
++/* ---------------------------------------------------------------- strings */
++
++/* Palm's character set to UTF-8, `max` bytes of output including the
++ * terminator. Above 0x9F it is Latin-1; 0x80 to 0x9F is where Palm, like
++ * Windows, keeps its punctuation -- the ellipsis of "About..." is 0x85 --
++ * and mapping that range as Latin-1 would give control characters. */
++static const uint16_t ui_cp1252[32] = {
++  0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
++  0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
++  0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
++  0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178
++};
++
++static int ui_utf8(char *out, int max, const char *s) {
++  unsigned int w;
++  unsigned char c;
++  int n = 0;
++
++  if (s == NULL) { if (max > 0) out[0] = 0; return 0; }
++
++  for (; *s && n < max - 4; s++) {
++    c = (unsigned char)*s;
++    if (c == '\n' || c == '\r' || c == '\t') c = ' ';
++    w = (c >= 0x80 && c < 0xA0) ? ui_cp1252[c - 0x80] : c;
++    if (w < 0x80) {
++      out[n++] = w;
++    } else if (w < 0x800) {
++      out[n++] = 0xC0 | (w >> 6);
++      out[n++] = 0x80 | (w & 0x3F);
++    } else {
++      out[n++] = 0xE0 | (w >> 12);
++      out[n++] = 0x80 | ((w >> 6) & 0x3F);
++      out[n++] = 0x80 | (w & 0x3F);
++    }
++  }
++  out[n] = 0;
++
++  return n;
++}
++
++/* And back, for text the host types into a field. Anything that is not a
++ * Latin-1 character the game could have had is dropped. */
++static void ui_latin1(char *out, int max, const char *s) {
++  unsigned char c;
++  int n = 0;
++
++  for (; *s && n < max - 1; s++) {
++    c = (unsigned char)*s;
++    if (c < 0x80) {
++      out[n++] = c;
++    } else if ((c & 0xE0) == 0xC0 && (s[1] & 0xC0) == 0x80) {
++      unsigned int w = ((c & 0x1F) << 6) | (s[1] & 0x3F);
++      if (w >= 0xA0 && w <= 0xFF) out[n++] = w;
++      s++;
++    } else if ((c & 0xF0) == 0xE0) {
++      s += 2;
++    } else if ((c & 0xF8) == 0xF0) {
++      s += 3;
++    }
++  }
++  out[n] = 0;
++}
++
++/* --------------------------------------------------- reading a list's items */
++
++/* Bike or Die draws its list items itself -- a level's name and its best
++ * time are made up as the row is drawn -- so the only way to read one is to
++ * draw it where nobody can see it and keep what it writes. */
++volatile int bod_ui_capturing;
++static char ui_items[UI_MAX_ITEMS][UI_ITEM_LEN];
++static int ui_item_count;
++static int ui_item_at = -1;
++
++/* An item is drawn in pieces -- a name here, a time there -- and comes back
++ * with the gaps between them at its ends. */
++static void ui_trim(char *s) {
++  int n = sys_strlen(s), i = 0;
++
++  while (n > 0 && (unsigned char)s[n-1] <= ' ') s[--n] = 0;
++  while (s[i] && (unsigned char)s[i] <= ' ') i++;
++  if (i) sys_memmove(s, s + i, n - i + 1);
++}
++
++void bod_ui_capture(const unsigned char *chars, int len) {
++  char *item;
++  int n, i;
++
++  if (ui_item_at < 0 || ui_item_at >= UI_MAX_ITEMS) return;
++  item = ui_items[ui_item_at];
++  n = sys_strlen(item);
++  if (n && n < UI_ITEM_LEN - 1) item[n++] = ' ';
++  for (i = 0; i < len && n < UI_ITEM_LEN - 1; i++) item[n++] = chars[i];
++  item[n] = 0;
++}
++
++static int ui_read_items(ListType *list) {
++  WinHandle off, old;
++  RectangleType rect;
++  FontID font;
++  Int16 dy;
++  UInt16 err;
++  int i;
++
++  ui_item_count = 0;
++  if (list == NULL || list->numItems <= 0) return 0;
++
++  ui_item_count = list->numItems < UI_MAX_ITEMS ? list->numItems : UI_MAX_ITEMS;
++
++  /* An ordinary list keeps its items as strings. They are read through
++   * LstGetSelectionText and not out of itemsText: in a 68k application that
++   * array holds addresses in the emulated machine's memory, not pointers
++   * this side can follow. */
++  if (list->m68k_drawfunc == 0 && list->drawItemsCallback == NULL) {
++    for (i = 0; i < ui_item_count; i++) {
++      const Char *text = LstGetSelectionText(list, i);
++
++      ui_items[i][0] = 0;
++      if (text) {
++        sys_strncpy(ui_items[i], text, UI_ITEM_LEN - 1);
++        ui_trim(ui_items[i]);
++      }
++    }
++    return ui_item_count;
++  }
++
++  font = FntSetFont(list->font);
++  dy = FntCharHeight();
++  FntSetFont(font);
++
++  if ((off = WinCreateOffscreenWindow(list->bounds.extent.x, dy, nativeFormat, &err)) == NULL) {
++    ui_item_count = 0;
++    return 0;
++  }
++  old = WinSetDrawWindow(off);
++
++  for (i = 0; i < ui_item_count; i++) {
++    ui_items[i][0] = 0;
++    RctSetRectangle(&rect, 1, 0, list->bounds.extent.x - 2, dy);
++    ui_item_at = i;
++    bod_ui_capturing = 1;
++    if (list->m68k_drawfunc) {
++      CallListDrawItem(list->m68k_drawfunc, i, &rect, list->itemsText);
++    } else {
++      list->drawItemsCallback(i, &rect, list->itemsText);
++    }
++    bod_ui_capturing = 0;
++    ui_item_at = -1;
++    if (ui_items[i][0] == 0) sys_snprintf(ui_items[i], UI_ITEM_LEN, "(item %d)", i + 1);
++    else ui_trim(ui_items[i]);
++  }
++
++  WinSetDrawWindow(old);
++  WinDeleteWindow(off, false);
++  FntSetFont(font);
++
++  return ui_item_count;
++}
++
++/* ------------------------------------------------------- describing a form */
++
++static const char *ui_control_kind(const ControlType *ctl) {
++  switch (ctl->style) {
++    case buttonCtl:          return "button";
++    case pushButtonCtl:      return "push";
++    case checkboxCtl:        return "check";
++    case popupTriggerCtl:    return "popup";
++    case selectorTriggerCtl: return "selector";
++    case repeatingButtonCtl: return "repeat";
++    case sliderCtl:
++    case feedbackSliderCtl:  return "slider";
++    default:                 return "other";
++  }
++}
++
++/* One object, and for a list the items behind it. */
++static int ui_put_object(char *out, int max, FormType *formP, UInt16 i) {
++  const ControlType *ctl;
++  const FieldType *fld;
++  const ListType *list;
++  RectangleType rect;
++  const char *kind = NULL, *text = NULL;
++  int flags = 0, value = 0, group = 0, link = 0;
++  int n = 0, j;
++
++  MemSet(&rect, sizeof(RectangleType), 0);
++  FrmGetObjectBounds(formP, i, &rect);
++
++  switch (FrmGetObjectType(formP, i)) {
++    case frmControlObj:
++      ctl = (const ControlType *)FrmGetObjectPtr(formP, i);
++      if (ctl == NULL) return 0;
++      kind = ui_control_kind(ctl);
++      text = CtlGetLabel(ctl);
++      value = ctl->selected ? 1 : 0;
++      group = ctl->group;
++      link = ctl->listID;
++      if (ctl->attr.visible) flags |= UI_VISIBLE;
++      if (ctl->attr.usable && ctl->attr.enabled) flags |= UI_ENABLED;
++      if (ctl->attr.graphical) flags |= UI_GRAPHICAL;
++      break;
++
++    case frmFieldObj:
++      fld = (const FieldType *)FrmGetObjectPtr(formP, i);
++      if (fld == NULL) return 0;
++      kind = "field";
++      text = FldGetTextPtr((FieldType *)fld);
++      /* A field the game only writes into -- the time a level was finished
++       * in, say -- is text, not somewhere to type. */
++      if (fld->attr.visible) flags |= UI_VISIBLE;
++      if (fld->attr.editable) flags |= UI_ENABLED;
++      break;
++
++    case frmListObj:
++      list = (const ListType *)FrmGetObjectPtr(formP, i);
++      if (list == NULL) return 0;
++      kind = "list";
++      value = list->currentItem;
++      link = list->controlID;
++      if (list->attr.visible) flags |= UI_VISIBLE;
++      flags |= UI_ENABLED;
++      break;
++
++    case frmLabelObj:
++      kind = "label";
++      /* Not FrmGetLabel: that finds a label by its id, and the game has
++       * several with no id of their own. */
++      text = formP->objects[i].object.label ? formP->objects[i].object.label->text : NULL;
++      if (formP->objects[i].object.label && formP->objects[i].object.label->attr.visible) flags |= UI_VISIBLE;
++      break;
++
++    case frmTitleObj:
++      kind = "title";
++      text = FrmGetTitle(formP);
++      flags |= UI_VISIBLE;
++      break;
++
++    case frmTableObj:   kind = "table";  flags |= UI_VISIBLE | UI_ENABLED; break;
++    case frmScrollBarObj: kind = "scroll"; break;
++    case frmBitmapObj:  kind = "bitmap"; break;
++    case frmGadgetObj:  kind = "gadget"; break;
++    default:
++      return 0;
++  }
++
++  if (formP->defaultButton && FrmGetObjectId(formP, i) == formP->defaultButton) flags |= UI_DEFAULT;
++  if (formP->focus == i) flags |= UI_FOCUS;
++
++  n += sys_snprintf(out + n, max - n, "obj %u %s %u %d %d %d %d %d %d %d %d ",
++                    i, kind, FrmGetObjectId(formP, i), flags, value, group, link,
++                    rect.topLeft.x, rect.topLeft.y, rect.extent.x, rect.extent.y);
++  n += ui_utf8(out + n, max - n, text);
++  n += sys_snprintf(out + n, max - n, "\n");
++
++  /* A slider is a range, not a state: what it is set to and what it may be. */
++  if (!sys_strcmp(kind, "slider")) {
++    UInt16 lo = 0, hi = 0, page = 0, at = 0;
++
++    CtlGetSliderValues((const ControlType *)FrmGetObjectPtr(formP, i), &lo, &hi, &page, &at);
++    n += sys_snprintf(out + n, max - n, "slider %u %d %d %d\n", i, at, lo, hi);
++  }
++
++  if (FrmGetObjectType(formP, i) == frmListObj) {
++    list = (const ListType *)FrmGetObjectPtr(formP, i);
++    ui_read_items((ListType *)list);
++    n += sys_snprintf(out + n, max - n, "items %u %d %d\n", i, ui_item_count, list->currentItem);
++    for (j = 0; j < ui_item_count && n < max - UI_ITEM_LEN * 2 - 32; j++) {
++      n += sys_snprintf(out + n, max - n, "item %u %d ", i, j);
++      n += ui_utf8(out + n, max - n, ui_items[j]);
++      n += sys_snprintf(out + n, max - n, "\n");
++    }
++  }
++
++  return n;
++}
++
++/* The form the host should be showing: the one that is up, unless it is
++ * the game itself. */
++static FormType *ui_form(void) {
++  FormType *formP = FrmGetActiveForm();
++
++  if (formP == NULL || formP->formId == UI_GAME_FORM) return NULL;
++
++  return formP;
++}
++
++static void ui_publish(void) {
++  FormType *formP = ui_form();
++  UInt16 i, count;
++  int n = 0;
++
++  /* Odd while the text is being written, so a torn read is noticed. */
++  __atomic_add_fetch(&ui_status_seq, 1, __ATOMIC_RELEASE);
++
++  n += sys_snprintf(ui_status + n, UI_STATUS_LEN - n, "%s\n", ui_busy ? "busy" : "ready");
++
++  if (formP == NULL) {
++    n += sys_snprintf(ui_status + n, UI_STATUS_LEN - n, "form 0\n");
++  } else {
++    n += sys_snprintf(ui_status + n, UI_STATUS_LEN - n, "form %u %d %d %d\n",
++                      formP->formId, formP->window.windowFlags.modal ? 1 : 0,
++                      formP->window.windowBounds.extent.x, formP->window.windowBounds.extent.y);
++    n += sys_snprintf(ui_status + n, UI_STATUS_LEN - n, "title ");
++    n += ui_utf8(ui_status + n, UI_STATUS_LEN - n, FrmGetTitle(formP));
++    n += sys_snprintf(ui_status + n, UI_STATUS_LEN - n, "\n");
++    n += sys_snprintf(ui_status + n, UI_STATUS_LEN - n, "default %d\n",
++                      formP->defaultButton ? (int)FrmGetObjectIndex(formP, formP->defaultButton) : -1);
++
++    count = FrmGetNumberOfObjects(formP);
++    for (i = 0; i < count && n < UI_STATUS_LEN - 4096; i++) {
++      n += ui_put_object(ui_status + n, UI_STATUS_LEN - n, formP, i);
++    }
++  }
++
++  __atomic_add_fetch(&ui_status_seq, 1, __ATOMIC_RELEASE);
++}
++
++/* ------------------------------------------------------------ the menu bar */
++
++/* The game's menu bar, read once out of its MBAR resource. The host builds
++ * its own menu from it, so the items are named by where they are rather
++ * than by their labels: two of Bike or Die's are called "Control" and
++ * three "Hall of Fame". */
++static void ui_read_menus(void) {
++  MenuBarType *mbar;
++  MemHandle h;
++  int n = 0, i, j;
++
++  if (ui_menus_read) return;
++  if ((h = DmGetResource(MenuRscType, UI_MENU_BAR)) == NULL) return;
++
++  if ((mbar = MemHandleLock(h)) != NULL) {
++    __atomic_add_fetch(&ui_menus_seq, 1, __ATOMIC_RELEASE);
++
++    for (i = 0; i < mbar->numMenus && n < UI_MENUS_LEN - 256; i++) {
++      n += sys_snprintf(ui_menus + n, UI_MENUS_LEN - n, "menu %d ", i);
++      n += ui_utf8(ui_menus + n, UI_MENUS_LEN - n, mbar->menus[i].title);
++      n += sys_snprintf(ui_menus + n, UI_MENUS_LEN - n, "\n");
++
++      for (j = 0; j < mbar->menus[i].numItems && n < UI_MENUS_LEN - 128; j++) {
++        if (mbar->menus[i].items[j].itemStr == NULL) continue;
++        n += sys_snprintf(ui_menus + n, UI_MENUS_LEN - n, "mitem %d %d %u ", i, j, mbar->menus[i].items[j].id);
++        n += ui_utf8(ui_menus + n, UI_MENUS_LEN - n, mbar->menus[i].items[j].itemStr);
++        n += sys_snprintf(ui_menus + n, UI_MENUS_LEN - n, "\n");
++      }
++    }
++
++    ui_menus_read = 1;
++    __atomic_add_fetch(&ui_menus_seq, 1, __ATOMIC_RELEASE);
++    MemHandleUnlock(h);
++    debug(DEBUG_INFO, "BOD", "native UI: read the game's menu bar, %d menus", mbar->numMenus);
++  }
++
++  DmReleaseResource(h);
++}
++
++/* The item id at (menu, item) of the game's own menu bar. */
++static UInt16 ui_menu_item(int menu, int item) {
++  MenuBarType *mbar;
++  MemHandle h;
++  UInt16 id = 0;
++
++  if ((h = DmGetResource(MenuRscType, UI_MENU_BAR)) == NULL) return 0;
++  if ((mbar = MemHandleLock(h)) != NULL) {
++    if (menu >= 0 && menu < mbar->numMenus && item >= 0 && item < mbar->menus[menu].numItems) {
++      id = mbar->menus[menu].items[item].id;
++    }
++    MemHandleUnlock(h);
++  }
++  DmReleaseResource(h);
++
++  return id;
++}
++
++/* -------------------------------------------------------------- commands */
++
++static FormType *ui_command_form(void) {
++  FormType *formP = ui_form();
++
++  if (formP == NULL) debug(DEBUG_INFO, "BOD", "native UI: no dialog is up");
++
++  return formP;
++}
++
++static void ui_press(FormType *formP, UInt16 i) {
++  const ControlType *ctl;
++
++  if (FrmGetObjectType(formP, i) != frmControlObj) return;
++  if ((ctl = (const ControlType *)FrmGetObjectPtr(formP, i)) == NULL) return;
++  CtlHitControl(ctl);
++}
++
++/* Choosing an item of a list, the way the five-way navigator does it: the
++ * game hears a popSelectEvent for a popup's list and an lstSelectEvent for
++ * a plain one, which is what its handlers are written against. */
++static void ui_select(FormType *formP, UInt16 i, Int16 sel) {
++  EventType event;
++  ListType *list;
++
++  if (FrmGetObjectType(formP, i) != frmListObj) return;
++  if ((list = (ListType *)FrmGetObjectPtr(formP, i)) == NULL) return;
++  if (sel < 0 || sel >= list->numItems) return;
++
++  LstSetSelection(list, sel);
++  LstMakeItemVisible(list, sel);
++  if (list->attr.visible) LstDrawList(list);
++
++  MemSet(&event, sizeof(EventType), 0);
++  if (list->controlID) {
++    event.eType = popSelectEvent;
++    event.data.popSelect.listID = list->id;
++    event.data.popSelect.listP = list;
++    event.data.popSelect.selection = sel;
++    event.data.popSelect.priorSelection = list->currentItem;
++    event.data.popSelect.controlID = list->controlID;
++    event.data.popSelect.controlP = FrmGetObjectPtr(formP, FrmGetObjectIndex(formP, list->controlID));
++  } else {
++    event.eType = lstSelectEvent;
++    event.data.lstSelect.listID = list->id;
++    event.data.lstSelect.pList = list;
++    event.data.lstSelect.selection = sel;
++  }
++  list->currentItem = sel;
++  EvtAddEventToQueue(&event);
++}
++
++/* Moving a slider, the way letting go of it over the control does: the game
++ * hears one ctlSelectEvent carrying the value it was left at. */
++static void ui_slider(FormType *formP, UInt16 i, Int16 value) {
++  ControlType *ctl;
++  EventType event;
++  UInt16 lo = 0, hi = 0, at;
++
++  if (FrmGetObjectType(formP, i) != frmControlObj) return;
++  if ((ctl = (ControlType *)FrmGetObjectPtr(formP, i)) == NULL) return;
++  if (ctl->style != sliderCtl && ctl->style != feedbackSliderCtl) return;
++
++  CtlGetSliderValues(ctl, &lo, &hi, NULL, NULL);
++  if (value < (Int16)lo) value = lo;
++  if (value > (Int16)hi) value = hi;
++  at = value;
++  CtlSetSliderValues(ctl, NULL, NULL, NULL, &at);
++
++  MemSet(&event, sizeof(EventType), 0);
++  event.eType = ctlSelectEvent;
++  event.data.ctlSelect.controlID = ctl->id;
++  event.data.ctlSelect.pControl = ctl;
++  event.data.ctlSelect.value = at;
++  EvtAddEventToQueue(&event);
++}
++
++static void ui_text(FormType *formP, UInt16 i, const char *utf8) {
++  char latin1[UI_CMD_LEN];
++  FieldType *fld;
++
++  if (FrmGetObjectType(formP, i) != frmFieldObj) return;
++  if ((fld = (FieldType *)FrmGetObjectPtr(formP, i)) == NULL) return;
++
++  ui_latin1(latin1, sizeof(latin1), utf8);
++  FrmSetFocus(formP, i);
++  FldDelete(fld, 0, FldGetTextLength(fld));
++  FldInsert(fld, latin1, sys_strlen(latin1));
++}
++
++/* The way out of a dialog: what the player would press to leave it alone. */
++static void ui_close(FormType *formP) {
++  static const char *ways[] = { "Cancel", "Close", "Done", "No", "OK", NULL };
++  const ControlType *ctl;
++  const Char *label;
++  UInt16 i, count;
++  int w;
++
++  count = FrmGetNumberOfObjects(formP);
++  for (w = 0; ways[w]; w++) {
++    for (i = 0; i < count; i++) {
++      if (FrmGetObjectType(formP, i) != frmControlObj) continue;
++      if ((ctl = (const ControlType *)FrmGetObjectPtr(formP, i)) == NULL || !ctl->attr.visible) continue;
++      if (ctl->style != buttonCtl) continue;
++      if ((label = CtlGetLabel(ctl)) != NULL && !sys_strcmp(label, ways[w])) {
++        CtlHitControl(ctl);
++        return;
++      }
++    }
++  }
++
++  if (formP->defaultButton) {
++    i = FrmGetObjectIndex(formP, formP->defaultButton);
++    if (i != frmInvalidObjectId) ui_press(formP, i);
++  }
++}
++
++static void ui_take_command(void) {
++  uint32_t seq = __atomic_load_n(&ui_cmd_seq, __ATOMIC_ACQUIRE);
++  char cmd[UI_CMD_LEN];
++  FormType *formP;
++  EventType event;
++  UInt16 id;
++  int a = 0, b = 0;
++  char *arg;
++
++  if (seq == ui_cmd_seen) return;
++  ui_cmd_seen = seq;
++  sys_strncpy(cmd, ui_cmd, UI_CMD_LEN - 1);
++  cmd[UI_CMD_LEN - 1] = 0;
++  debug(DEBUG_INFO, "BOD", "native UI: command \"%s\"", cmd);
++
++  ui_busy = 1;
++
++  if (!sys_strcmp(cmd, "refresh")) {
++    /* published below */
++
++  } else if (!sys_strncmp(cmd, "press ", 6)) {
++    if ((formP = ui_command_form()) != NULL) ui_press(formP, sys_atoi(cmd + 6));
++
++  } else if (!sys_strncmp(cmd, "value ", 6)) {
++    arg = cmd + 6;
++    a = sys_atoi(arg);
++    while (*arg && *arg != ' ') arg++;
++    b = sys_atoi(arg);
++    if ((formP = ui_command_form()) != NULL && FrmGetObjectType(formP, a) == frmControlObj) {
++      CtlSetValue((ControlType *)FrmGetObjectPtr(formP, a), b);
++    }
++
++  } else if (!sys_strncmp(cmd, "select ", 7)) {
++    arg = cmd + 7;
++    a = sys_atoi(arg);
++    while (*arg && *arg != ' ') arg++;
++    b = sys_atoi(arg);
++    if ((formP = ui_command_form()) != NULL) ui_select(formP, a, b);
++
++  } else if (!sys_strncmp(cmd, "text ", 5)) {
++    arg = cmd + 5;
++    a = sys_atoi(arg);
++    while (*arg && *arg != ' ') arg++;
++    if (*arg) arg++;
++    if ((formP = ui_command_form()) != NULL) ui_text(formP, a, arg);
++
++  } else if (!sys_strncmp(cmd, "pick ", 5)) {
++    arg = cmd + 5;
++    a = sys_atoi(arg);
++    while (*arg && *arg != ' ') arg++;
++    b = sys_atoi(arg);
++    if ((id = ui_menu_item(a, b)) != 0) {
++      MemSet(&event, sizeof(EventType), 0);
++      event.eType = menuEvent;
++      event.data.menu.itemID = id;
++      EvtAddEventToQueue(&event);
++    } else {
++      debug(DEBUG_ERROR, "BOD", "native UI: no menu item %d/%d", a, b);
++    }
++
++  } else if (!sys_strncmp(cmd, "slider ", 7)) {
++    arg = cmd + 7;
++    a = sys_atoi(arg);
++    while (*arg && *arg != ' ') arg++;
++    b = sys_atoi(arg);
++    if ((formP = ui_command_form()) != NULL) ui_slider(formP, a, b);
++
++  } else if (!sys_strcmp(cmd, "close")) {
++    if ((formP = ui_command_form()) != NULL) ui_close(formP);
++
++  } else {
++    debug(DEBUG_ERROR, "BOD", "native UI: unknown command \"%s\"", cmd);
++  }
++
++  /* What the command did lands in the game's event queue; the form as it
++   * will be is published when it next draws. This is the acknowledgement. */
++  ui_busy = 0;
++  ui_publish();
++}
++
++/* ----------------------------------------------------------- the hooks */
++
++void bod_ui_form_init(FormType *formP) {
++  if (formP == NULL) return;
++
++  if (formP->formId == UI_GAME_FORM) {
++    ui_game_win = &formP->window;
++    return;
++  }
++
++  if (!bod_ui_on()) return;
++
++  if (ui_hidden_n < UI_MAX_HIDDEN) {
++    ui_hidden[ui_hidden_n++] = &formP->window;
++    debug(DEBUG_TRACE, "BOD", "native UI: form %d is up and not drawn", formP->formId);
++  } else {
++    debug(DEBUG_ERROR, "BOD", "native UI: more than %d forms at once; form %d is drawn", UI_MAX_HIDDEN, formP->formId);
++  }
++}
++
++void bod_ui_form_delete(FormType *formP) {
++  int i;
++
++  if (formP == NULL) return;
++  if (&formP->window == ui_game_win) ui_game_win = NULL;
++
++  for (i = 0; i < ui_hidden_n; i++) {
++    if (ui_hidden[i] == &formP->window) {
++      ui_hidden[i] = ui_hidden[--ui_hidden_n];
++      break;
++    }
++  }
++
++  if (bod_ui_on()) ui_publish();
++}
++
++void bod_ui_form_drawn(FormType *formP) {
++  if (formP == NULL || !bod_ui_on()) return;
++  ui_publish();
++}
++
++void bod_ui_idle(void) {
++  if (!bod_ui_on()) return;
++  ui_read_menus();
++  ui_take_command();
++}
++
++int bod_ui_swallow_menu_key(void) {
++  /* The native menu bar is the game's menu bar: the Palm one behind the
++   * menu key would only be the same items, drawn small and hidden. */
++  return bod_ui_on();
++}
+diff --git a/src/libpumpkin/bodui.h b/src/libpumpkin/bodui.h
+new file mode 100644
+index 0000000..6b04b47
+--- /dev/null
++++ b/src/libpumpkin/bodui.h
+@@ -0,0 +1,46 @@
++#ifndef BODUI_H
++#define BODUI_H
++
++#include <stdint.h>
++
++/* The game's own UI, kept off the screen and mirrored to the host.
++ * bodui.c describes all of it. */
++
++/* Whether the native front is on at all (BOD_NATIVE_UI, default 1). */
++int bod_ui_on(void);
++
++/* The host's side: a command in, a description of what the game has on
++ * screen out. Both may be called from another thread. */
++void bod_ui_command(const char *cmd);
++const char *bod_ui_state(void);
++uint32_t bod_ui_seq(void);
++
++/* The game's menu bar, once it has been read: the same lines a form
++ * publishes, "menu" and "mitem". Empty until the game has a menu. */
++const char *bod_ui_menubar(void);
++uint32_t bod_ui_menubar_seq(void);
++
++/* The application's thread: the hooks the rest of PumpkinOS calls. */
++struct FormType;
++struct WindowType;
++
++void bod_ui_form_init(struct FormType *formP);
++void bod_ui_form_delete(struct FormType *formP);
++void bod_ui_form_drawn(struct FormType *formP);
++void bod_ui_idle(void);
++
++/* Whether what is drawn into this window reaches the screen (Window.c). */
++int bod_ui_window_hidden(struct WindowType *wh);
++
++/* Whether this form is one of the ones the host draws instead (Form.c). */
++int bod_ui_form_hidden(struct FormType *formP);
++
++/* The Palm menu key: the native menu bar has taken its place (Event.c). */
++int bod_ui_swallow_menu_key(void);
++
++/* A list's items are drawn by the game, so they are read by drawing them
++ * where nobody can see it (Window.c hands the text over). */
++extern volatile int bod_ui_capturing;
++void bod_ui_capture(const unsigned char *chars, int len);
 +
 +#endif
 diff --git a/src/libpumpkin/emulation/KeySysTrap.c b/src/libpumpkin/emulation/KeySysTrap.c
@@ -8866,10 +11329,10 @@ index 0000000..1090b1f
 +include ../lib.mak
 diff --git a/src/libwtest/libwtest.c b/src/libwtest/libwtest.c
 new file mode 100644
-index 0000000..2f4afef
+index 0000000..d3be398
 --- /dev/null
 +++ b/src/libwtest/libwtest.c
-@@ -0,0 +1,503 @@
+@@ -0,0 +1,554 @@
 +/* Headless window driver for automated testing.
 + *
 + * Keeps the composed framebuffer in memory, writes periodic PPM snapshots, and
@@ -8909,10 +11372,10 @@ index 0000000..2f4afef
 +typedef struct {
 +  int op;                 /* see OP_ below */
 +  int a, b;
-+  char label[64];         /* a shot's name, or a pack command */
++  char label[64];         /* a shot's name, or a pack or ui command */
 +} action_t;
 +
-+enum { OP_WAIT = 1, OP_KEYDOWN, OP_KEYUP, OP_PEN, OP_TAPDOWN, OP_TAPUP, OP_SHOT, OP_PACK };
++enum { OP_WAIT = 1, OP_KEYDOWN, OP_KEYUP, OP_PEN, OP_TAPDOWN, OP_TAPUP, OP_SHOT, OP_PACK, OP_UI };
 +
 +typedef struct {
 +  int width, height, spixel;
@@ -9045,6 +11508,9 @@ index 0000000..2f4afef
 +
 +static void (*wt_pack_command)(const char *cmd);
 +static const char *(*wt_pack_state)(void);
++static void (*wt_ui_command)(const char *cmd);
++static const char *(*wt_ui_state)(void);
++static const char *(*wt_ui_menubar)(void);
 +
 +static void *wt_symbol(const char *name) {
 +  void *sym;
@@ -9102,6 +11568,41 @@ index 0000000..2f4afef
 +  wt_pack_command(cmd);
 +}
 +
++/* The same for the native UI's channel (bodui.c). "ui dump" logs what the
++ * game has on screen -- every line of it, so a test can be read in the log --
++ * and anything else is handed over as a command. */
++static void wt_ui(const char *cmd) {
++  char line[256];
++  const char *s;
++  int i, n;
++
++  if (!wt_ui_command) wt_ui_command = wt_symbol("bod_ui_command");
++  if (!wt_ui_state) wt_ui_state = wt_symbol("bod_ui_state");
++  if (!wt_ui_command || !wt_ui_state) {
++    debug(DEBUG_ERROR, "WTEST", "ui: bod_ui_command not found");
++    return;
++  }
++
++  if (!sys_strcmp(cmd, "dump") || !sys_strcmp(cmd, "menus")) {
++    if (!wt_ui_menubar) wt_ui_menubar = wt_symbol("bod_ui_menubar");
++    s = sys_strcmp(cmd, "menus") ? wt_ui_state() : (wt_ui_menubar ? wt_ui_menubar() : "");
++    for (i = 0, n = 0; ; i++) {
++      if (s[i] == '\n' || s[i] == 0 || n >= (int)sizeof(line) - 1) {
++        line[n] = 0;
++        if (n) debug(DEBUG_INFO, "WTEST", "ui| %s", line);
++        n = 0;
++        if (s[i] == 0) break;
++      } else {
++        line[n++] = s[i];
++      }
++    }
++    return;
++  }
++
++  debug(DEBUG_INFO, "WTEST", "ui: sending \"%s\"", cmd);
++  wt_ui_command(cmd);
++}
++
 +/* ------------------------------------------------------------------- script */
 +
 +static int keyname(const char *s) {
@@ -9147,6 +11648,15 @@ index 0000000..2f4afef
 +        }
 +      }
 +      else if (!sys_strcmp(w0, "shot"))    { a->op = OP_SHOT;    sys_strncpy(a->label, w1, sizeof(a->label)-1); }
++      else if (!sys_strcmp(w0, "ui")) {
++        /* the command is the rest of the line: "text 3 Sam" has spaces */
++        const char *s = line;
++        while (*s == ' ' || *s == '\t') s++;
++        s += 2;
++        while (*s == ' ' || *s == '\t') s++;
++        a->op = OP_UI;
++        sys_strncpy(a->label, s, sizeof(a->label)-1);
++      }
 +      else if (!sys_strcmp(w0, "pack")) {
 +        /* the command is the rest of the line: "menu Next Level" has spaces */
 +        const char *s = line;
@@ -9301,6 +11811,10 @@ index 0000000..2f4afef
 +      return 0;
 +    case OP_PACK:
 +      wt_pack(a->label);
++      window->cur++;
++      return 0;
++    case OP_UI:
++      wt_ui(a->label);
 +      window->cur++;
 +      return 0;
 +    case OP_PEN:
