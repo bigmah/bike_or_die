@@ -43,6 +43,12 @@ to be translated too, not just run.
    exceeds the 50,000 locals a wasm function may have or, at `-O1`, produces one that
    misbehaves. `BOD_CHUNK_SLOTS` changes it.
 
+   The same shape is why the two builds keep the registers in different places. Natively
+   a chunk loads them into locals on the way in and saves them on the way out. The
+   WebAssembly build leaves them in the state structure (`RECOMP_MEMREGS`), and takes the
+   bounds check on every access without the bookkeeping that names the instruction that
+   failed one (`RECOMP_BOUNDS` rather than `RECOMP_GUARD`); see **On a phone**.
+
    That becomes ~185k lines of generated C (`src/gen`), ~11 MB of native code.
 3. **Bridging.** Traps become direct calls into the Palm OS layer; `PceNativeCall`,
    the ARM→68k trampoline and the PACE syscall addresses are handled by the glue in
@@ -531,6 +537,7 @@ Useful knobs while debugging the ARM core:
 | `BOD_ARM_STRICT=1` | make out-of-range accesses fatal instead of clamped |
 | `BOD_ARM_LOCKSTEP=<n>` | run every instruction of `armc` *n* under both cores and report the first register that disagrees |
 | `BOD_WEB_TRACE=<n>` | report where each dispatch loop is every *n* dispatches; `1` reports every one. Written for the browser, where a blocked thread cannot be looked at, but it works anywhere |
+| `BOD_PACE=0` | let an application that polls for events go round as fast as it can, instead of once per frame the display takes. See **On a phone** |
 | `BOD_FPS=<n>` | how often at most the screen is copied to the display, in frames a second (default 60, clamped to 5-240). `20` is what PumpkinOS does on its own; lower is cheaper on a phone's battery. In a browser the display's own refresh paces the frames and this is the ceiling on it |
 | `BOD_PRESENT=sdl` | in a browser, hand the frame to the canvas through SDL again rather than from the page. Slower, and there for comparing the two |
 
@@ -551,6 +558,10 @@ frames. Both need the local Chrome and puppeteer-core that `tools/setup.sh` inst
 
     tools/webserver.py 8080 build/web &
     tools/webfps.js -u http://127.0.0.1:8080/pumpkin.html
+    tools/webfps.js -u http://127.0.0.1:8080/pumpkin.html --js-flags --liftoff-only
+
+The second is the one to believe about a phone: V8's baseline compiler only, which is the
+nearest a desk gets to one. See **On a phone**.
 
 ## In a browser
 
@@ -560,7 +571,7 @@ with no native binary at all:
     tools/make_web.sh                       # emcc; needs emscripten in PATH
     tools/webserver.py 8080 build/web       # then open http://127.0.0.1:8080/
 
-`build/web` is a directory of static files (36 MB, about 12 MB over the wire) that can be
+`build/web` is a directory of static files (16 MB, about 5 MB over the wire) that can be
 served from anywhere. It needs the two headers that make a page cross-origin isolated --
 `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`
 -- because PumpkinOS runs on threads and `SharedArrayBuffer` is what they share memory
@@ -693,13 +704,64 @@ whatever follows it, which was the colour table: every dark colour in the game c
 wrong, so the grass was periwinkle and the tyres were tan while the sky, higher up the
 table, was perfect. Both the blit and the texture upload clip now.
 
-The emulation is not what is in the way, which is worth saying because it is the thing
-that looks expensive. Counted where the game marks its own screen dirty, it draws about
-five hundred frames a second; all that was ever throttled is how many of them were carried
-to the display. Throttling the machine to a sixth of its speed -- enough to stretch the
-boot from 1.2s to 6.0s -- left both measurements roughly where they were. Recompiling the
-cores at `-O2` would be optimising something with at least six times the headroom it
-needs, on functions the note above says clang already handles badly.
+**On a phone** none of that was enough, and what was wrong was not the display. All of the
+above was measured in Chrome on a Mac, which has cores to burn and a compiler that hides a
+great deal; the same page on a phone was a slide show. `tools/webfps.js --js-flags
+--liftoff-only` is the nearest thing to a phone that can be had at a desk: it keeps the game
+in V8's baseline compiler. That is an inference about a phone and not a measurement of one
+-- a browser leaves functions this size in its baseline tier longest, and a phone has the
+least to spare while it does -- but it is the inference that fits what the phone showed.
+There the build that did 59 frames a second did **12.7**, on
+an M4. It now does 59.6 there, with one frame in 714 late -- the game's own pause after a
+crash -- and the game's thread is busy for 2ms of each 16.7, where it used to be busy for
+all of them. Four things, each of which was most of the cost at the time it was found:
+
+- **The screen was copied a pixel at a time.** Every `WinCopyRectangle` to the screen ends
+  in `BmpDrawSurface`, which took each pixel apart into red, green and blue, put it back
+  together, and stored it through a function pointer -- 102,400 times a frame, twice, to
+  arrive at the sixteen bits it started with. It was five sixths of the game's thread,
+  natively too: `sample` shows the game's own drawing as a sliver beside it. A 16-bit
+  bitmap onto an RGB565 surface is a row copy now (`BmpDrawSurface565`), checked against
+  the old path byte for byte over 330,000 copies before the old path was let go.
+- **The game never stopped.** It asks for its next event without waiting for one and goes
+  round again, copying the same picture to the screen -- fifteen thousand times a second
+  once the copy was cheap, of which the display takes sixty -- holding a core, and the lock
+  on the screen against the thread trying to copy it out. An application that polls and has
+  drawn a frame the display has not taken yet now sleeps until it has been
+  (`pumpkin_frame_wait`, and `MSG_FRAME` from `draw_task` when the frame is taken). It
+  sleeps on its message queue, so a key or the mixer still wakes it at once; it draws the
+  next frame straight after the last was taken, with a whole refresh to draw it in; and
+  every refresh finds one complete new frame. The game's clock is still the real one, so
+  nothing rides differently. Natively the same thing takes the game from a whole core to a
+  fifth of one. `BOD_PACE=0` turns it off.
+- **The browser build's threads could not be woken.** PumpkinOS's threads talk through
+  queues, and the one the wasm build uses (`libpit/threadptr.c`) slept through its timeout
+  a quarter at a time and looked again after each, so a thread waiting 50ms heard of a
+  message up to 12ms after it was sent. Nobody had noticed because the game never waited.
+  The queue has a condition variable now. That is the wait the mixer sits in for the
+  game's audio, too.
+- **And the recompiled code was built for a register machine.** Every instruction in a
+  chunk is a label the dispatch at the top can jump to, so every instruction is somewhere
+  each register can arrive two ways. Natively that is free. In wasm the edges out of a
+  `br_table` cannot be split, so clang gave each of the nineteen a local of its own *at
+  every instruction* -- 3,645 locals in one function of 256 instructions, which has ten
+  now -- and an instruction that changed one register copied all nineteen into the next
+  instruction's set. `RECOMP_GUARD` made it
+  worse in the same way: the `n + SEGBASE` it stores in front of each instruction, so that
+  a wild access can be blamed on one, were all hoisted to the top of the chunk, two
+  hundred and fifty sums to work out and spill on every entry -- every call, return and
+  branch between chunks, of which a frame has some eight thousand. So the wasm build keeps
+  the registers in the state structure, where an instruction is two loads and a store and
+  nothing is copied anywhere (`RECOMP_MEMREGS`; the generated C is the same, and only what
+  `r3` means differs), and keeps the bounds check without the bookkeeping
+  (`RECOMP_BOUNDS`): a wild access is still caught and still reported, with a program
+  counter that means nothing. Drawing a frame went from 10ms to 1ms in Chrome's optimising
+  tier, which is what it costs natively, and `pumpkin.wasm` from 30 MB to 9.
+  `make -C src WASM=1 GUARD=-DRECOMP_GUARD REGS=` builds it the old way.
+
+What this does not say is what a phone does: it says the work is a small fraction of what
+it was, with the compiler doing the least for it. The still moment after a crash is the
+game's -- it waits out half a second, twice, in `EvtGetEvent` -- and is the same natively.
 
 **Touch controls** come on by themselves where the pointer is a finger -- `(pointer: coarse)`,
 which is a phone or a tablet -- and stay off where it is a mouse, whose page is played from

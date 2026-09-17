@@ -15,8 +15,21 @@ AR     := ar
 SUFFIX :=
 endif
 OPT    ?= -O1
+# RECOMP_GUARD is the bounds check on every access plus what names the
+# instruction that failed one and lets a run be traced; RECOMP_BOUNDS is the
+# check alone, which is all the wasm build can afford (src/recomp/rarm.h).
+# `make -C src WASM=1 GUARD=-DRECOMP_GUARD` builds a wasm core that can trace.
+# RECOMP_MEMREGS keeps the ARM registers in the state structure rather than in
+# locals, which is what a wasm function with a label on every instruction
+# needs (src/gen/rarm_gen.h, written by tools/recomparm.py).
+ifeq ($(WASM),1)
+GUARD  ?= -DRECOMP_BOUNDS
+REGS   ?= -DRECOMP_MEMREGS
+else
 GUARD  ?= -DRECOMP_GUARD
-CFLAGS := $(OPT) -fPIC $(GUARD) -Wall -Wno-unused-label -Wno-unused-variable \
+REGS   ?=
+endif
+CFLAGS := $(OPT) -fPIC $(GUARD) $(REGS) -Wall -Wno-unused-label -Wno-unused-variable \
           -Wno-unused-but-set-variable -I$(ROOT)/src/recomp -I$(ROOT)/src/gen
 # The single-step cores (gen/arm<n>_step.c) are only needed by BOD_ARM_LOCKSTEP
 # and are generated on demand, so build whichever ones are present.

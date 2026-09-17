@@ -2,7 +2,14 @@
 // Measure how many frames a second the WebAssembly build actually puts on the
 // canvas, while it is being ridden.
 //
-//   tools/webfps.js [-u url] [-s seconds] [-w warmup] [--head] [-o shot.png]
+//   tools/webfps.js [-u url] [-s seconds] [-w warmup] [--js-flags flags] [--head] [-o shot.png]
+//
+// --js-flags goes to V8 as it stands. `--js-flags --liftoff-only` is the one
+// that matters: it keeps the game in the baseline compiler, which is the
+// nearest thing here to a phone. Chrome's CPU throttle cannot be asked of a
+// worker, and the game is on the workers; but a browser leaves functions this
+// size in its baseline tier longest, a phone has the least to spare while it
+// does, and that tier can be had here.
 //
 // Frames are counted where they land rather than where they are produced: the
 // page's 2D and WebGL contexts are wrapped before anything loads, so every
@@ -35,6 +42,7 @@ function arg(flag, dflt) {
 const url = arg('-u', 'http://127.0.0.1:8099/pumpkin.html');
 const sample = parseFloat(arg('-s', '6'));
 const warmup = parseFloat(arg('-w', '2'));
+const jsFlags = arg('--js-flags', '');
 const head = process.argv.includes('--head');
 const shot = arg('-o', '');
 const verbose = process.argv.includes('-v');
@@ -52,7 +60,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       '--disable-background-timer-throttling',
       '--disable-renderer-backgrounding',
       '--disable-backgrounding-occluded-windows',
-    ],
+    ].concat(jsFlags ? [`--js-flags=${jsFlags}`] : []),
   });
 
   const page = await browser.newPage();

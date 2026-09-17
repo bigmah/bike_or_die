@@ -19,13 +19,25 @@ extern uint32_t rarm_segbase[8];   /* runtime address of each armc resource */
 extern uint32_t rarm_segsize[8];
 
 /* RECOMP_GUARD turns wild memory accesses into a diagnostic naming the ARM
- * instruction that made them, instead of a segfault. */
+ * instruction that made them, instead of a segfault.
+ *
+ * It is two things, and RECOMP_BOUNDS is the first without the second: the
+ * check on every access, and -- so that the diagnostic can name the
+ * instruction, and so that a run can be traced -- a store to rarm_cur_pc and a
+ * look at rarm_tracing in front of every instruction. The WebAssembly build
+ * takes only the check. Natively the rest costs little. In wasm it was nine
+ * tenths of what the game spent drawing a frame: clang hoists the two hundred
+ * and fifty `n + SEGBASE` a chunk needs into locals at the top of it, where a
+ * register machine would have made each one up again as it went, so every
+ * entry into a chunk -- every call, return and branch between them -- began
+ * by working out and spilling all of them. There a wild access is still
+ * caught and still reported, with a program counter that means nothing. */
 extern uint32_t rarm_cur_pc;
 void rarm_badaddr(uint32_t addr, uint32_t size, int write);
 /* Instruction trace, used to diff against the interpreter. */
 extern int rarm_tracing;
 void rarm_trace(rarm_state *S);
-#ifdef RECOMP_GUARD
+#if defined(RECOMP_GUARD) || defined(RECOMP_BOUNDS)
 #define ACHK(a, n, w) do { if ((uint64_t)(a) + (n) > rarm_ramsize) { rarm_badaddr((a), (n), (w)); return; } } while (0)
 #define ACHKR(a, n) do { if ((uint64_t)(a) + (n) > rarm_ramsize) { rarm_badaddr((a), (n), 0); return 0; } } while (0)
 #else

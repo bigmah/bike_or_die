@@ -9199,10 +9199,20 @@ index 75c478a..d0bd254 100644
  
    // check if library is already loaded
 diff --git a/src/libpit/threadptr.c b/src/libpit/threadptr.c
-index e862f4d..97ff9a7 100644
+index e862f4d..ee786cf 100644
 --- a/src/libpit/threadptr.c
 +++ b/src/libpit/threadptr.c
-@@ -73,7 +73,10 @@ void thread_set(thread_key_t *key, void *value) {
+@@ -12,6 +12,9 @@
+ #define TAG_QUEUE "thread_queue"
+ #define MAX_QUEUE 256
+ 
++// The longest single wait on a queue's condition, in microseconds.
++#define QUEUE_WAIT_MAX 500000
++
+ #define MAX_PS_THREADS 256
+ 
+ struct thread_key_t {
+@@ -73,7 +76,10 @@ void thread_set(thread_key_t *key, void *value) {
  }
  
  void *thread_get(thread_key_t *key) {
@@ -9214,8 +9224,109 @@ index e862f4d..97ff9a7 100644
  }
  
  static int thread_create(void *(*action)(void *), void *arg) {
+@@ -115,18 +121,48 @@ static int queue_new(void) {
+ 
+   if ((q = sys_calloc(1, sizeof(queue_t))) != NULL) {
+     q->tag = TAG_QUEUE;
+-    queue = ptr_new(q, queue_destructor);
++    // With a condition to wait on: see queue_get.
++    queue = ptr_new_c(q, queue_destructor);
+   }
+ 
+   return queue;
+ }
+ 
+-static int queue_get(int queue, uint8_t **buf, uint32_t *len, int *sender) {
++// The next message, waiting up to usec for one to be put.
++//
++// The wait is on the queue's condition, which queue_put signals, so a thread
++// asleep here is up as soon as there is something to read. It used to sleep
++// through the timeout a quarter at a time and look again after each: a thread
++// waiting 50ms for a message heard of one up to 12ms after it was sent. That
++// is the wait every application sits in for its next event, and the one the
++// mixer sits in for the game's audio.
++static int queue_get(int queue, uint32_t usec, uint8_t **buf, uint32_t *len, int *sender) {
+   msg_t *msg;
+   queue_t *q;
++  uint64_t now, until, began;
++  uint32_t left;
+   int r = -1;
+ 
+   if ((q = ptr_lock(queue, TAG_QUEUE)) != NULL) {
++    if (q->n == 0 && usec > 0) {
++      now = sys_get_clock();
++      until = now + usec;
++      while (q->n == 0 && now < until) {
++        // cond_timedwait counts in nanoseconds in an int, and carries once.
++        left = (until - now) > QUEUE_WAIT_MAX ? QUEUE_WAIT_MAX : (uint32_t)(until - now);
++        began = now;
++        ptr_wait(queue, left, TAG_QUEUE);
++        now = sys_get_clock();
++        if (q->n == 0 && now - began < left / 2) {
++          // It came back with nothing and far too soon to have timed out, so
++          // it is not waiting at all: sleep the turn out instead of spinning.
++          ptr_unlock(queue, TAG_QUEUE);
++          sys_usleep(left < 1000 ? left : 1000);
++          if ((q = ptr_lock(queue, TAG_QUEUE)) == NULL) return -1;
++          now = sys_get_clock();
++        }
++      }
++    }
+     if (q->n > 0) {
+       msg = &q->msg[q->out];
+       if (sender) *sender = msg->sender;
+@@ -168,6 +204,7 @@ static int queue_put(int queue, uint8_t *buf, uint32_t len) {
+       if (q->in == MAX_QUEUE) q->in = 0;
+       q->n++;
+       r = 0;
++      ptr_signal(queue, TAG_QUEUE);
+     } else {
+       r = -1;
+     }
+@@ -438,38 +475,17 @@ static int thread_write_queue(int queue, unsigned char *buf, unsigned int len) {
+ }
+ 
+ static int thread_read_queue(int queue, uint32_t usec, unsigned char **rbuf, unsigned int *len, int *client) {
+-  uint32_t dt;
+-  int i, n, r;
++  int r;
+ 
+   *rbuf = NULL;
+   *len = 0;
+ 
+-  if ((r = queue_get(queue, rbuf, len, client)) == -1) {
++  if ((r = queue_get(queue, usec, rbuf, len, client)) == -1) {
+     debug(DEBUG_ERROR, "THREAD", "read from queue %d failed", queue);
+     return -1;
+   }
+ 
+-  if (r == 0) {
+-    if (usec == 0) return 0;
+-
+-    if (usec >= 100) {
+-      n = 4;
+-    } else {
+-      n = 1;
+-    }
+-    dt = usec / n;
+-
+-    for (i = 0; i < n; i++) {
+-      sys_usleep(dt);
+-      if ((r = queue_get(queue, rbuf, len, client)) == -1) {
+-        debug(DEBUG_ERROR, "THREAD", "read from queue %d failed", queue);
+-        return -1;
+-      }
+-      if (r) break;
+-    }
+-
+-    if (r == 0) return 0;
+-  }
++  if (r == 0) return 0;
+ 
+   if (*len == 1 && (*rbuf)[0] == 0) {
+     debug(DEBUG_INFO, "THREAD", "received finish packet");
 diff --git a/src/libpumpkin/Bitmap.c b/src/libpumpkin/Bitmap.c
-index 5d53c76..bacd3d8 100644
+index 5d53c76..65e40ba 100644
 --- a/src/libpumpkin/Bitmap.c
 +++ b/src/libpumpkin/Bitmap.c
 @@ -15,8 +15,43 @@
@@ -9336,7 +9447,7 @@ index 5d53c76..bacd3d8 100644
  
 +#ifdef BOD_GBA
 +static void *BmpGetBits1(BitmapType *bitmapP);
- void *BmpGetBits(BitmapType *bitmapP) {
++void *BmpGetBits(BitmapType *bitmapP) {
 +  bod_bmp_entry *e;
 +  if (!bitmapP) return NULL;
 +  if ((e = bod_bmp_lookup(bitmapP)) == NULL || !(e->valid & 2)) {
@@ -9348,7 +9459,7 @@ index 5d53c76..bacd3d8 100644
 +}
 +static void *BmpGetBits1(BitmapType *bitmapP) {
 +#else
-+void *BmpGetBits(BitmapType *bitmapP) {
+ void *BmpGetBits(BitmapType *bitmapP) {
 +#endif
 +  BOD_COUNT(0);
    UInt32 headerSize, addr;
@@ -9402,7 +9513,95 @@ index 5d53c76..bacd3d8 100644
    Err err = sysErrParamErr;
  
    if (bitmapP) {
-@@ -2407,7 +2502,12 @@ static void BmpCopyBit4(UInt8 b, Boolean transp, BitmapType *dst, Coord dx, Coor
+@@ -1852,6 +1947,75 @@ static void BmpDrawSurfaceSetPixel(Coord x, Coord y, Coord i, Coord j, UInt32 c,
+   }
+ }
+ 
++// A 16-bit bitmap onto an RGB565 surface that keeps its pixels in a buffer:
++// the pixel that would be taken apart into red, green and blue, put back
++// together by surface_color_rgb and stored through surface->setpixel is the
++// same sixteen bits it started as, so the rows are copied as they stand.
++// That is every frame a game shows -- WinCopyRectangle to the screen ends here
++// (pumpkin_screen_dirty) -- and one pixel at a time, through five calls of
++// which one is indirect, it was most of what a frame of Bike or Die cost: five
++// times what the game spent drawing it.
++// Returns false if the surface is not one this can be done to.
++static Boolean BmpDrawSurface565(UInt8 *bits, UInt32 offset, UInt16 rowBytes, Coord w, Coord h, surface_t *surface, Coord x0, Coord y0,
++                                 Boolean littleEndian, Boolean skip, UInt16 transparentValue, Boolean dbl) {
++  uint16_t *dst, *d, rgb;
++  UInt8 *s;
++  Coord i, j, j0, j1, i0, i1, x, y;
++  int len, sw, sh;
++
++  if (surface->encoding != SURFACE_ENCODING_RGB565) return false;
++  sw = surface->width;
++  sh = surface->height;
++  if ((dst = (uint16_t *)surface_buffer(surface, &len)) == NULL || len != sw * sh * 2) return false;
++
++  // What surface->setpixel would have refused, a pixel at a time. Doubled, a
++  // pixel is four and each of them is asked about where it is stored.
++  j0 = i0 = 0;
++  j1 = w;
++  i1 = h;
++  if (!dbl) {
++    if (x0 < 0) j0 = -x0;
++    if (y0 < 0) i0 = -y0;
++    if (j1 > sw - x0) j1 = sw - x0;
++    if (i1 > sh - y0) i1 = sh - y0;
++    if (j0 >= j1) return true;
++  }
++
++  for (i = i0; i < i1; i++) {
++    s = bits + offset + (UInt32)i * rowBytes + j0 * 2;
++    if (!dbl) {
++      d = dst + (y0 + i) * sw + x0 + j0;
++#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
++      if (littleEndian && !skip) {
++        sys_memcpy(d, s, (j1 - j0) * 2);
++        continue;
++      }
++#endif
++      for (j = j0; j < j1; j++, s += 2, d++) {
++        rgb = littleEndian ? (uint16_t)((s[1] << 8) | s[0]) : (uint16_t)((s[0] << 8) | s[1]);
++        if (!skip || rgb != transparentValue) *d = rgb;
++      }
++    } else {
++      for (j = j0; j < j1; j++, s += 2) {
++        rgb = littleEndian ? (uint16_t)((s[1] << 8) | s[0]) : (uint16_t)((s[0] << 8) | s[1]);
++        if (skip && rgb == transparentValue) continue;
++        x = x0 + 2*j;
++        y = y0 + 2*i;
++        if (y >= 0 && y < sh) {
++          if (x >= 0 && x < sw) dst[y * sw + x] = rgb;
++          if (x+1 >= 0 && x+1 < sw) dst[y * sw + x+1] = rgb;
++        }
++        if (y+1 >= 0 && y+1 < sh) {
++          if (x >= 0 && x < sw) dst[(y+1) * sw + x] = rgb;
++          if (x+1 >= 0 && x+1 < sw) dst[(y+1) * sw + x+1] = rgb;
++        }
++      }
++    }
++  }
++
++  return true;
++}
++
+ void BmpDrawSurface(BitmapType *bitmapP, Coord sx, Coord sy, Coord w, Coord h, surface_t *surface, Coord x0, Coord y0, Boolean useTransp, Boolean dbl) {
+   ColorTableType *colorTable;
+   UInt32 offset, transparentValue, c;
+@@ -1984,6 +2148,11 @@ void BmpDrawSurface(BitmapType *bitmapP, Coord sx, Coord sy, Coord w, Coord h, s
+             // XXX transparentValue is 24-bits RGB, but pixel values are 16-bits 565, so convert transparentValue to 16-bits
+             //transparentValue = rgb565(r32(transparentValue), g32(transparentValue), b32(transparentValue));
+             // XXX is this correct? the logo bitmap is 16 bits and the white transparentValue is 0x0000FFFF, not 0x00FFFFFF
++            // rgb is sixteen bits, so a transparentValue wider than that matches nothing.
++            if (BmpDrawSurface565(bits, offset, rowBytes, w, h, surface, x0, y0, le || leBits,
++                                  useTransp && transp && transparentValue <= 0xFFFF, transparentValue, dbl)) {
++              break;
++            }
+             for (i = 0; i < h; i++, offset += rowBytes) {
+               for (j = 0, k = 0; j < w; j++, k += 2) {
+                 get2_16(&rgb, bits, offset + k);
+@@ -2407,7 +2576,12 @@ static void BmpCopyBit4(UInt8 b, Boolean transp, BitmapType *dst, Coord dx, Coor
    }
  }
  
@@ -9415,7 +9614,7 @@ index 5d53c76..bacd3d8 100644
  
  #define BmpSetBit8(offset, dataSize, b, dbl) \
    BmpSetBit8p(offset, dataSize, b); \
-@@ -3266,7 +3366,11 @@ static int BmpDecompress(UInt16 version, BitmapCompressionType compression, UInt
+@@ -3266,7 +3440,11 @@ static int BmpDecompress(UInt16 version, BitmapCompressionType compression, UInt
    return error;
  }
  
@@ -9474,7 +9673,7 @@ index a2b5b1f..07adc57 100644
    if (logLenP) *logLenP = 0;
  
 diff --git a/src/libpumpkin/Event.c b/src/libpumpkin/Event.c
-index fd1eb40..7ba1a3e 100644
+index fd1eb40..8a08ddf 100644
 --- a/src/libpumpkin/Event.c
 +++ b/src/libpumpkin/Event.c
 @@ -6,10 +6,17 @@
@@ -9672,7 +9871,17 @@ index fd1eb40..7ba1a3e 100644
          }
        }
        break;
-@@ -800,8 +897,51 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
+@@ -795,13 +892,77 @@ Boolean EvtEventAvail(void) {
+   return module->numEvents > 0;
+ }
+ 
++// The longest an application that polls is kept waiting for the display to
++// take its frame: a display that has stopped -- a window nobody is drawing --
++// slows the game's loop to this and no further.
++#define FRAME_WAIT_MAX_US 50000
++
+ // timeout: time in us to wait before an event is returned (evtWaitForever means wait indefinitely).
+ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
    evt_module_t *module = (evt_module_t *)pumpkin_get_local_storage(evt_key);
  
    MemSet(event, sizeof(EventType), 0);
@@ -9721,10 +9930,26 @@ index fd1eb40..7ba1a3e 100644
 +          (unsigned)(held / 1000), module->numEvents ? " for an event" : "");
 +  }
 +
++  // An application that polls -- no timeout, which is how a game asks -- and
++  // has drawn a frame the display has not taken yet has nothing to do until
++  // it has been, and sleeps here rather than going round again to draw the
++  // same picture (pumpkin_frame_wait). It sleeps on its queue, so a key or the
++  // mixer still gets it up at once, and MSG_FRAME does when the frame is
++  // taken. FRAME_WAIT_MAX_US is for a display that has stopped taking them.
++  if (module->numEvents == 0 && timeoutUs == 0 && pumpkin_frame_wait()) {
++    uint64_t now = sys_get_clock(), until = now + FRAME_WAIT_MAX_US;
++    while (module->numEvents == 0 && now < until && pumpkin_frame_wait() &&
++           !thread_must_end() && !pumpkin_must_finish()) {
++      if (EvtPumpEvents(until - now) == -1) break;
++      now = sys_get_clock();
++    }
++    pumpkin_frame_wait_end();
++  }
++
    if (module->numEvents == 0) {
      if (EvtPumpEvents(timeoutUs) == -1) {
        debug(DEBUG_INFO, PALMOS_MODULE, "EvtGetEvent appStopEvent (event failed)");
-@@ -830,6 +970,29 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
+@@ -830,6 +991,29 @@ void EvtGetEventUs(EventType *event, Int32 timeoutUs) {
      xmemcpy(event, &module->events[module->idxOut++], sizeof(EventType));
      if (module->idxOut == MAX_EVENTS) module->idxOut = 0;
      module->numEvents--;
@@ -14672,10 +14897,18 @@ index 0000000..fcb2faf
 +
 +#endif
 diff --git a/src/libpumpkin/pumpkin.c b/src/libpumpkin/pumpkin.c
-index 93cf260..0b8f735 100644
+index 93cf260..c3a3f14 100644
 --- a/src/libpumpkin/pumpkin.c
 +++ b/src/libpumpkin/pumpkin.c
-@@ -255,6 +255,7 @@ typedef struct {
+@@ -179,6 +179,7 @@ typedef struct {
+   surface_t *surface;
+   surface_t *msurface;
+   int dirty; // app screen changed
++  int frame_wait; // and the app is asleep until the display has taken it (pumpkin_frame_wait)
+   int x0, y0, x1, y1;
+ } task_screen_t;
+ 
+@@ -255,6 +256,7 @@ typedef struct {
    uint64_t extKeyMask[2];
    uint32_t lockKey, lockModifiers;
    int64_t lastUpdate;
@@ -14683,7 +14916,7 @@ index 93cf260..0b8f735 100644
    int num_used;
    int task_order[MAX_TASKS];
    pumpkin_task_t tasks[MAX_TASKS];
-@@ -341,6 +342,8 @@ static pumpkin_module_t pumpkin_module;
+@@ -341,6 +343,8 @@ static pumpkin_module_t pumpkin_module;
  static thread_key_t *task_key;
  
  static void pumpkin_make_current(int i);
@@ -14692,7 +14925,7 @@ index 93cf260..0b8f735 100644
  static uint32_t pumpkin_launch_request(LocalID dbID, char *name, UInt16 cmd, launch_union_t *param, UInt16 flags, PilotMainF pilotMain, UInt16 opendb);
  
  void *pumpkin_heap_base(void) {
-@@ -639,6 +642,7 @@ int pumpkin_global_init(script_engine_t *engine, window_provider_t *wp, audio_pr
+@@ -639,6 +643,7 @@ int pumpkin_global_init(script_engine_t *engine, window_provider_t *wp, audio_pr
    int fd;
  
    sys_memset(&pumpkin_module, 0, sizeof(pumpkin_module_t));
@@ -14700,7 +14933,7 @@ index 93cf260..0b8f735 100644
  
    if ((mutex = mutex_create(PUMPKINOS)) == NULL) {
      return -1;
-@@ -708,6 +712,8 @@ void pumpkin_init_misc(void) {
+@@ -708,6 +713,8 @@ void pumpkin_init_misc(void) {
    LocalID dbID;
    PumpkinPreferencesType prefs;
  
@@ -14709,7 +14942,7 @@ index 93cf260..0b8f735 100644
    dbID = DmFindDatabase(0, BOOT_NAME);
    dbRef = DmOpenDatabase(0, dbID, dmModeReadOnly);
    PrefInitModule();
-@@ -736,6 +742,16 @@ void pumpkin_init_misc(void) {
+@@ -736,6 +743,16 @@ void pumpkin_init_misc(void) {
    pumpkin_module.lockKey = prefs.value[pLockKey];
    pumpkin_module.lockModifiers = prefs.value[pLockModifiers];
    pumpkin_module.enableSound = prefs.value[pEnableSound];
@@ -14726,7 +14959,21 @@ index 93cf260..0b8f735 100644
  }
  
  void pumpkin_set_spawner(int handle) {
-@@ -2468,12 +2484,28 @@ int pumpkin_launch(launch_request_t *request) {
+@@ -2306,6 +2323,13 @@ static int pumpkin_wait_ack(int port, uint32_t *reply) {
+     }
+     r = -1;
+ 
++    // A frame taken just as its wait gave up leaves its MSG_FRAME behind
++    // (pumpkin_frame_wait), and it is not the answer to anything.
++    if (buf && len == sizeof(uint32_t)*4 && ((uint32_t *)buf)[0] == MSG_FRAME) {
++      sys_free(buf);
++      continue;
++    }
++
+     if (buf) {
+       if (client == port) {
+         ack = 1;
+@@ -2468,12 +2492,28 @@ int pumpkin_launch(launch_request_t *request) {
          data->littleEndian = regEnd->littleEndian;
          MemPtrFree(regEnd);
        }
@@ -14755,7 +15002,7 @@ index 93cf260..0b8f735 100644
  
        if ((regHeap = pumpkin_reg_get(creator, regHeapID, &regSize)) != NULL) {
          if (regHeap->heapSize) {
-@@ -2836,6 +2868,8 @@ static int pumpkin_changed_display(pumpkin_task_t *task, task_screen_t *screen,
+@@ -2836,12 +2876,14 @@ static int pumpkin_changed_display(pumpkin_task_t *task, task_screen_t *screen,
    return r;
  }
  
@@ -14764,7 +15011,35 @@ index 93cf260..0b8f735 100644
  static int draw_task(int i, int *x, int *y, int *w, int *h) {
    task_screen_t *screen;
    pumpkin_task_t *task;
-@@ -3109,12 +3143,249 @@ int pumpkin_must_finish(void) {
+   uint8_t *raw;
+   uint16_t prev;
+-  int width, height, len, updated = 0;
++  int width, height, len, updated = 0, wake = 0;
+   EventType event;
+ 
+   if ((screen = ptr_lock(pumpkin_module.tasks[i].screen_ptr, TAG_SCREEN))) {
+@@ -2898,10 +2940,20 @@ static int draw_task(int i, int *x, int *y, int *w, int *h) {
+       screen->y1 = -1;
+       screen->dirty = 0;
+       updated = 1;
++      if (screen->frame_wait) {
++        screen->frame_wait = 0;
++        wake = 1;
++      }
+     }
+     ptr_unlock(pumpkin_module.tasks[i].screen_ptr, TAG_SCREEN);
+   }
+ 
++  // The frame is the display's now, and the application that drew it is asleep
++  // until it was (pumpkin_frame_wait): this is what it is waiting to hear.
++  if (wake) {
++    pumpkin_forward_msg(i, MSG_FRAME, 0, 0, 0);
++  }
++
+   return updated;
+ }
+ 
+@@ -3109,12 +3161,249 @@ int pumpkin_must_finish(void) {
    return r;
  }
  
@@ -15016,7 +15291,7 @@ index 93cf260..0b8f735 100644
      case WINDOW_KEY_F1:    pumpkin_module.keyMask |= keyBitHard1;      break;
      case WINDOW_KEY_F2:    pumpkin_module.keyMask |= keyBitHard2;      break;
      case WINDOW_KEY_F3:    pumpkin_module.keyMask |= keyBitHard3;      break;
-@@ -3134,11 +3405,20 @@ static void pumpkin_set_key(int key) {
+@@ -3134,11 +3423,20 @@ static void pumpkin_set_key(int key) {
  }
  
  static int pumpkin_reset_key(int key) {
@@ -15039,7 +15314,7 @@ index 93cf260..0b8f735 100644
      case WINDOW_KEY_F1:    pumpkin_module.keyMask &= ~keyBitHard1;    break;
      case WINDOW_KEY_F2:    pumpkin_module.keyMask &= ~keyBitHard2;    break;
      case WINDOW_KEY_F3:    pumpkin_module.keyMask &= ~keyBitHard3;    break;
-@@ -3265,7 +3545,7 @@ int pumpkin_sys_event(void) {
+@@ -3265,7 +3563,7 @@ int pumpkin_sys_event(void) {
    if (mutex_lock(mutex) == 0) {
      now = sys_get_clock();
  
@@ -15048,7 +15323,7 @@ index 93cf260..0b8f735 100644
        if (pumpkin_module.num_tasks > 0) {
          if (pumpkin_module.refresh) {
            if (pumpkin_module.background) {
-@@ -3602,13 +3882,36 @@ int pumpkin_event_peek(void) {
+@@ -3602,13 +3900,103 @@ int pumpkin_event_peek(void) {
    return thread_server_peek();
  }
  
@@ -15075,6 +15350,73 @@ index 93cf260..0b8f735 100644
 +  return (now - pumpkin_module.lastUpdate) > pumpkin_module.updateEvery;
 +}
 +
++/* One frame per refresh, from the application's side.
++ *
++ * A game that asks for its next event without waiting for one -- EvtGetEvent
++ * with no timeout, which is how Bike or Die rides -- goes round as fast as the
++ * machine lets it, copying its picture to the screen every time whether or not
++ * anything has moved: fifteen thousand times a second on a Mac, of which the
++ * display takes sixty. On a desk that is a core kept busy for nothing. On a
++ * phone it is the core the browser needed, kept hot until the phone slows
++ * everything down, and the lock on the screen held against the thread that is
++ * trying to copy it out.
++ *
++ * So an application that has drawn a frame the display has not taken yet is
++ * done until it has been: pumpkin_frame_wait says whether that is so, and
++ * marks the screen so that draw_task sends MSG_FRAME when it takes the frame.
++ * The application sleeps on its own message queue meanwhile (Event.c), so a
++ * key or the mixer wakes it as they always did. It then draws the next frame
++ * straight after the last one was taken, has a whole refresh to draw it in,
++ * and every refresh finds one complete new frame waiting for it.
++ *
++ * Nothing changes for the game's clock, which is the real one, nor for an
++ * application that waits for its events, which never gets here with anything
++ * drawn and not shown for long. BOD_PACE=0 turns it off.
++ */
++static int pumpkin_frame_pacing(void) {
++  static int pacing = -1;
++  char *spec;
++
++  if (pacing == -1) {
++    spec = sys_getenv("BOD_PACE");
++    pacing = !(spec && spec[0] == '0');
++    debug(DEBUG_INFO, PUMPKINOS, "frame pacing %s", pacing ? "on" : "off");
++  }
++
++  return pacing;
++}
++
++// 1 if the calling application has drawn something the display has not taken
++// yet, in which case MSG_FRAME is on its way; 0 if there is nothing to wait for.
++int pumpkin_frame_wait(void) {
++  pumpkin_task_t *task = (pumpkin_task_t *)thread_get(task_key);
++  task_screen_t *screen;
++  int r = 0;
++
++  if (!task || pumpkin_module.mode == 1 || !pumpkin_frame_pacing()) return 0;
++
++  if ((screen = ptr_lock(task->screen_ptr, TAG_SCREEN))) {
++    if (screen->dirty) {
++      screen->frame_wait = 1;
++      r = 1;
++    }
++    ptr_unlock(task->screen_ptr, TAG_SCREEN);
++  }
++
++  return r;
++}
++
++// The wait is over, whether or not the frame was taken.
++void pumpkin_frame_wait_end(void) {
++  pumpkin_task_t *task = (pumpkin_task_t *)thread_get(task_key);
++  task_screen_t *screen;
++
++  if (task && (screen = ptr_lock(task->screen_ptr, TAG_SCREEN))) {
++    screen->frame_wait = 0;
++    ptr_unlock(task->screen_ptr, TAG_SCREEN);
++  }
++}
++
  static void pumpkin_update_single_app(void) {
    int x, y, w, h;
    uint64_t now;
@@ -15086,11 +15428,29 @@ index 93cf260..0b8f735 100644
      if (pumpkin_module.fullrefresh) {
        draw_task(0, &x, &y, &w, &h);
        wman_update(pumpkin_module.wm, 0, 0, 0, pumpkin_module.tasks[0].width, pumpkin_module.tasks[0].height);
+@@ -3815,6 +4203,9 @@ static int pumpkin_event_multi_thread(int *key, int *mods, int *buttons, uint8_t
+           RctSetRectangle(&event.data.winDisplayChanged.newBounds, 0, 0, arg[1], arg[2]);
+           EvtAddEventToQueue(&event);
+           break;
++        case MSG_FRAME:
++          // The display took the frame (draw_task). Waking up was the point.
++          break;
+         case MSG_RAISE:
+           debug(DEBUG_INFO, PUMPKINOS, "pumpkin_event raise");
+           MemSet(&event, sizeof(EventType), 0);
 diff --git a/src/libpumpkin/pumpkin.h b/src/libpumpkin/pumpkin.h
-index 64f99fc..5846d7a 100644
+index 64f99fc..c138f35 100644
 --- a/src/libpumpkin/pumpkin.h
 +++ b/src/libpumpkin/pumpkin.h
-@@ -250,6 +250,10 @@ void *pumpkin_get_local_storage(local_storage_key_t key);
+@@ -69,6 +69,7 @@ extern "C" {
+ #define MSG_LAUNCHC 14
+ #define MSG_AUDIO   15
+ #define MSG_RAUDIO  16
++#define MSG_FRAME   17
+ #define MSG_USER    99
+ 
+ #define oemErrNotImplemented (oemErrorClass | 0x7EFF)
+@@ -250,6 +251,10 @@ void *pumpkin_get_local_storage(local_storage_key_t key);
  void pumpkin_deploy_files(char *path);
  void pumpkin_init_misc(void);
  void pumpkin_send_deploy(void);
@@ -15101,7 +15461,16 @@ index 64f99fc..5846d7a 100644
  void pumpkin_local_refresh(void);
  void pumpkin_set_spawner(int handle);
  int pumpkin_is_spawner(void);
-@@ -613,6 +617,7 @@ Char **SysStringArray(UInt16 resID, UInt16 *numStrings);
+@@ -328,6 +333,8 @@ void pumpkin_keymask(uint32_t keyMask);
+ void pumpkin_status(int *x, int *y, uint32_t *keyMask, uint32_t *modMask, uint32_t *buttonMask, uint64_t *extKeyMask);
+ int pumpkin_extkey_down(int key, uint64_t *extKeyMask);
+ void pumpkin_screen_dirty(WinHandle win, int x, int y, int w, int h);
++int pumpkin_frame_wait(void);
++void pumpkin_frame_wait_end(void);
+ void pumpkin_screen_copy(uint16_t *src, uint16_t y0, uint16_t y1);
+ surface_t *pumpkin_screen_lock(void **scr);
+ void pumpkin_screen_unlock(void *scr, int x0, int y0, int x1, int y1);
+@@ -613,6 +620,7 @@ Char **SysStringArray(UInt16 resID, UInt16 *numStrings);
  Int32 SysRandom32(Int32 newSeed);
  Err SysTaskDelayMs(Int32 delay);
  UInt32 TimGetTicksMs(void);
